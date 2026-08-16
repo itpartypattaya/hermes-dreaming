@@ -1,0 +1,48 @@
+{
+  "_comment": "Copy to ~/.hermes/dreaming.json and edit. Missing keys fall back to defaults; precedence: CLI flag > DREAM_* env > this file > default.",
+
+  "timezone": "Europe/Berlin",
+
+  "trusted_chat_ids": ["-1001234567890"],
+  "trust_private_chats": true,
+  "trust_sessions_without_chat": true,
+
+  "agent_names": ["hermes"],
+  "extra_stopwords": [],
+  "token_min_len": {"latin": 4, "other": 5},
+
+  "durable_memory_paths": ["memories/MEMORY.md", "memories/USER.md"],
+  "memory_char_limits": {"memories/MEMORY.md": 2200, "memories/USER.md": 1375},
+
+  "profile_hint_terms": ["prefer", "likes", "dislikes", "goal", "plans", "works", "lives",
+                         "family", "spouse", "partner", "child", "alice", "bob"],
+  "profile_categories": ["user", "user_pref", "preference", "profile", "personal", "family"],
+
+  "alias_rules": [
+    {"name": "shopping list thread may move between ids",
+     "fact": [["shopping"], ["list", "groceries"]],
+     "memory": [["shopping list"]]},
+    {"name": "alerts thread 437 (old 42)",
+     "fact": [["#437", "#42"], ["alert", "notification"]],
+     "memory": [["#437"], ["alert"]]}
+  ],
+
+  "diary": {"heading": "## Dream", "keep_sections": 90},
+  "pinned_markers": ["📌", "[pinned]"],
+  "memory_loss_alert_fraction": 0.25,
+
+  "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
+  "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
+            "seen_cooldown_days": 14, "md_ask_cooldown_days": 14, "publish_cap": 15},
+  "weights": {"relevance": 0.30, "frequency": 0.24, "query_diversity": 0.15,
+              "recency": 0.15, "consolidation": 0.10, "conceptual_richness": 0.06},
+
+  "state": {"asked": "cache/dream-asked.json",
+            "rejected": "cache/dream-rejected.json",
+            "seen": "cache/dream-seen.json",
+            "snapshot": "cache/dream-snapshot.json"},
+
+  "precheck": {"max_content": 300,
+               "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
+                                   "md_decays", "conflicts", "quarantined", "alerts"]}
+}
