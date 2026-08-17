@@ -165,8 +165,8 @@ def _hermes_plugin_db_path(home=None):
 
 
 def fact_store_path(home=None):
-    """Resolved path of the fact store: dreaming.json `fact_store_path` >
-    `$DREAM_FACT_STORE` > Hermes `plugins.hermes-memory-store.db_path` >
+    """Resolved path of the fact store: `$DREAM_FACT_STORE` > dreaming.json
+    `fact_store_path` > Hermes `plugins.hermes-memory-store.db_path` >
     `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~` and relative paths are
     expanded the way the provider does it — an install that moved its store
     must not look empty to the dream."""
@@ -1274,8 +1274,6 @@ def check_memory_loss(mem_md, snapshot_path):
                                "message": f"{name}: the file is missing — all {len(prev)} entries "
                                           f"present at the previous pass are gone. "
                                           f"Check whether that was intended."})
-            elif prev:
-                current[name] = sorted(prev)
             continue
         keys = _entry_keys_of(p)
         current[name] = sorted(keys)

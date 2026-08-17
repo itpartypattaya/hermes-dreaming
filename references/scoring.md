@@ -193,8 +193,8 @@ return that night. No `state.db` or no `messages` table → treated as
 acknowledged (old behaviour) so a host that does not persist sessions does not
 re-show forever.
 
-**Fact store location.** `fact_store_path()` resolves, in order:
-`fact_store_path` in `dreaming.json` → `$DREAM_FACT_STORE` → Hermes
+**Fact store location.** `fact_store_path()` resolves, in order (env beats
+config, as everywhere): `$DREAM_FACT_STORE` → `fact_store_path` in `dreaming.json` → Hermes
 `plugins.hermes-memory-store.db_path` from `config.yaml` (PyYAML if present,
 else a narrow scanner) → `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~`
 and relative paths expand the way the provider expands them. The pass, the
