@@ -95,7 +95,7 @@ def save_state(path, data):
 
 def fetch_content(fact_id):
     """Fact text from memory_store.db (read-only). None — the fact is gone."""
-    db = os.path.join(HOME, "memory_store.db")
+    db = _dream().fact_store_path(HOME)
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     except sqlite3.Error:
@@ -163,7 +163,7 @@ def main(argv=None):
             ap.error("fact_id or --content is required")
         content = fetch_content(args.fact_id)
         if content is None:
-            ap.error(f"fact {args.fact_id} not found in memory_store.db — pass --content")
+            ap.error(f"fact {args.fact_id} not found in the fact store — pass --content")
 
     # The key is ALWAYS the text fingerprint. Keying by fact_id is unsafe:
     # sqlite reuses ids after the last row is deleted, and a rejection of a new

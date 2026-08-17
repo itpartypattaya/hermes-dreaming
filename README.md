@@ -25,8 +25,10 @@ deserves durable memory:
   (RU/EN/Thai dates), **decay** questions ("still relevant?") for facts and
   memory entries, **pinned** entries;
 - **outcomes**: a reject list ("outdated" from a human closes the question for
-  good), display cooldowns (nothing is asked twice within 14 days), a snapshot
-  **loss guard** (alert when a large share of memory disappears overnight);
+  good), display cooldowns (nothing is asked twice within 14 days — and a
+  cooldown counts only once the agent turn actually answered), a snapshot
+  **loss guard** (alert when a large share of memory — or the whole file —
+  disappears overnight);
 - **wake gate**: the agent (and its tokens) wakes only when there is work;
 - a dream **diary** with provenance for every candidate;
 - an optional **extraction job** (`dream-extract-precheck.py`) that hands fresh
@@ -157,6 +159,7 @@ precedence CLI flag > `DREAM_*` env > config > default. Key fields:
 | `alias_rules` | declarative "same fact, other words" rules — `{"fact": [["a","b"],["c"]], "memory": [["x"]]}`; `#437` = whole number |
 | `profile_hint_terms`, `profile_categories` | hints that a fact belongs to the user profile |
 | `durable_memory_paths` | files that already are memory (dedupe targets) |
+| `fact_store_path` | where the fact store is; empty = Hermes `plugins.hermes-memory-store.db_path`, else `memory_store.db` |
 | `diary.heading`, `diary.keep_sections` | diary section header and rotation |
 | `windows`, `gates`, `weights` | scoring knobs (see `references/scoring.md`) |
 | `memory_char_limits` | to report fill level of MEMORY.md / USER.md |

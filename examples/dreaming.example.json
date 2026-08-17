@@ -12,6 +12,7 @@
   "token_min_len": {"latin": 4, "other": 5},
 
   "durable_memory_paths": ["memories/MEMORY.md", "memories/USER.md"],
+  "fact_store_path": "",
   "memory_char_limits": {"memories/MEMORY.md": 2200, "memories/USER.md": 1375},
 
   "profile_hint_terms": ["prefer", "likes", "dislikes", "goal", "plans", "works", "lives",

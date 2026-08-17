@@ -120,7 +120,9 @@ re-deriving anything:
 - `why` — score plus corroboration in one line;
 - `evidence` — up to 3 `{day, text}` pairs from **different** days: the actual
   human messages that corroborated the fact (provenance for the reviewer, the
-  Generative-Agents "cite your sources" idea);
+  Generative-Agents "cite your sources" idea). A corroborating message that
+  itself trips the secret / injection classifier still counts as a mention but
+  never travels as evidence — the fact was screened, its witnesses must be too;
 - `nearest_entry` — the most similar durable entry, with
   - `target` — **which file to edit**, `memory` or `user` (only the runtime pair
     is offered; read-only dedupe copies are never proposed as an edit target),
@@ -179,6 +181,30 @@ the dream.
 fact_decays, conflicts — keyed by text fingerprint, marked only after the
 caps, pruned after two cooldowns), `cache/dream-rejected.json`,
 `cache/dream-snapshot.json`. All 0600; broken JSON is fail-soft.
+
+**Acknowledgement.** A mark is provisional until an agent turn confirms it.
+`dream-seen.json` carries a `_pending` record of the last pass (`generated_at`
+plus the keys it showed); on the next pass `_agent_acked()` looks for the cron
+session whose prompt embeds that `generated_at` and checks it ended with a
+non-empty assistant message. No such session (manual run, gate closed by an
+outside cause) or a session without an answer (model / memory-tool failure) →
+the marks are dropped and the `md_decays` questions reopened, and the items
+return that night. No `state.db` or no `messages` table → treated as
+acknowledged (old behaviour) so a host that does not persist sessions does not
+re-show forever.
+
+**Fact store location.** `fact_store_path()` resolves, in order:
+`fact_store_path` in `dreaming.json` → `$DREAM_FACT_STORE` → Hermes
+`plugins.hermes-memory-store.db_path` from `config.yaml` (PyYAML if present,
+else a narrow scanner) → `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~`
+and relative paths expand the way the provider expands them. The pass, the
+extraction gate and `dream-reject.py` all go through it.
+
+**Extraction cursor** (`cache/dream-extract-state.json`) is `(since_ts,
+since_id)`: rows can share a timestamp, and a chunk cut between two of them
+must not lose the remainder. A legacy state without `since_id` is read as
+"before every id" — at worst a few rows are handed over twice, deduped by
+`existing_facts`.
 
 ## Wake gate (`dream-precheck.py`)
 

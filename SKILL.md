@@ -112,6 +112,14 @@ knowledge here" is legitimate on its own — no need to reject such facts, they
 will not be back tomorrow. A reworded or freshly re-extracted fact counts as new
 work and will come again — on purpose.
 
+The cooldown is confirmed by **your answer**, not by the fact that the pre-check
+printed the item: the next pass checks that the cron session which received the
+payload ended with a non-empty assistant message. A night where the model or the
+memory tool failed before you answered — or a manual pass nobody acted on — does
+not burn the cooldown; the same items come back the following night. So when
+something goes wrong, still finish with a plain one-line report: that answer is
+what closes the night.
+
 ## Rejected by the human (mandatory)
 
 If the human says a candidate is outdated, wrong or "this no longer exists" —

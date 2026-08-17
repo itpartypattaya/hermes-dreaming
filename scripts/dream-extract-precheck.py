@@ -86,11 +86,18 @@ def build_payload(dream, cfg, state, now_ts):
     since = state.get("since_ts")
     if not isinstance(since, (int, float)):
         since = now_ts - float(ext["backfill_days"]) * 86400
+    # The cursor is (timestamp, message id), not the timestamp alone: two rows
+    # can share a timestamp, and when the chunk limit cut between them the
+    # remainder was never selected again (`ts > since` skipped it for good).
+    since_id = state.get("since_id")
+    since_id = int(since_id) if isinstance(since_id, (int, float)) else -1
+    cursor = (since, since_id)
     days = max(1, int((now_ts - since) / 86400) + 1)
-    messages = [m for m in dream.load_messages(str(HOME / "state.db"), days) if m["ts"] > since]
-    messages.sort(key=lambda m: m["ts"])
+    messages = [m for m in dream.load_messages(str(HOME / "state.db"), days)
+                if (m["ts"], m.get("id") or 0) > cursor]
+    messages.sort(key=lambda m: (m["ts"], m.get("id") or 0))
     if len(messages) < int(ext["min_messages"]):
-        return None, since, len(messages)
+        return None, cursor, len(messages)
 
     chunk, chars = [], 0
     for m in messages:
@@ -102,11 +109,11 @@ def build_payload(dream, cfg, state, now_ts):
         stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
         chunk.append({"t": stamp.strftime("%Y-%m-%d %H:%M"), "text": text})
         chars += len(text)
-        last_ts = m["ts"]
+        cursor = (m["ts"], m.get("id") or 0)
     if not chunk:
-        return None, since, len(messages)
+        return None, cursor, len(messages)
 
-    facts = dream.load_facts(str(HOME / "memory_store.db"))
+    facts = dream.load_facts(dream.fact_store_path())
     existing = [_clean(f["content"], 120) for f in facts
                 if not dream.classify_unsafe(f["content"])][-int(ext["existing_facts_cap"]):]
     payload = {
@@ -118,7 +125,7 @@ def build_payload(dream, cfg, state, now_ts):
         "existing_facts": existing,
         "messages": chunk,
     }
-    return payload, last_ts, len(messages)
+    return payload, cursor, len(messages)
 
 
 def main():
@@ -137,7 +144,7 @@ def main():
         print(json.dumps({"wakeAgent": False}))
         return 0
     try:
-        save_state(STATE, {"since_ts": cursor,
+        save_state(STATE, {"since_ts": cursor[0], "since_id": cursor[1],
                            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     except OSError as e:
         print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)

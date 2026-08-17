@@ -66,6 +66,10 @@ DEFAULT_CONFIG = {
     # Files that already are durable memory (dedupe target). Relative paths are
     # resolved against HERMES_HOME. `--memory-md` is always included.
     "durable_memory_paths": ["memories/MEMORY.md", "memories/USER.md"],
+    # Where the fact store lives. Empty = ask Hermes: `plugins.hermes-memory-store.db_path`
+    # from config.yaml (the holographic provider honours it), else
+    # $HERMES_HOME/memory_store.db. Relative paths resolve against HERMES_HOME.
+    "fact_store_path": "",
     # Word stems that hint a fact is about the user / household (profile
     # candidates for USER.md). Categories are matched exactly.
     "profile_hint_terms": ["prefer", "likes", "dislikes", "goal", "plans", "works", "lives",
@@ -129,6 +133,49 @@ def load_config(path=None):
         print(f"[dream] warn: config {path} ignored: {e}", file=sys.stderr)
         data = {}
     return _deep_merge(DEFAULT_CONFIG, data)
+
+
+def _hermes_plugin_db_path(home=None):
+    """`plugins.hermes-memory-store.db_path` from Hermes config.yaml, or None.
+    Read with PyYAML when available, else a narrow line scanner — the pass must
+    not grow a dependency for one key."""
+    cfg = os.path.join(home or HOME, "config.yaml")
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(text) or {}
+        value = ((data.get("plugins") or {}).get("hermes-memory-store") or {}).get("db_path")
+        return str(value) if value else None
+    except Exception:  # noqa: BLE001 — no yaml, or a file it cannot parse
+        pass
+    section = re.search(r"^plugins:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
+    if not section:
+        return None
+    store = re.search(r"^[ \t]+hermes-memory-store:[ \t]*\n((?:[ \t]{4,}.*\n|\n)*)",
+                      section.group(1), re.MULTILINE)
+    if not store:
+        return None
+    hit = re.search(r"^[ \t]+db_path:[ \t]*([^#\n]*)", store.group(1), re.MULTILINE)
+    value = hit.group(1).strip().strip("\"'") if hit else ""
+    return value or None
+
+
+def fact_store_path(home=None):
+    """Resolved path of the fact store: dreaming.json `fact_store_path` >
+    `$DREAM_FACT_STORE` > Hermes `plugins.hermes-memory-store.db_path` >
+    `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~` and relative paths are
+    expanded the way the provider does it — an install that moved its store
+    must not look empty to the dream."""
+    home = home or HOME
+    raw = (os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path")
+           or _hermes_plugin_db_path(home) or "memory_store.db")
+    raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
+    raw = os.path.expanduser(raw)
+    return raw if os.path.isabs(raw) else os.path.join(home, raw)
 
 
 def _env(name, default, cast=str):
@@ -386,27 +433,35 @@ def load_messages(db, days):
     try:
         try:
             rows = list(c.execute(
-                "select m.role, m.content, m.timestamp, m.observed, "
+                "select m.id, m.role, m.content, m.timestamp, m.observed, "
                 "s.source, s.chat_type, s.chat_id "
                 "from messages m left join sessions s on m.session_id = s.id "
                 "where m.timestamp>=? and m.content is not null", (cutoff,)))
         except sqlite3.OperationalError:
-            print("[dream] warn: sessions table unavailable — source filter disabled",
-                  file=sys.stderr)
-            rows = [(role, content, ts, observed, None, None, None)
-                    for role, content, ts, observed in c.execute(
-                        "select role,content,timestamp,observed from messages "
+            # No usable `sessions` table: the source of a message is unknown.
+            # Fail closed, not open — without it a cron job's own prompt rows
+            # (role=user) corroborated facts. What is still known is the session
+            # id: Hermes names cron sessions `cron_…`, so those are dropped
+            # outright; the rest are "sessions without chat" and go through the
+            # same config switch as any other session lacking chat metadata.
+            print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
+                  "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
+            rows = [(mid, role, content, ts, observed,
+                     "cron" if str(sid or "").startswith("cron_") else None, None, None)
+                    for mid, sid, role, content, ts, observed in c.execute(
+                        "select id,session_id,role,content,timestamp,observed from messages "
                         "where timestamp>=? and content is not null", (cutoff,))]
     finally:
         c.close()
-    for role, content, ts, observed, source, chat_type, chat_id in rows:
+    for mid, role, content, ts, observed, source, chat_type, chat_id in rows:
         if not content or not (role == "user" or observed == 1):
             continue
         if not _trusted_message(source, chat_type, chat_id):
             continue
         if is_harness_envelope(content):
             continue
-        out.append({"content": content, "ts": ts, "day": _day_of(ts), "tokens": sig_tokens(content)})
+        out.append({"id": mid, "content": content, "ts": ts, "day": _day_of(ts),
+                    "tokens": sig_tokens(content)})
     return out
 
 
@@ -433,7 +488,12 @@ def corroborate(item_tokens, messages, evidence=False):
         inter = item_tokens & m["tokens"]
         if len(inter) >= 2 or (inter & distinctive):
             mentions += 1
-            if evidence and m["day"] not in days and len(samples) < EVIDENCE_MAX:
+            # A message still counts as a mention, but its text travels to the
+            # agent only when it is clean: the fact was screened by
+            # classify_unsafe, the corroborating message was not — a
+            # `password: hunter2` said in chat leaked through `evidence`.
+            if (evidence and m["day"] not in days and len(samples) < EVIDENCE_MAX
+                    and not classify_unsafe(m["content"])):
                 samples.append({"day": m["day"], "text": _snippet(m["content"])})
             days.add(m["day"])
             last_ts = max(last_ts or 0, m["ts"])
@@ -618,13 +678,18 @@ SUMMARY_MIN_SHARED_STEMS = 6
 # silent duplicate.
 SAME_SUBJECT_RATIO = 0.8
 SAME_SUBJECT_MIN_SHARED = 4
+# A short entry that sits ENTIRELY inside the candidate ("X likes jasmine tea"
+# vs "2026-06-19 Y said that X likes jasmine tea"): every stem of the entry is
+# in the candidate, the numbers agree — the wrapper is the only difference.
+SAME_SUBJECT_FULL_MIN_STEMS = 3
 
 
 def _same_subject(item_stems, chunk_stems, content, chunk):
     shared = item_stems & chunk_stems
     if len(shared) < SAME_SUBJECT_MIN_SHARED:
-        return False
-    if len(shared) / min(len(item_stems), len(chunk_stems)) < SAME_SUBJECT_RATIO:
+        if not (len(chunk_stems) >= SAME_SUBJECT_FULL_MIN_STEMS and shared == chunk_stems):
+            return False
+    elif len(shared) / min(len(item_stems), len(chunk_stems)) < SAME_SUBJECT_RATIO:
         return False
     return _numbers(content) <= _numbers(chunk)
 
@@ -641,13 +706,36 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
             and len(shared) / len(chunk_stems) >= SUMMARY_CONTAINMENT)
 
 
+HEAD_CHARS = 40
+HEAD_MATCH_MIN_STEM_RATIO = 0.6
+
+
 def exact_or_alias_in_memory(content, memory_text):
     """The strong part of dedupe: identical head (40 chars) or a declared alias.
     Fuzzy containment is deliberately NOT here — a fuzzy match with different
-    numbers is a conflict candidate, not a duplicate."""
-    head = _norm(content)[:40]
-    if bool(head) and head in _norm(memory_text):
-        return True
+    numbers is a conflict candidate, not a duplicate.
+
+    The head alone is not enough: two facts that open with the same template
+    ("Notifications for the team go to thread 42…" / "…thread 437, from Monday")
+    share 40 characters and differ in everything that matters. So a head hit
+    must land in an entry that carries every number of the candidate and most
+    of its stems — otherwise it is left to the conflict detector."""
+    norm = _norm(content)
+    head = norm[:HEAD_CHARS]
+    if head:
+        item_stems = _stems(sig_tokens(content))
+        for chunk in _memory_chunks(memory_text):
+            chunk_norm = _norm(chunk)
+            if head not in chunk_norm:
+                continue
+            if norm in chunk_norm:
+                return True
+            if not (_numbers(content) <= _numbers(chunk)):
+                continue
+            chunk_stems = _stems(sig_tokens(chunk))
+            if (not item_stems
+                    or len(item_stems & chunk_stems) / len(item_stems) >= HEAD_MATCH_MIN_STEM_RATIO):
+                return True
     return _semantic_memory_alias(content, memory_text)
 
 
@@ -685,8 +773,17 @@ CONFLICT_MIN_SHARED = 4
 NUMBER_RE = re.compile(r"(?<![\w.])\d[\d.,:/-]*\d(?![\w])|(?<!\w)\d(?!\w)")
 
 
+# A fact that opens with its own date stamp ("2026-06-19 X said that …") is
+# dated provenance, not content: the stamp must not count as a number when the
+# fact is compared with the entry written from it, or every stamped fact would
+# come back as "different numbers" (a candidate the night after it was saved,
+# a conflict with the entry it produced).
+LEADING_DATE_STAMP_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}(?:[ ,:—-]+|$)")
+
+
 def _numbers(text):
-    return {n.strip(".,:") for n in NUMBER_RE.findall(_norm(text))}
+    body = LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
+    return {n.strip(".,:") for n in NUMBER_RE.findall(_norm(body))}
 
 
 def find_conflicts(content, memory_text):
@@ -1164,12 +1261,24 @@ def check_memory_loss(mem_md, snapshot_path):
     previous = load_snapshot(snapshot_path)
     current, alerts = {}, []
     for p in _memory_candidate_paths(mem_md):
+        name = _rel_home(p)
+        prev = set(previous.get(name) or [])
         if not os.path.exists(p):
+            # A file that was there yesterday and is gone today is the loudest
+            # loss there is — it must not slip through as "nothing to compare"
+            # and then be overwritten by an empty snapshot. Alert once; the
+            # snapshot forgets the file only after the alert was raised.
+            if len(prev) >= 4:
+                alerts.append({"kind": "memory_loss", "file": name,
+                               "lost": len(prev), "had": len(prev),
+                               "message": f"{name}: the file is missing — all {len(prev)} entries "
+                                          f"present at the previous pass are gone. "
+                                          f"Check whether that was intended."})
+            elif prev:
+                current[name] = sorted(prev)
             continue
         keys = _entry_keys_of(p)
-        name = _rel_home(p)
         current[name] = sorted(keys)
-        prev = set(previous.get(name) or [])
         if len(prev) >= 4 and keys is not None:
             lost = prev - keys
             frac = len(lost) / len(prev)
@@ -1187,6 +1296,74 @@ def check_memory_loss(mem_md, snapshot_path):
     return alerts
 
 
+def _agent_acked(state_db, generated_at):
+    """Did the agent turn that received the payload stamped `generated_at`
+    actually answer? Cooldowns used to start the moment the pre-check printed
+    an item — if the model or the memory tool then failed, the item vanished
+    for 14 days without any outcome. There is no channel for the agent to
+    acknowledge at night (a cron session has memory and nothing else), but the
+    session itself is on record: Hermes stores cron sessions in state.db, the
+    job prompt (role=user) carries the payload verbatim, and a completed turn
+    leaves a non-empty assistant message. So the next pass looks back: no
+    session with that stamp, or a session without an answer → not acked → the
+    marks are dropped and the items come back tonight.
+
+    Fail-soft: no state.db / no messages table → assume acked (old behaviour),
+    otherwise a host that does not persist sessions would re-show every night."""
+    if not generated_at:
+        return True
+    if not os.path.exists(state_db):
+        return True
+    when = _parse_iso(generated_at)
+    since = when.timestamp() - 3600 if when else 0
+    needles = (f'"generated_at":"{generated_at}"', f'"generated_at": "{generated_at}"')
+    c = _conn(state_db)
+    try:
+        try:
+            sids = [r[0] for r in c.execute(
+                "select distinct session_id from messages where role='user' and timestamp>=? "
+                "and (instr(coalesce(content,''),?)>0 or instr(coalesce(content,''),?)>0)",
+                (since, *needles))]
+            if not sids:
+                return False
+            for sid in sids:
+                answered = c.execute(
+                    "select 1 from messages where session_id=? and role='assistant' "
+                    "and trim(coalesce(content,''))!='' limit 1", (sid,)).fetchone()
+                if answered:
+                    return True
+            return False
+        except sqlite3.OperationalError:
+            return True
+    finally:
+        c.close()
+
+
+def _revert_unacked(seen, state_db):
+    """Pop the previous pass's `_pending` record from the seen state; if that
+    showing was never acknowledged, drop its marks. Returns the md_decays keys
+    to re-ask (the asked-state lives in its own file)."""
+    pending = seen.pop("_pending", None)
+    if not isinstance(pending, dict) or not pending.get("generated_at"):
+        return set()
+    if _agent_acked(state_db, pending.get("generated_at")):
+        return set()
+    dropped = 0
+    for bucket_name, keys in (pending.get("seen") or {}).items():
+        bucket = seen.get(bucket_name)
+        if not isinstance(bucket, dict):
+            continue
+        for k in keys or []:
+            if bucket.pop(k, None) is not None:
+                dropped += 1
+    reask = set(pending.get("asked") or [])
+    if dropped or reask:
+        print(f"[dream] note: the pass of {pending['generated_at']} was not acknowledged by an "
+              f"agent turn — {dropped} cooldown(s) and {len(reask)} md question(s) reopened",
+              file=sys.stderr)
+    return reask
+
+
 def _load_asked_state(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -1196,7 +1373,7 @@ def _load_asked_state(path):
         return {}
 
 
-def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None):
+def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=()):
     """§-entries of MEMORY.md that have not surfaced in conversations for long
     → soft flag "still relevant?".
 
@@ -1204,12 +1381,18 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None):
     raised again (state = {entry_key: iso_date}). Without it the dream asked
     the same thing every night. Keys of entries that disappeared from
     MEMORY.md are pruned. Only entries that make it into the published slice
-    (`cap`) are marked as asked — an overflow entry never reached the agent."""
+    (`cap`) are marked as asked — an overflow entry never reached the agent.
+    `reask` — keys whose previous showing was never acknowledged by an agent
+    turn (see `_agent_acked`): their cooldown is dropped."""
     out = []
     now = _now()
     now_ts = now.timestamp()
     asked = _load_asked_state(asked_state_path) if asked_state_path else {}
     current_keys, changed = set(), False
+    for key in reask:
+        if key in asked:
+            asked.pop(key, None)
+            changed = True
     for i, entry in enumerate(parse_md_entries(mem_md)):
         key = _entry_key(entry)
         current_keys.add(key)
@@ -1227,7 +1410,7 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None):
             break
         asked[key] = now.isoformat(timespec="seconds")
         changed = True
-        out.append({"index": i, "entry": entry[:160],
+        out.append({"index": i, "entry": entry[:160], "key": key,
                     "last_mention_days": round(days_since, 1) if days_since is not None else None,
                     "reason": "never surfaced within the window" if mentions == 0
                               else f"not surfaced for ~{round(days_since)} d"})
@@ -1279,12 +1462,15 @@ def memory_usage(mem_md):
 
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
-    facts = load_facts(os.path.join(HOME, "memory_store.db"))
-    messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
+    state_db = os.path.join(HOME, "state.db")
+    facts = load_facts(fact_store_path())
+    messages = load_messages(state_db, corr_days)
     memory_text = load_durable_memory_text(mem_md)
     rejected = load_rejected(rejected_state_path)
     now = _now()
+    generated_at = now.isoformat(timespec="seconds")
     seen = load_seen(seen_state_path)
+    reask_md = _revert_unacked(seen, state_db) if seen_state_path else set()
     seen_new_facts = seen.setdefault("new_facts", {})
     seen_fact_decays = seen.setdefault("fact_decays", {})
     seen_conflicts = seen.setdefault("conflicts", {})
@@ -1344,8 +1530,14 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # Deliberately NOT gated by fuzzy `in_memory`: a reworded fact with a new
     # number is exactly what fuzzy dedupe swallows as "already known". Only an
     # identical head or a human-declared alias rule closes the question.
+    # A fact already offered as a promotion is not repeated here either: it
+    # arrives with its own `nearest_entry`, so the agent sees the possible
+    # update once, in one section (the head-match fix surfaced eight sibling
+    # facts at once, each doubled as a "conflict" with an unrelated sibling).
     conflicts_pending = []
     for s in safe:
+        if s["fact_id"] in promoted_ids:
+            continue
         if is_ephemeral_fact(s["content"]) or exact_or_alias_in_memory(s["content"], memory_text):
             continue
         hits = find_conflicts(s["content"], memory_text)
@@ -1371,7 +1563,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         if classify_unsafe(t.get("sample")):
             t["sample"] = "[hidden: suspicious content]"
 
-    md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP)
+    md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
+                       reask=reask_md)
 
     # Only published slices count as shown.
     published_decays = decays[:PUBLISH_CAP]
@@ -1382,6 +1575,15 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
             prune_seen(bucket, now)
+        # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
+        fp = _fact_fingerprint
+        seen["_pending"] = {
+            "generated_at": generated_at,
+            "seen": {"new_facts": [fp(s["content"]) for s in new_facts],
+                     "fact_decays": [fp(s["content"]) for s in published_decays],
+                     "conflicts": [fp(s["content"]) for s in published_conflicts]},
+            "asked": [d["key"] for d in md_dec if d.get("key")],
+        }
         try:
             _write_private(seen_state_path, json.dumps(seen, ensure_ascii=False, indent=1))
         except OSError as e:
@@ -1402,8 +1604,11 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
             item["nearest_entry"] = near
         return item
 
+    for d in md_dec:
+        d.pop("key", None)  # internal handle, not for the agent
+
     return {
-        "generated_at": _now().isoformat(timespec="seconds"),
+        "generated_at": generated_at,
         "window_days": window_days, "corr_window_days": corr_days, "md_decay_days": md_decay_days,
         "weights": WEIGHTS,
         "gates": {"min_score": MIN_SCORE, "min_mentions": MIN_MENTIONS,
@@ -1587,7 +1792,7 @@ def append_diary(path, diary):
 
 def explain(fact_id, mem_md, corr_days):
     """`--explain ID`: per-signal breakdown of one fact (OpenClaw promote-explain)."""
-    facts = [f for f in load_facts(os.path.join(HOME, "memory_store.db")) if f["fact_id"] == fact_id]
+    facts = [f for f in load_facts(fact_store_path()) if f["fact_id"] == fact_id]
     if not facts:
         print(f"fact {fact_id} not found", file=sys.stderr)
         return 1

@@ -136,10 +136,36 @@ class DreamFixture(unittest.TestCase):
         con.commit()
         con.close()
 
-    def run_dream(self, rejected_state=None, seen_state=None):
-        return dream.run(14, 60, 60, str(self.mem_md),
-                         rejected_state_path=rejected_state,
-                         seen_state_path=seen_state)
+    def run_dream(self, rejected_state=None, seen_state=None, asked_state=None, ack=True):
+        """One pass. `ack=True` (default) also records the agent turn that a
+        real night would leave in state.db — a cron session whose prompt
+        carries the payload and that ends with an answer — because cooldowns
+        are confirmed only by such a turn (`_agent_acked`). `ack=False`
+        simulates a night where the agent never answered."""
+        result = dream.run(14, 60, 60, str(self.mem_md),
+                           rejected_state_path=rejected_state,
+                           seen_state_path=seen_state,
+                           asked_state_path=asked_state)
+        if ack:
+            self.ack_agent_turn(result)
+        return result
+
+    def ack_agent_turn(self, result, answered=True):
+        """Store what Hermes stores after the dream job ran: the job prompt
+        (payload embedded, compact JSON as the precheck prints it) and, if the
+        turn completed, a non-empty assistant message."""
+        sid = f"cron_dreamjob_{result['generated_at']}"
+        con = sqlite3.connect(self.home / "state.db")
+        con.execute("insert or ignore into sessions values (?,?,?,?)", (sid, "cron", None, None))
+        prompt = 'skill text… {"note":"…","generated_at":"' + result["generated_at"] + '","stats":{}}'
+        now = _ts(0).timestamp()
+        con.execute("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
+                    (sid, "user", prompt, now))
+        if answered:
+            con.execute("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
+                        (sid, "assistant", "Saved two facts.", now + 30))
+        con.commit()
+        con.close()
 
 
 class ConsolidationTests(DreamFixture):
