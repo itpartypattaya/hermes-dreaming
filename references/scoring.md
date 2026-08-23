@@ -174,6 +174,9 @@ the dream.
   the entries present at the previous pass are gone (snapshot in
   `cache/dream-snapshot.json`). Wakes the agent; nothing is restored.
 - **memory_usage** — chars per durable file and % of `memory_char_limits`.
+- **memory_pressure** — present only when a file is at or above
+  `precheck.memory_full_pct`: `[{file, percent, chars, limit}]`, worst first. The
+  prompt keys its consolidation instruction off this field, not off raw percentages.
 
 ## Cooldowns and state
 
@@ -211,8 +214,16 @@ must not lose the remainder. A legacy state without `since_id` is read as
 The pre-check runs the dream and prints a compact JSON only when
 `stats[key] > 0` for one of `precheck.actionable_keys` (default:
 new_facts_reviewed, promotions, fact_decays, md_decays, conflicts,
-quarantined, alerts); otherwise `{"wakeAgent": false}`. Themes and ephemeral
-events never open the gate. On failure — `{"dream_error": …}` with exit 0
+quarantined, alerts), **or** when a durable file sits at or above
+`precheck.memory_full_pct` (`memory_pressure`); otherwise `{"wakeAgent": false}`.
+Themes and ephemeral events never open the gate.
+
+The fill-level gate exists because the core's char limit guards **writes only**:
+at the ceiling `add`/`replace` are refused and the agent silently stops
+recording — no exception, nothing logged, and the prompt still loads fine. On a
+quiet night the promotions gate stays shut, so without this clause nobody is
+awake to see 95 % coming. It is self-limiting: once consolidated below the
+threshold it closes again. On failure — `{"dream_error": …}` with exit 0
 (exit≠0 would make the scheduler ignore the gate and paste the raw stderr).
 
 ## Notes
@@ -225,7 +236,14 @@ events never open the gate. On failure — `{"dream_error": …}` with exit 0
   name, because anything else sends the human debugging the wrong thing.
 - `memory_usage` reports the fill level of each durable file against
   `memory_char_limits`; keep those in sync with the agent's own config, or the
-  percentage in the report drifts from reality.
+  percentage in the report drifts from reality. Measure with the core's counter
+  (entries joined by the delimiter) — `wc -c` counts bytes, and non-Latin text
+  takes two per character, so it overstates the fill by up to 2×.
+- Removing an entry from durable memory does not remove the fact from the
+  store: it becomes `in_memory: false` and is proposed again on the next pass.
+  Put deliberately dropped facts on the reject list (`dream-reject.py`), or a
+  manual cleanup undoes itself overnight (live case: 30→13 entries, and the very
+  next pass offered 29 promotions — all of them the deleted ones).
 - Read-only by memory: the script writes only its own state, `--out` and the
   diary (`diary.heading`, one section per local day, rotation to
   `*.archive.md` after `diary.keep_sections`).

@@ -17,6 +17,9 @@ Examples:
   dream-reject.py --content "Thread 9 is the child's thread" --reason "outdated"
   dream-reject.py --list
   dream-reject.py --undo 6
+  dream-reject.py --from-report --reason "duplicates the system prompt"
+      # after a manual memory cleanup: reject every promotion the last pass
+      # proposed, so the dropped entries are not offered right back
 """
 from __future__ import annotations
 
@@ -117,6 +120,10 @@ def main(argv=None):
     ap.add_argument("--state", default=None)
     ap.add_argument("--list", action="store_true", help="show the reject list")
     ap.add_argument("--undo", help="lift a rejection by record key or fact_id")
+    ap.add_argument("--from-report", nargs="?", const="", metavar="JSON",
+                    help="reject every promotion in the last dream report (default "
+                         "cache/dream.json, or the path given). Use right after a manual "
+                         "memory cleanup: what you dropped comes back as a promotion")
     args = ap.parse_args(argv)
     state_path = args.state or _default_state()
 
@@ -155,6 +162,40 @@ def main(argv=None):
             return 1
         save_state(state_path, state)
         print(f"rejection lifted: {', '.join(removed)}")
+        return 0
+
+    if args.from_report is not None:
+        report = args.from_report or os.path.join(HOME, "cache", "dream.json")
+        try:
+            with open(report, encoding="utf-8") as f:
+                promos = (json.load(f) or {}).get("promotions") or []
+        except (OSError, ValueError) as exc:
+            print(f"cannot read report {report}: {exc}", file=sys.stderr)
+            return 1
+        if not promos:
+            print("report has no promotions — nothing to reject")
+            return 0
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        added = skipped = 0
+        for item in promos:
+            text = item.get("content") or ""
+            if not text:
+                continue
+            key = _fingerprint(text)
+            if key in state:
+                skipped += 1
+                continue
+            rec = {"fact_id": item.get("fact_id"), "content": text, "fingerprint": key,
+                   "reason": args.reason, "at": now}
+            if _classify_unsafe(text) == "secret":
+                rec["content"] = None
+                rec["redacted"] = "secret"
+            state[key] = rec
+            added += 1
+            print(f"rejected: {key} — {text[:90] if rec.get('content') else '[secret]'}")
+        if added:
+            save_state(state_path, state)
+        print(f"{added} rejected, {skipped} already on the list, {len(state)} total")
         return 0
 
     content = args.content

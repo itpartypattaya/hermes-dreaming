@@ -103,6 +103,36 @@ Under char-limit pressure (see `memory_usage`) the same rule holds: merge two
 related entries with one `replace` whose `old_text` is copied verbatim from
 `current_entries`, then add.
 
+## Durable memory is filling up (`memory_pressure`)
+
+The char limit guards **writes only**: once a file reaches it, `add` and `replace` start
+refusing and the agent quietly stops recording anything — no exception, nothing in the log.
+Reading into the prompt is never truncated, so nothing looks wrong from the outside. That is
+why the pre-check treats a file at or above `precheck.memory_full_pct` as work in its own
+right and wakes you even on a night with no promotions.
+
+When `memory_pressure` is present in the payload:
+
+- tidy the file it names — merge close entries with `memory replace`, and drop entries that
+  merely restate what the system prompt already carries (routing tables, persona rules,
+  skill triggers). Duplicating the prompt is the usual reason a memory file fills up.
+- keep anything that exists nowhere else: spreadsheet ids, message ids, agreements,
+  standing permissions. When in doubt, merge rather than delete.
+- say the numbers in the report, e.g. `🧹 memory 92% → 64%, merged 12 entries`, so the human
+  can see the ceiling receding instead of guessing.
+
+⚠️ Removing an entry from durable memory does **not** remove the underlying fact from the
+store — it merely flips it to `in_memory: false`, and the next pass will happily propose it
+again. Whatever you deliberately dropped belongs on the reject list, or the cleanup undoes
+itself overnight. After a manual cleanup the fastest way is one command — it rejects every
+promotion the last pass proposed, which after a cleanup is exactly the dropped set:
+
+```bash
+python ~/.hermes/skills/dreaming/scripts/dream-reject.py --from-report --reason "duplicates the system prompt"
+```
+
+Look at `--list` afterwards: anything unrelated to the cleanup that slipped in gets `--undo`.
+
 ## Display cooldown (nothing to do)
 
 `new_facts`, `fact_decays` and `conflicts` are shown again **at most once per
@@ -186,10 +216,10 @@ the candidates tomorrow.
    overwrite silently: mark pending or ask the human — and by their answer
    either write or reject through `dream-reject.py`. Do not leave a question
    without an outcome.
-6. If the memory tool reports a char limit (`memory_usage` in the JSON shows
-   the fill level), first shrink memory the regular way: merge close entries via
-   `replace` or remove only an exact duplicate via `remove`, then retry. Do not
-   delete unique information for free space.
+6. If a write is refused for the char limit, do not retry blindly and do not
+   delete unique information for space: consolidate first — see «Durable memory
+   is filling up» below — then write again. Ideally you never get here: the
+   pre-check wakes you for consolidation before the ceiling (`memory_pressure`).
 7. `ephemeral_events`: do not promote. Do not write schedules, one-off events,
    secrets, raw medical data or unverified guesses. This section does not wake
    the agent: expired events are dropped by the script, the rest is context.

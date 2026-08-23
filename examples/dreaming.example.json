@@ -44,6 +44,7 @@
             "snapshot": "cache/dream-snapshot.json"},
 
   "precheck": {"max_content": 300,
+               "memory_full_pct": 85,
                "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
                                    "md_decays", "conflicts", "quarantined", "alerts"]}
 }

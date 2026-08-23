@@ -128,6 +128,16 @@ class InstallCronTests(unittest.TestCase):
         self.assertIn("Memory is not available", install_cron.DREAM_PROMPT)
         # And extraction must derive dates from the message, not from "today".
         self.assertIn("`t` timestamp", install_cron.EXTRACT_PROMPT)
+        # The fill-level gate emits memory_pressure; a prompt that never mentions
+        # it wakes the agent with no idea why (live case 24.08: memory at 95 %,
+        # nobody told — the limit gates writes silently).
+        self.assertIn("memory_pressure", install_cron.DREAM_PROMPT)
+
+    def test_example_cron_prompt_matches_installer(self):
+        # Two shipped copies of the same contract drifted once (one phrase).
+        # A user who installs via the script must get the documented prompt.
+        example = json.loads((ROOT / "examples" / "cron-job.example.json").read_text(encoding="utf-8"))
+        self.assertEqual(install_cron.DREAM_PROMPT.strip(), example["prompt"].strip())
 
 
 class PatchCronMemoryTests(unittest.TestCase):

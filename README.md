@@ -29,7 +29,10 @@ deserves durable memory:
   cooldown counts only once the agent turn actually answered), a snapshot
   **loss guard** (alert when a large share of memory — or the whole file —
   disappears overnight);
-- **wake gate**: the agent (and its tokens) wakes only when there is work;
+- **wake gate**: the agent (and its tokens) wakes only when there is work — and a
+  durable file near its char limit counts as work (`memory_pressure`): the limit
+  gates writes silently, so otherwise nobody notices the ceiling until facts stop
+  being recorded;
 - a dream **diary** with provenance for every candidate;
 - an optional **extraction job** (`dream-extract-precheck.py`) that hands fresh
   human messages to the agent so it stores *candidate* facts with `fact_store`
@@ -143,6 +146,13 @@ python ~/.hermes/skills/dreaming/scripts/dream-reject.py 42 --reason "thread was
 python ~/.hermes/skills/dreaming/scripts/dream-reject.py --list    # what is muted, and how old
 ```
 
+Cleaning durable memory by hand? Reject what you dropped — the facts stay in the
+store, flip to `in_memory: false`, and the next pass proposes them right back:
+
+```bash
+python ~/.hermes/skills/dreaming/scripts/dream-reject.py --from-report --reason "duplicates the system prompt"
+```
+
 Tests: `python -m unittest discover -s tests` (from the skill directory; stdlib
 `unittest`, synthetic data).
 
@@ -162,10 +172,11 @@ precedence CLI flag > `DREAM_*` env > config > default. Key fields:
 | `fact_store_path` | where the fact store is; empty = Hermes `plugins.hermes-memory-store.db_path`, else `memory_store.db` |
 | `diary.heading`, `diary.keep_sections` | diary section header and rotation |
 | `windows`, `gates`, `weights` | scoring knobs (see `references/scoring.md`) |
-| `memory_char_limits` | to report fill level of MEMORY.md / USER.md |
+| `memory_char_limits` | char limits of MEMORY.md / USER.md (mirror Hermes `memory.*_char_limit`) — drives `memory_usage` and the fill-level wake gate |
 | `pinned_markers` | entries with these markers are never asked about |
 | `memory_loss_alert_fraction` | loss-guard threshold (default 0.25) |
 | `precheck.actionable_keys`, `precheck.max_content` | what wakes the agent, prompt trimming |
+| `precheck.memory_full_pct` | fill level (%) at which a durable file alone wakes the agent to consolidate (default 85; `0` disables). The char limit gates **writes** silently, so without this nobody notices the ceiling |
 | `extract.*` | extraction chunking: `max_messages` 200, `max_chars` 40000, `min_messages` 15, `backfill_days` 60 |
 
 ## Files

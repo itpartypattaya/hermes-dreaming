@@ -449,6 +449,36 @@ class RejectionListTests(DreamFixture):
         finally:
             reject.HOME, sys.argv = old_home, old_argv
 
+    def test_reject_from_report_silences_every_promotion(self):
+        """Ручная уборка памяти: запись удалили, факт остался в сторе с
+        in_memory=false — и следующий прогон предлагает его обратно (живой случай
+        24.08: 30→13 записей, а сон тут же выдал 29 promotions, все — удалённые).
+        --from-report закрывает их одной командой вместо скрипта руками."""
+        self._corroborate_fact(self.FACT)
+        report = self.home / "dream.json"
+        out = self.run_dream(rejected_state=str(self.state))
+        self.assertEqual(len(out["promotions"]), 1)
+        report.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+
+        old_home, old_argv = reject.HOME, sys.argv
+        reject.HOME = str(self.home)
+        try:
+            sys.argv = ["dream-reject.py", "--from-report", str(report),
+                        "--reason", "дублирует системный промпт", "--state", str(self.state)]
+            self.assertEqual(reject.main(), 0)
+            saved = json.loads(self.state.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved), 1)
+            (record,) = saved.values()
+            self.assertEqual(record["content"], self.FACT)
+            self.assertEqual(record["reason"], "дублирует системный промпт")
+            # после отказа сон молчит
+            self.assertEqual(self.run_dream(rejected_state=str(self.state))["promotions"], [])
+            # повторный прогон идемпотентен: ничего не дублирует
+            self.assertEqual(reject.main(), 0)
+            self.assertEqual(len(json.loads(self.state.read_text(encoding="utf-8"))), 1)
+        finally:
+            reject.HOME, sys.argv = old_home, old_argv
+
     def test_reject_script_needs_content_for_missing_fact(self):
         old_home, old_argv = reject.HOME, sys.argv
         reject.HOME = str(self.home)
