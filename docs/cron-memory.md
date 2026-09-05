@@ -26,6 +26,13 @@ So on a **stock** install:
 `install.sh` checks this and warns; the installer sets `allow_memory: true` on
 both jobs, which a patched core reads and a stock core simply ignores.
 
+> **Hermes 0.21.0 and later (v2026.8.31, PR #91447): none of this applies.** Cron
+> agents now load and update persistent memory like every other agent
+> (`skip_memory=False` in `cron/scheduler.py`), so `fact_store` is available to
+> the extraction job out of the box. `install.sh` detects that and reports
+> "memory natively"; `allow_memory` on the jobs becomes a harmless no-op. The
+> options below are for cores **≤ 0.20**.
+
 ## Option A — skip extraction (no core changes)
 
 Install with `--extract-schedule ""`. The dream then consolidates whatever

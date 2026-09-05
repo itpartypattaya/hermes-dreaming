@@ -119,11 +119,13 @@ hand-edited — so job creation goes through the Python API, which is what
 Use `--deliver telegram:<chat_id>:<thread_id>` to get the report in a chat, and
 `--extract-schedule ""` to install the dream alone.
 
-⚠️ **The extraction job needs a core that honours `allow_memory`.** Stock
-Hermes runs cron with `skip_memory=True`, which keeps `fact_store` out of the
-session — the nightly dream is unaffected, extraction is not. Your options (a
-three-line core patch with a script, or living without extraction) are in
-[`docs/cron-memory.md`](docs/cron-memory.md).
+⚠️ **On Hermes ≤ 0.20 the extraction job needs a core that honours
+`allow_memory`.** Those cores run cron with `skip_memory=True`, which keeps
+`fact_store` out of the session — the nightly dream is unaffected, extraction is
+not. Your options (a three-line core patch with a script, or living without
+extraction) are in [`docs/cron-memory.md`](docs/cron-memory.md). **Hermes ≥ 0.21
+(v2026.8.31) gives cron jobs memory natively** — nothing to patch, `install.sh`
+says so.
 
 ### Verify it end to end
 

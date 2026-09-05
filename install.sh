@@ -88,7 +88,11 @@ fi
 # but extraction has nothing to call. See docs/cron-memory.md.
 SCHED="$HERMES_HOME/hermes-agent/cron/scheduler.py"
 if [ -f "$SCHED" ]; then
-  if grep -q "skip_memory=not bool(job.get(\"allow_memory\"" "$SCHED" 2>/dev/null \
+  if grep -qE "^ *skip_memory=False,?$" "$SCHED" 2>/dev/null; then
+    # Hermes >= 0.21.0 (#91447): cron agents load memory like every other agent —
+    # no patch needed; `allow_memory` on the jobs is simply ignored.
+    ok "core gives cron jobs memory natively (Hermes >= 0.21) — the extraction job can use fact_store"
+  elif grep -q "skip_memory=not bool(job.get(\"allow_memory\"" "$SCHED" 2>/dev/null \
      || grep -q "allow_memory" "$SCHED" 2>/dev/null; then
     ok "core honours per-job allow_memory — the extraction job can use fact_store"
   else
