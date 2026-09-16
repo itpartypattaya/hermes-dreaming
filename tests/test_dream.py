@@ -90,7 +90,7 @@ class DreamFixture(unittest.TestCase):
         con = sqlite3.connect(self.home / "state.db")
         con.execute(
             "create table sessions (id text primary key, source text,"
-            " chat_type text, chat_id text)")
+            " chat_type text, chat_id text, thread_id text)")
         con.execute(
             "create table messages (id integer primary key autoincrement,"
             " session_id text, role text, content text, timestamp real,"
@@ -101,13 +101,16 @@ class DreamFixture(unittest.TestCase):
         self._old_home = dream.HOME
         self._old_family = dream.TRUSTED_CHAT_IDS
         self._old_cap = dream.NEW_FACTS_CAP
+        self._old_excluded = dream.EXCLUDED_THREADS
         dream.HOME = str(self.home)
         dream.TRUSTED_CHAT_IDS = {FAMILY_CHAT}
+        dream.EXCLUDED_THREADS = {}
 
     def tearDown(self):
         dream.HOME = self._old_home
         dream.TRUSTED_CHAT_IDS = self._old_family
         dream.NEW_FACTS_CAP = self._old_cap
+        dream.EXCLUDED_THREADS = self._old_excluded
         self.tmp.cleanup()
 
     # --- fixture helpers -----------------------------------------------
@@ -124,11 +127,13 @@ class DreamFixture(unittest.TestCase):
         con.close()
 
     def add_message(self, content, days_ago=1.0, source="telegram",
-                    chat_type="group", chat_id=FAMILY_CHAT, role="user", observed=0):
-        sid = f"s-{source}-{chat_id}-{chat_type}"
+                    chat_type="group", chat_id=FAMILY_CHAT, role="user", observed=0,
+                    thread_id=None):
+        sid = f"s-{source}-{chat_id}-{chat_type}-{thread_id or ''}"
         con = sqlite3.connect(self.home / "state.db")
-        con.execute("insert or ignore into sessions values (?,?,?,?)",
-                    (sid, source, chat_type, chat_id))
+        con.execute("insert or ignore into sessions"
+                    " (id, source, chat_type, chat_id, thread_id) values (?,?,?,?,?)",
+                    (sid, source, chat_type, chat_id, thread_id))
         con.execute(
             "insert into messages (session_id, role, content, timestamp, observed)"
             " values (?,?,?,?,?)",
@@ -156,7 +161,9 @@ class DreamFixture(unittest.TestCase):
         turn completed, a non-empty assistant message."""
         sid = f"cron_dreamjob_{result['generated_at']}"
         con = sqlite3.connect(self.home / "state.db")
-        con.execute("insert or ignore into sessions values (?,?,?,?)", (sid, "cron", None, None))
+        con.execute("insert or ignore into sessions"
+                    " (id, source, chat_type, chat_id) values (?,?,?,?)",
+                    (sid, "cron", None, None))
         prompt = 'skill text… {"note":"…","generated_at":"' + result["generated_at"] + '","stats":{}}'
         now = _ts(0).timestamp()
         con.execute("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
@@ -288,6 +295,90 @@ class SourceTrustTests(DreamFixture):
         self._fact_and_messages(chat_type=None, chat_id=None)
         result = self.run_dream()
         self.assertEqual(len(result["promotions"]), 1)
+
+
+class ExcludedThreadTests(DreamFixture):
+    """Ветки доверенного чата, где говорит не человек: алерты агента, мосты
+    ассистентов, машинные карточки. Чат доверен целиком, а такая ветка — нет:
+    иначе её лексика забивает emerging themes и будит гейт извлечения впустую.
+    """
+
+    ALERTS = "421"
+
+    def _fact_and_messages(self, **msg_kwargs):
+        self.add_fact("Марина предпочитает утренние тренировки по вторникам",
+                      trust=0.9, rc=2, helpful=2)
+        for d in (1, 3, 5):
+            self.add_message(f"Снова про утренние тренировки, день {d}", days_ago=d,
+                             **msg_kwargs)
+
+    def test_excluded_thread_does_not_corroborate(self):
+        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        self._fact_and_messages(thread_id=self.ALERTS)
+        result = self.run_dream()
+        self.assertEqual(result["promotions"], [])
+        self.assertEqual(result["stats"]["messages_window"], 0)
+
+    def test_other_thread_of_the_same_chat_still_corroborates(self):
+        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        self._fact_and_messages(thread_id="20")
+        self.assertEqual(len(self.run_dream()["promotions"]), 1)
+
+    def test_thread_less_message_is_unaffected(self):
+        # General / чат без веток: thread_id пуст — решает уровень чата.
+        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        self._fact_and_messages(thread_id=None)
+        self.assertEqual(len(self.run_dream()["promotions"]), 1)
+
+    def test_same_thread_id_in_another_chat_is_not_excluded(self):
+        # Номера веток не уникальны между чатами — исключение привязано к паре.
+        dream.EXCLUDED_THREADS = {"-100other": {self.ALERTS}}
+        self._fact_and_messages(thread_id=self.ALERTS)
+        self.assertEqual(len(self.run_dream()["promotions"]), 1)
+
+    def test_empty_config_keeps_previous_behaviour(self):
+        dream.EXCLUDED_THREADS = {}
+        self._fact_and_messages(thread_id=self.ALERTS)
+        self.assertEqual(len(self.run_dream()["promotions"]), 1)
+
+    def test_cli_source_can_be_untrusted(self):
+        # Ночной скрипт зовёт агента через CLI и кладёт в промпт git diff —
+        # role=user, chat_id пуст. Без этого весь дифф читался как речь семьи.
+        old = dream.UNTRUSTED_SOURCES
+        dream.UNTRUSTED_SOURCES = {"cron", "cli"}
+        try:
+            self._fact_and_messages(source="cli", chat_type=None, chat_id=None)
+            result = self.run_dream()
+            self.assertEqual(result["promotions"], [])
+            self.assertEqual(result["stats"]["messages_window"], 0)
+        finally:
+            dream.UNTRUSTED_SOURCES = old
+
+    def test_sessions_without_thread_column_still_corroborate(self):
+        # Старая схема Hermes: колонки thread_id нет. Запрос обязан упасть на
+        # редакцию без неё, а НЕ в ветку «нет таблицы sessions» — та отбрасывает
+        # и chat_id, и корроборация ослепла бы из-за детали схемы.
+        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        con = sqlite3.connect(self.home / "state.db")
+        con.execute("alter table sessions rename to sessions_new")
+        con.execute("create table sessions (id text primary key, source text,"
+                    " chat_type text, chat_id text)")
+        con.commit()
+        con.close()
+        self.add_fact("Марина предпочитает утренние тренировки по вторникам",
+                      trust=0.9, rc=2, helpful=2)
+        con = sqlite3.connect(self.home / "state.db")
+        con.execute("insert into sessions values (?,?,?,?)",
+                    ("s-old", "telegram", "group", FAMILY_CHAT))
+        for d in (1, 3, 5):
+            con.execute(
+                "insert into messages (session_id, role, content, timestamp, observed)"
+                " values (?,?,?,?,?)",
+                ("s-old", "user", f"Снова про утренние тренировки, день {d}",
+                 _ts(d).timestamp(), 0))
+        con.commit()
+        con.close()
+        self.assertEqual(len(self.run_dream()["promotions"]), 1)
 
 
 class HarnessNoiseTests(DreamFixture):
@@ -1272,13 +1363,17 @@ class MdDecayCooldownTests(unittest.TestCase):
 class DiaryDateTests(unittest.TestCase):
     def test_diary_header_uses_local_date(self):
         # 20:30 UTC = 03:30 следующего дня в зоне UTC+7 — заголовок должен быть локальной датой.
-        real_now = dream._now
+        # Зона задаётся здесь фиксированным смещением, а не именем: при импорте
+        # модуль конфигурируется окружением (без ~/.hermes/dreaming.json это UTC,
+        # и тест падал), а на Windows нет tzdata и ZoneInfo("Asia/…") не создать.
+        real_now, real_tz = dream._now, dream.LOCAL_TZ
         dream._now = lambda: datetime(2026, 7, 10, 20, 30, tzinfo=timezone.utc)
+        dream.LOCAL_TZ = timezone(timedelta(hours=7))
         try:
             diary = dream.build_diary(14, 0, 0, [], [], [], [])
             self.assertTrue(diary.startswith("## Сон 2026-07-11"), diary.splitlines()[0])
         finally:
-            dream._now = real_now
+            dream._now, dream.LOCAL_TZ = real_now, real_tz
 
 
 if __name__ == "__main__":

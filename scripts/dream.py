@@ -56,6 +56,19 @@ DEFAULT_CONFIG = {
     "trusted_chat_ids": [],
     "trust_private_chats": True,
     "trust_sessions_without_chat": True,
+    # Session sources whose role=user rows are machine prompts, not speech.
+    # `cron` is always here (a job's own prompt corroborated facts before this
+    # existed). Add `cli` when scripts drive the agent non-interactively — a
+    # nightly "summarize this git diff" prompt is otherwise read as family talk,
+    # and the diff's vocabulary becomes the top "emerging theme".
+    "untrusted_sources": ["cron"],
+    # Threads (forum topics) of a TRUSTED chat that must NOT corroborate:
+    # {"<chat_id>": ["<thread_id>", …]}. A trusted chat is trusted as a whole,
+    # but an agent's own alerts, machine-generated cards and assistant bridges
+    # usually live in their own threads there; their vocabulary drowns real human
+    # talk in emerging themes and wakes the extraction gate for nothing. Absent
+    # key = previous behaviour; a thread that is not listed stays trusted.
+    "excluded_threads": {},
     # Names the agent is addressed by — pure noise for corroboration.
     "agent_names": [],
     # Extra stopwords on top of the built-in RU/EN lists.
@@ -188,6 +201,30 @@ def _env(name, default, cast=str):
         return default
 
 
+def _parse_excluded_threads(env_value, cfg_value):
+    """``{chat_id: {thread_id, …}}`` from ``DREAM_EXCLUDED_THREADS``
+    ("chat:thread,chat:thread") or from the config mapping. A malformed entry is
+    dropped, never raised: a typo here must not take the nightly pass down."""
+    out = {}
+    if env_value is not None:
+        for pair in env_value.split(","):
+            chat, _, thread = pair.partition(":")
+            chat, thread = chat.strip(), thread.strip()
+            if chat and thread:
+                out.setdefault(chat, set()).add(thread)
+        return out
+    if not isinstance(cfg_value, dict):
+        return out
+    for chat, threads in cfg_value.items():
+        chat = str(chat).strip()
+        if not chat or not isinstance(threads, (list, tuple, set)):
+            continue
+        ids = {str(t).strip() for t in threads if str(t).strip()}
+        if ids:
+            out[chat] = ids
+    return out
+
+
 def _tz(name):
     if ZoneInfo is not None and name:
         try:
@@ -205,7 +242,8 @@ CONFIG = dict(DEFAULT_CONFIG)
 def configure(cfg):
     global CONFIG, LOCAL_TZ, WEIGHTS, MIN_SCORE, MIN_MENTIONS, NEW_FACTS_CAP, PUBLISH_CAP
     global MD_ASK_COOLDOWN_DAYS, SEEN_COOLDOWN_DAYS, TRUSTED_CHAT_IDS, TRUST_PRIVATE
-    global TRUST_NO_CHAT, STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
+    global TRUST_NO_CHAT, EXCLUDED_THREADS, UNTRUSTED_SOURCES
+    global STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
     global PROFILE_HINT_RE, PROFILE_CATEGORIES, DIARY_HEADING, DIARY_SECTION_RE
     global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
     global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION
@@ -230,6 +268,13 @@ def configure(cfg):
         TRUSTED_CHAT_IDS = {str(c).strip() for c in (cfg.get("trusted_chat_ids") or []) if str(c).strip()}
     TRUST_PRIVATE = bool(cfg.get("trust_private_chats", True))
     TRUST_NO_CHAT = bool(cfg.get("trust_sessions_without_chat", True))
+    EXCLUDED_THREADS = _parse_excluded_threads(
+        os.environ.get("DREAM_EXCLUDED_THREADS"), cfg.get("excluded_threads"))
+    env_sources = os.environ.get("DREAM_UNTRUSTED_SOURCES")
+    raw_sources = (env_sources.split(",") if env_sources is not None
+                   else (cfg.get("untrusted_sources") or []))
+    # `cron` is not configurable away: a job prompt is never speech.
+    UNTRUSTED_SOURCES = {"cron"} | {str(s).strip() for s in raw_sources if str(s).strip()}
     STOPWORDS = set(RU_STOP) | set(EN_STOP)
     STOPWORDS |= {_norm(w) for w in (cfg.get("agent_names") or []) if w}
     STOPWORDS |= {_norm(w) for w in (cfg.get("extra_stopwords") or []) if w}
@@ -400,15 +445,21 @@ def load_facts(db):
     return rows
 
 
-def _trusted_message(source, chat_type, chat_id):
-    """Only humans corroborate memory: no cron prompts, no group chats outside
-    the trusted list (fail-closed), private/legacy sessions per config."""
-    if (source or "") == "cron":
+def _trusted_message(source, chat_type, chat_id, thread_id=None):
+    """Only humans corroborate memory: no machine-driven sources, no group chats
+    outside the trusted list (fail-closed), no excluded threads of a trusted
+    chat, private/legacy sessions per config.
+
+    ``thread_id`` is optional on purpose: callers on a schema without threads
+    (and older embedders) keep working, and an unknown thread is treated as
+    "not excluded" — the chat-level decision stands."""
+    if (source or "") in UNTRUSTED_SOURCES:
         return False
     ctype = (chat_type or "")
     cid = str(chat_id or "")
     if cid and cid in TRUSTED_CHAT_IDS:
-        return True
+        tid = str(thread_id or "")
+        return not (tid and tid in EXCLUDED_THREADS.get(cid, ()))
     if ctype in ("group", "supergroup", "channel", "forum"):
         return False
     if ctype in ("dm", "private"):
@@ -430,33 +481,41 @@ def load_messages(db, days):
     cutoff = _now().timestamp() - days * 86400
     out = []
     c = _conn(db)
+    _SELECT = ("select m.id, m.role, m.content, m.timestamp, m.observed, "
+               "s.source, s.chat_type, s.chat_id, {thread} "
+               "from messages m left join sessions s on m.session_id = s.id "
+               "where m.timestamp>=? and m.content is not null")
     try:
         try:
-            rows = list(c.execute(
-                "select m.id, m.role, m.content, m.timestamp, m.observed, "
-                "s.source, s.chat_type, s.chat_id "
-                "from messages m left join sessions s on m.session_id = s.id "
-                "where m.timestamp>=? and m.content is not null", (cutoff,)))
+            rows = list(c.execute(_SELECT.format(thread="s.thread_id"), (cutoff,)))
         except sqlite3.OperationalError:
-            # No usable `sessions` table: the source of a message is unknown.
-            # Fail closed, not open — without it a cron job's own prompt rows
-            # (role=user) corroborated facts. What is still known is the session
-            # id: Hermes names cron sessions `cron_…`, so those are dropped
-            # outright; the rest are "sessions without chat" and go through the
-            # same config switch as any other session lacking chat metadata.
-            print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
-                  "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
-            rows = [(mid, role, content, ts, observed,
-                     "cron" if str(sid or "").startswith("cron_") else None, None, None)
-                    for mid, sid, role, content, ts, observed in c.execute(
-                        "select id,session_id,role,content,timestamp,observed from messages "
-                        "where timestamp>=? and content is not null", (cutoff,))]
+            try:
+                # `sessions` without a `thread_id` column (older Hermes, and the
+                # reason this is a separate tier): threads are unknown, so
+                # `excluded_threads` simply never matches. Falling straight
+                # through to the branch below would ALSO drop chat_id and blind
+                # corroboration completely — a schema detail must not do that.
+                rows = list(c.execute(_SELECT.format(thread="null"), (cutoff,)))
+            except sqlite3.OperationalError:
+                # No usable `sessions` table: the source of a message is unknown.
+                # Fail closed, not open — without it a cron job's own prompt rows
+                # (role=user) corroborated facts. What is still known is the session
+                # id: Hermes names cron sessions `cron_…`, so those are dropped
+                # outright; the rest are "sessions without chat" and go through the
+                # same config switch as any other session lacking chat metadata.
+                print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
+                      "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
+                rows = [(mid, role, content, ts, observed,
+                         "cron" if str(sid or "").startswith("cron_") else None, None, None, None)
+                        for mid, sid, role, content, ts, observed in c.execute(
+                            "select id,session_id,role,content,timestamp,observed from messages "
+                            "where timestamp>=? and content is not null", (cutoff,))]
     finally:
         c.close()
-    for mid, role, content, ts, observed, source, chat_type, chat_id in rows:
+    for mid, role, content, ts, observed, source, chat_type, chat_id, thread_id in rows:
         if not content or not (role == "user" or observed == 1):
             continue
-        if not _trusted_message(source, chat_type, chat_id):
+        if not _trusted_message(source, chat_type, chat_id, thread_id):
             continue
         if is_harness_envelope(content):
             continue

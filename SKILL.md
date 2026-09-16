@@ -24,9 +24,12 @@ Answer the human in their own language; the JSON field names are English.
   `python ~/.hermes/skills/dreaming/scripts/dream.py --out ~/.hermes/cache/dream.json --diary ~/.hermes/memories/DREAMS.md`
 - Why did a fact score the way it did: `dream.py --explain <fact_id>`.
 - Scoring details only when debugging: `references/scoring.md`.
-- Everything installation-specific (trusted chats, alias rules, agent name,
-  timezone, diary heading) lives in `~/.hermes/dreaming.json` — see
-  `examples/dreaming.example.json`. Do not edit the scripts to tune the dream.
+- Everything installation-specific (trusted chats, excluded threads, alias
+  rules, agent name, timezone, diary heading) lives in `~/.hermes/dreaming.json`
+  — see `examples/dreaming.example.json`. Do not edit the scripts to tune the dream.
+- If emerging themes read like your own logs (job names, model ids, config keys),
+  the trusted chat has threads where the agent talks to itself — list those in
+  `excluded_threads` instead of raising the gates.
 
 ## Extraction run (feeding the fact store)
 

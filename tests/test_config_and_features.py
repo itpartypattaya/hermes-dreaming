@@ -80,6 +80,58 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(dream._trusted_message("cron", None, None))
         self.assertFalse(dream._trusted_message("telegram", "supergroup", "-100555"))
 
+    def test_excluded_threads_from_config(self):
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {
+            "trusted_chat_ids": ["-100555"],
+            "excluded_threads": {"-100555": ["421", 2340]},  # int id тоже принимаем
+        }))
+        self.assertFalse(dream._trusted_message("telegram", "group", "-100555", "421"))
+        self.assertFalse(dream._trusted_message("telegram", "group", "-100555", 2340))
+        self.assertTrue(dream._trusted_message("telegram", "group", "-100555", "20"))
+        self.assertTrue(dream._trusted_message("telegram", "group", "-100555", None))
+        self.assertTrue(dream._trusted_message("telegram", "group", "-100555"))
+
+    def test_excluded_threads_from_env(self):
+        os.environ["DREAM_EXCLUDED_THREADS"] = " -100555:421 , -100555:2340 "
+        try:
+            dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {
+                "trusted_chat_ids": ["-100555"],
+                "excluded_threads": {"-100555": ["20"]},  # env замещает конфиг целиком
+            }))
+            self.assertFalse(dream._trusted_message("telegram", "group", "-100555", "421"))
+            self.assertFalse(dream._trusted_message("telegram", "group", "-100555", "2340"))
+            self.assertTrue(dream._trusted_message("telegram", "group", "-100555", "20"))
+        finally:
+            del os.environ["DREAM_EXCLUDED_THREADS"]
+
+    def test_malformed_excluded_threads_are_dropped_not_raised(self):
+        # Опечатка в конфиге не должна ронять ночной проход целиком.
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {
+            "trusted_chat_ids": ["-100555"],
+            "excluded_threads": {"-100555": "421", "": ["1"], "-100777": []},
+        }))
+        self.assertEqual(dream.EXCLUDED_THREADS, {})
+        self.assertTrue(dream._trusted_message("telegram", "group", "-100555", "421"))
+
+    def test_untrusted_sources_configurable_and_cron_always_in(self):
+        # Скрипт, дергающий агента через CLI (ночная сводка диффа), — не человек.
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
+                                          {"untrusted_sources": ["cli"]}))
+        self.assertFalse(dream._trusted_message("cli", None, None))
+        self.assertFalse(dream._trusted_message("cron", None, None))  # неотключаем
+        self.assertTrue(dream._trusted_message("telegram", "dm", "42"))
+
+    def test_cron_stays_untrusted_even_if_config_drops_it(self):
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
+                                          {"untrusted_sources": []}))
+        self.assertFalse(dream._trusted_message("cron", None, None))
+        self.assertTrue(dream._trusted_message("cli", None, None))  # дефолт не трогаем
+
+    def test_excluded_thread_of_untrusted_chat_changes_nothing(self):
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
+                                          {"excluded_threads": {"-100555": ["421"]}}))
+        self.assertFalse(dream._trusted_message("telegram", "group", "-100555", "20"))
+
     def test_agent_names_are_stopwords(self):
         dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {"agent_names": ["Jarvis"]}))
         self.assertNotIn("jarvis", dream.sig_tokens("Jarvis, remind me about the dentist"))

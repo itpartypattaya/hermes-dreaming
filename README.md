@@ -105,6 +105,12 @@ $EDITOR ~/.hermes/dreaming.json    # timezone, trusted_chat_ids, agent_names, al
 Until `trusted_chat_ids` lists your chats, **no group chat corroborates
 memory** (fail-closed by design) and the dream will promote almost nothing.
 
+If a trusted chat is a forum, list the threads that are not human talk —
+the agent's own alerts, an assistant bridge, machine-generated cards — under
+`excluded_threads`. They are still the agent's chat, but their vocabulary
+drowns real conversation in emerging themes and wakes the extraction gate for
+nothing.
+
 ```bash
 # 4. the cron jobs
 ~/.hermes/hermes-agent/venv/bin/python \
@@ -167,6 +173,8 @@ precedence CLI flag > `DREAM_*` env > config > default. Key fields:
 |---|---|
 | `timezone` | IANA zone for the diary date and day-bucketing of mentions |
 | `trusted_chat_ids` | group chats whose messages corroborate memory (**fail-closed**: empty = none) |
+| `excluded_threads` | threads of a trusted chat that must NOT corroborate — `{"<chat_id>": ["<thread_id>", …]}`. Env: `DREAM_EXCLUDED_THREADS="chat:thread,chat:thread"` |
+| `untrusted_sources` | session sources that are machine prompts, not speech — `cron` always, add `cli` when scripts drive the agent. Env: `DREAM_UNTRUSTED_SOURCES="cli"` |
 | `agent_names`, `extra_stopwords` | noise words for the tokenizer |
 | `alias_rules` | declarative "same fact, other words" rules — `{"fact": [["a","b"],["c"]], "memory": [["x"]]}`; `#437` = whole number |
 | `profile_hint_terms`, `profile_categories` | hints that a fact belongs to the user profile |

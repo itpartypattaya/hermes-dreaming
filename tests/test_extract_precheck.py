@@ -63,7 +63,8 @@ class ExtractPrecheckTests(DreamFixture):
         timestamp-only cursor the remaining two were never selected again
         (`ts > since` skipped them for good). The (timestamp, id) cursor keeps them."""
         con = sqlite3.connect(self.home / "state.db")
-        con.execute("insert or ignore into sessions values (?,?,?,?)",
+        con.execute("insert or ignore into sessions"
+                    " (id, source, chat_type, chat_id) values (?,?,?,?)",
                     ("s-tie", "telegram", "group", FAMILY_CHAT))
         same_ts = self._now() - 3600
         for i in range(6):
@@ -91,6 +92,23 @@ class ExtractPrecheckTests(DreamFixture):
         payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertIsNone(payload)
         self.assertEqual(total, 0)
+
+    def test_excluded_thread_does_not_reach_the_gate(self):
+        """Ветка алертов доверенного чата не должна ни будить извлечение, ни
+        попадать в payload: иначе агент просыпается разбирать собственные
+        уведомления и отвечает [SILENT] за деньги."""
+        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {"421"}}
+        for i in range(4):
+            self.add_message(f"Алерт {i}: джоба упала", days_ago=1, thread_id="421")
+        payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertIsNone(payload)
+        self.assertEqual(total, 0)
+        # ...а обычная ветка того же чата гейт открывает.
+        for i in range(4):
+            self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1, thread_id="20")
+        payload2, _, total2 = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertEqual(total2, 4)
+        self.assertIsNotNone(payload2)
 
     def test_existing_facts_included_and_secrets_dropped(self):
         for i in range(4):
