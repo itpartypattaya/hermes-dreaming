@@ -266,9 +266,9 @@ class StoreDuplicateTests(DreamFixture):
     the same statement was extracted twice half an hour apart and arrived as
     two candidates for one entry)."""
 
-    TWIN_A = ("2026-09-07 Антон сообщил, что VPN-профиль de больше не поддерживается "
+    TWIN_A = ("2026-09-07 Марина сообщила, что профиль de больше не поддерживается "
               "провайдером и должен быть удалён.")
-    TWIN_B = ("2026-09-07 Антон сообщил: VPN-профиль de больше не поддерживается "
+    TWIN_B = ("2026-09-07 Марина сообщила: профиль de больше не поддерживается "
               "провайдером и должен быть удалён.")
 
     def test_pairs(self):
@@ -278,7 +278,7 @@ class StoreDuplicateTests(DreamFixture):
         self.assertFalse(same(self.TWIN_A, self.TWIN_B.replace(" de ", " kz ")))      # short code
         self.assertFalse(same("Подписка на облако стоит 300 бат в месяц и продлевается сама",
                               "Подписка на облако стоит 450 бат в месяц и продлевается сама"))
-        self.assertFalse(same(self.TWIN_A, "Антон сообщил, что VPN-профиль больше не нужен."))
+        self.assertFalse(same(self.TWIN_A, "Марина сообщила, что профиль больше не нужен."))
         self.assertFalse(same("Родительское собрание в школе пройдёт 12 сентября в актовом зале",
                               "Родительское собрание в школе пройдёт 12 октября в актовом зале"))
 
@@ -297,9 +297,9 @@ class StoreDuplicateTests(DreamFixture):
 
     def test_twin_of_a_promotion_is_not_a_new_fact(self):
         for text in (self.TWIN_A, self.TWIN_B):
-            self.add_fact(text, trust=0.9, rc=2, helpful=2, tags="vpn,infra,config", days_old=1)
+            self.add_fact(text, trust=0.9, rc=2, helpful=2, tags="profile,infra,config", days_old=1)
         for d in (1, 2, 3):
-            self.add_message(f"VPN-профиль de провайдер больше не поддерживает, день {d}", days_ago=d)
+            self.add_message(f"Профиль de провайдер больше не поддерживает, день {d}", days_ago=d)
         out = self.run_dream()
         self.assertEqual(len(out["promotions"]), 1, out["stats"])
         self.assertEqual(len(out["promotions"][0]["duplicates"]), 1)
