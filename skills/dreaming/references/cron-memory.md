@@ -23,13 +23,13 @@ So on a **stock** install:
   and in a stock cron session that tool does not exist. The agent wakes, reads
   the messages, and has nothing to store them with.
 
-`install.sh` checks this and warns; the installer sets `allow_memory: true` on
+`scripts/install.py` checks this and warns; the installer sets `allow_memory: true` on
 both jobs, which a patched core reads and a stock core simply ignores.
 
 > **Hermes 0.21.0 and later (v2026.8.31, PR #91447): none of this applies.** Cron
 > agents now load and update persistent memory like every other agent
 > (`skip_memory=False` in `cron/scheduler.py`), so `fact_store` is available to
-> the extraction job out of the box. `install.sh` detects that and reports
+> the extraction job out of the box. `scripts/install.py` detects that and reports
 > "memory natively"; `allow_memory` on the jobs becomes a harmless no-op. The
 > options below are for cores **≤ 0.20**.
 
@@ -86,7 +86,7 @@ script, or add it to whatever you already use to re-apply local core changes.
 ## Verifying
 
 ```bash
-./install.sh --check
+python3 scripts/install.py --check
 ```
 
 Look for either of these lines:

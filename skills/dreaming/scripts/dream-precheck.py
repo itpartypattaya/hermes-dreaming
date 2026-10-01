@@ -27,8 +27,36 @@ import subprocess
 import sys
 from pathlib import Path
 
-HOME = Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"))
-DREAM = HOME / "skills/dreaming/scripts/dream.py"
+def _hermes_home():
+    """$HERMES_HOME, else the home this gate was installed into (it lives in
+    `<home>/scripts/`, and Hermes does not always export HERMES_HOME to cron
+    scripts), else ~/.hermes."""
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env)
+    here = Path(__file__).resolve().parent
+    if here.name == "scripts" and (here.parent / "config.yaml").is_file():
+        return here.parent
+    return Path(os.path.expanduser("~/.hermes"))
+
+
+def find_dream(home):
+    """dream.py of the installed skill. Where it lives depends on how the skill
+    was installed: `hermes skills install` puts it in skills/[<category>/]dreaming/,
+    `hermes plugins install` in plugins/hermes-dreaming/skills/dreaming/.
+    `$DREAM_SCRIPT` overrides (skills.external_dirs or any other layout)."""
+    explicit = os.environ.get("DREAM_SCRIPT")
+    if explicit:
+        return Path(explicit)
+    tail = Path("dreaming") / "scripts" / "dream.py"
+    candidates = [home / "skills" / tail,
+                  *sorted((home / "skills").glob("*/dreaming/scripts/dream.py")),
+                  home / "plugins" / "hermes-dreaming" / "skills" / tail]
+    return next((c for c in candidates if c.is_file()), candidates[0])
+
+
+HOME = _hermes_home()
+DREAM = find_dream(HOME)
 OUT = HOME / "cache/dream.json"
 DIARY = HOME / "memories/DREAMS.md"
 

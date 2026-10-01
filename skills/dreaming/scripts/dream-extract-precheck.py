@@ -35,6 +35,9 @@ nothing said so. After `extract.max_retries` unanswered hand-overs the cursor
 moves anyway with a note on stderr: a chunk that kills the turn every time must
 not stall extraction forever.
 
+Only for `fact_source: holographic` — the agent stores candidates with that
+provider's `fact_store` tool. With any other source the gate stays closed.
+
 Config (`extract` section of dreaming.json; all optional):
   max_messages 200 · max_chars 40000 · min_messages 15 · backfill_days 60 ·
   message_chars 400 · existing_facts_cap 80 · max_retries 3
@@ -50,8 +53,36 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-HOME = Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"))
-DREAM = HOME / "skills/dreaming/scripts/dream.py"
+def _hermes_home():
+    """$HERMES_HOME, else the home this gate was installed into (it lives in
+    `<home>/scripts/`, and Hermes does not always export HERMES_HOME to cron
+    scripts), else ~/.hermes."""
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env)
+    here = Path(__file__).resolve().parent
+    if here.name == "scripts" and (here.parent / "config.yaml").is_file():
+        return here.parent
+    return Path(os.path.expanduser("~/.hermes"))
+
+
+def find_dream(home):
+    """dream.py of the installed skill. Where it lives depends on how the skill
+    was installed: `hermes skills install` puts it in skills/[<category>/]dreaming/,
+    `hermes plugins install` in plugins/hermes-dreaming/skills/dreaming/.
+    `$DREAM_SCRIPT` overrides (skills.external_dirs or any other layout)."""
+    explicit = os.environ.get("DREAM_SCRIPT")
+    if explicit:
+        return Path(explicit)
+    tail = Path("dreaming") / "scripts" / "dream.py"
+    candidates = [home / "skills" / tail,
+                  *sorted((home / "skills").glob("*/dreaming/scripts/dream.py")),
+                  home / "plugins" / "hermes-dreaming" / "skills" / tail]
+    return next((c for c in candidates if c.is_file()), candidates[0])
+
+
+HOME = _hermes_home()
+DREAM = find_dream(HOME)
 STATE = HOME / "cache/dream-extract-state.json"
 
 DEFAULTS = {"max_messages": 200, "max_chars": 40000, "min_messages": 15,
@@ -148,7 +179,7 @@ def build_payload(dream, cfg, state, now_ts):
     if not chunk:
         return None, cursor, len(messages)
 
-    facts = dream.load_facts(dream.fact_store_path())
+    facts = dream.load_facts()
     existing = [_clean(f["content"], 120) for f in facts
                 if not dream.classify_unsafe(f["content"])][-int(ext["existing_facts_cap"]):]
     payload = {
@@ -168,6 +199,14 @@ def main():
         dream = _dream()
         cfg = dream.CONFIG
         ext = dict(DEFAULTS, **(cfg.get("extract") or {}))
+        source = dream.fact_source()
+        if source != "holographic":
+            # The agent stores candidates with the holographic `fact_store` tool;
+            # any other source is filled by its own provider or export.
+            print(f"[dream-extract] fact_source={source}: extraction feeds only the holographic "
+                  "store — nothing to do", file=sys.stderr)
+            print(json.dumps({"wakeAgent": False}))
+            return 0
         loaded = load_state(STATE)
         state = resolve_pending(dream, loaded, ext["max_retries"])
         now = datetime.now(timezone.utc)

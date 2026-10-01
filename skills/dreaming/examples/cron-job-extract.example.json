@@ -4,7 +4,7 @@
   "enabled": true,
   "schedule": {
     "kind": "cron",
-    "expr": "30 2 * * *"
+    "expr": "30 2 * * 1"
   },
   "script": "dream-extract-precheck.py",
   "skill": "dreaming",

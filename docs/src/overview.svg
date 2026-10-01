@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600">
+  <style>
+    text { font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace; }
+    .name { fill: #ffffff; font-size: 12px; font-weight: 600; }
+    .sub { fill: #94a3b8; font-size: 9.5px; font-weight: 400; }
+    .tiny { fill: #94a3b8; font-size: 9px; }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
+    </marker>
+    <marker id="arrow-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#60a5fa"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/>
+    </marker>
+  </defs>
+
+  <!-- 1. background -->
+  <rect width="1200" height="600" fill="#0f172a"/>
+  <rect width="1200" height="600" fill="url(#grid)"/>
+
+  <!-- 2. region: dream.py -->
+  <rect x="315" y="112" width="300" height="400" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="329" y="131" fill="#34d399" font-size="10" font-weight="600">dream.py · deterministic · no LLM</text>
+
+  <!-- 3. arrows -->
+  <!-- weekly extraction feeds the fact store -->
+  <line x1="145" y1="204" x2="145" y2="234" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow-cyan)"/>
+  <text x="153" y="223" class="tiny">weekly extraction</text>
+  <!-- inputs into the pass -->
+  <line x1="250" y1="176" x2="343" y2="176" stroke="#22d3ee" stroke-width="1.2" marker-end="url(#arrow-cyan)"/>
+  <line x1="250" y1="270" x2="343" y2="270" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="250" y1="362" x2="343" y2="362" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <!-- stage chain -->
+  <line x1="465" y1="204" x2="465" y2="234" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-emerald)"/>
+  <line x1="465" y1="292" x2="465" y2="322" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-emerald)"/>
+  <line x1="465" y1="380" x2="465" y2="410" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-emerald)"/>
+  <!-- pass → gate -->
+  <path d="M 585 440 L 600 440 L 600 300 L 653 300" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-emerald)"/>
+  <text x="621" y="291" class="tiny">JSON</text>
+  <!-- gate → asleep / agent -->
+  <line x1="720" y1="260" x2="720" y2="208" stroke="#64748b" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <text x="728" y="240" class="tiny">no work</text>
+  <line x1="720" y1="340" x2="720" y2="398" stroke="#fbbf24" stroke-width="1.2" marker-end="url(#arrow-amber)"/>
+  <text x="728" y="374" class="tiny">work</text>
+  <!-- agent → memory, report -->
+  <line x1="810" y1="428" x2="878" y2="428" stroke="#60a5fa" stroke-width="1.2" marker-end="url(#arrow-blue)"/>
+  <text x="820" y="420" class="tiny">writes</text>
+  <path d="M 720 456 L 720 508 L 878 508" fill="none" stroke="#60a5fa" stroke-width="1.2" marker-end="url(#arrow-blue)"/>
+  <text x="760" y="500" class="tiny">reports</text>
+
+  <!-- 4–6. components -->
+  <!-- conversations -->
+  <rect x="40" y="140" width="210" height="64" rx="6" fill="#0f172a"/>
+  <rect x="40" y="140" width="210" height="64" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="145" y="166" class="name" text-anchor="middle">Conversations</text>
+  <text x="145" y="184" class="sub" text-anchor="middle">state.db · humans only</text>
+
+  <!-- fact store (cylinder) -->
+  <g transform="translate(40, 238)">
+    <ellipse cx="105" cy="80" rx="105" ry="12" fill="#271955" stroke="#a78bfa" stroke-width="1.5"/>
+    <rect x="0" y="12" width="210" height="68" fill="#271955"/>
+    <line x1="0" y1="12" x2="0" y2="80" stroke="#a78bfa" stroke-width="1.5"/>
+    <line x1="210" y1="12" x2="210" y2="80" stroke="#a78bfa" stroke-width="1.5"/>
+    <ellipse cx="105" cy="12" rx="105" ry="12" fill="#32236e" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="105" y="44" class="name" text-anchor="middle">Fact store</text>
+    <text x="105" y="62" class="sub" text-anchor="middle">holographic · sqlite · jsonl</text>
+  </g>
+
+  <!-- durable memory -->
+  <rect x="40" y="350" width="210" height="64" rx="6" fill="#0f172a"/>
+  <rect x="40" y="350" width="210" height="64" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="145" y="376" class="name" text-anchor="middle">Durable memory</text>
+  <text x="145" y="394" class="sub" text-anchor="middle">MEMORY.md · USER.md</text>
+
+  <!-- stages -->
+  <rect x="345" y="148" width="240" height="56" rx="6" fill="#0f172a"/>
+  <rect x="345" y="148" width="240" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="465" y="172" class="name" text-anchor="middle">corroborate</text>
+  <text x="465" y="190" class="sub" text-anchor="middle">human mentions on distinct days</text>
+
+  <rect x="345" y="236" width="240" height="56" rx="6" fill="#0f172a"/>
+  <rect x="345" y="236" width="240" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="465" y="260" class="name" text-anchor="middle">score</text>
+  <text x="465" y="278" class="sub" text-anchor="middle">weights + corroboration gate</text>
+
+  <rect x="345" y="324" width="240" height="56" rx="6" fill="#0f172a"/>
+  <rect x="345" y="324" width="240" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="465" y="348" class="name" text-anchor="middle">match memory</text>
+  <text x="465" y="366" class="sub" text-anchor="middle">dedupe · conflicts · stale entries</text>
+
+  <rect x="345" y="412" width="240" height="56" rx="6" fill="#0f172a"/>
+  <rect x="345" y="412" width="240" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="465" y="436" class="name" text-anchor="middle">screen &amp; cool down</text>
+  <text x="465" y="454" class="sub" text-anchor="middle">quarantine · expiry · cooldowns</text>
+
+  <!-- wake gate -->
+  <g transform="translate(720, 300)">
+    <polygon points="0,-40 65,0 0,40 -65,0" fill="#0f172a"/>
+    <polygon points="0,-40 65,0 0,40 -65,0" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text y="-2" class="name" text-anchor="middle">wake gate</text>
+    <text y="13" class="sub" text-anchor="middle">pre-check</text>
+  </g>
+
+  <!-- asleep -->
+  <rect x="640" y="150" width="160" height="56" rx="6" fill="#0f172a"/>
+  <rect x="640" y="150" width="160" height="56" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="720" y="174" class="name" text-anchor="middle">agent sleeps</text>
+  <text x="720" y="192" class="sub" text-anchor="middle">wakeAgent:false · 0 tokens</text>
+
+  <!-- agent -->
+  <rect x="630" y="400" width="180" height="56" rx="6" fill="#0f172a"/>
+  <rect x="630" y="400" width="180" height="56" rx="6" fill="rgba(59,130,246,0.3)" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="720" y="424" class="name" text-anchor="middle">agent (cron)</text>
+  <text x="720" y="442" class="sub" text-anchor="middle">memory tool · ≤ 6 changes</text>
+
+  <!-- outputs -->
+  <rect x="880" y="400" width="280" height="56" rx="6" fill="#0f172a"/>
+  <rect x="880" y="400" width="280" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="1020" y="424" class="name" text-anchor="middle">MEMORY.md · USER.md</text>
+  <text x="1020" y="442" class="sub" text-anchor="middle">add · replace with a verbatim anchor</text>
+
+  <rect x="880" y="480" width="280" height="56" rx="6" fill="#0f172a"/>
+  <rect x="880" y="480" width="280" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="1020" y="504" class="name" text-anchor="middle">report to the human</text>
+  <text x="1020" y="522" class="sub" text-anchor="middle">≤ 6 lines · questions · no JSON</text>
+
+  <!-- 7. legend -->
+  <text x="880" y="160" fill="#94a3b8" font-size="9" font-weight="600">LEGEND</text>
+  <rect x="880" y="172" width="10" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee"/>
+  <text x="898" y="181" class="tiny">human side: messages, reports</text>
+  <rect x="880" y="192" width="10" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa"/>
+  <text x="898" y="201" class="tiny">storage</text>
+  <rect x="880" y="212" width="10" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399"/>
+  <text x="898" y="221" class="tiny">deterministic Python, stdlib only</text>
+  <rect x="880" y="232" width="10" height="10" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24"/>
+  <text x="898" y="241" class="tiny">decision</text>
+  <rect x="880" y="252" width="10" height="10" rx="2" fill="rgba(59,130,246,0.3)" stroke="#60a5fa"/>
+  <text x="898" y="261" class="tiny">the only LLM turn</text>
+  <rect x="880" y="272" width="10" height="10" rx="2" fill="rgba(30,41,59,0.5)" stroke="#94a3b8"/>
+  <text x="898" y="281" class="tiny">no-op</text>
+
+  <!-- 8. title -->
+  <text x="40" y="54" fill="#ffffff" font-size="24" font-weight="700">hermes-dreaming</text>
+  <text x="40" y="80" fill="#94a3b8" font-size="12">one night of memory consolidation for Hermes Agent</text>
+  <text x="40" y="568" fill="#64748b" font-size="10">no network · the script never writes memory — the agent does, through the regular memory tool</text>
+</svg>

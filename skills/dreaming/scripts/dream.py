@@ -29,8 +29,10 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -79,10 +81,20 @@ DEFAULT_CONFIG = {
     # Files that already are durable memory (dedupe target). Relative paths are
     # resolved against HERMES_HOME. `--memory-md` is always included.
     "durable_memory_paths": ["memories/MEMORY.md", "memories/USER.md"],
-    # Where the fact store lives. Empty = ask Hermes: `plugins.hermes-memory-store.db_path`
-    # from config.yaml (the holographic provider honours it), else
-    # $HERMES_HOME/memory_store.db. Relative paths resolve against HERMES_HOME.
+    # Where candidate facts come from: "holographic" (the Hermes holographic
+    # memory provider), "sqlite" / "jsonl" (your own export, mapped by
+    # `fact_table` / `fact_columns`) or "none" (memory files only).
+    "fact_source": "holographic",
+    # Where the fact store lives. Empty = (holographic) ask Hermes:
+    # `plugins.hermes-memory-store.db_path` from config.yaml, else
+    # $HERMES_HOME/memory_store.db; generic sources must set it. Relative paths
+    # resolve against HERMES_HOME.
     "fact_store_path": "",
+    # Generic sources only: the table and the names of your columns / keys.
+    # Required: id, content. Optional: created_at, updated_at (ISO or epoch),
+    # category, tags (string or list), trust (0..1).
+    "fact_table": "facts",
+    "fact_columns": {},
     # Word stems that hint a fact is about the user / household (profile
     # candidates for USER.md). Categories are matched exactly.
     "profile_hint_terms": ["prefer", "likes", "dislikes", "goal", "plans", "works", "lives",
@@ -181,15 +193,33 @@ def _hermes_plugin_db_path(home=None):
     return value or None
 
 
+FACT_SOURCES = ("holographic", "none", "sqlite", "jsonl")
+
+
+def fact_source():
+    """Where candidate facts come from: `$DREAM_FACT_SOURCE` > dreaming.json
+    `fact_source` > `holographic`. An unknown value is an error, not a silent
+    "none": a typo must not quietly turn the dream into a memory-file checker."""
+    raw = os.environ.get("DREAM_FACT_SOURCE") or CONFIG.get("fact_source") or "holographic"
+    src = str(raw).strip().lower()
+    if src not in FACT_SOURCES:
+        raise ValueError(f"fact_source {raw!r} is not one of {', '.join(FACT_SOURCES)}")
+    return src
+
+
 def fact_store_path(home=None):
     """Resolved path of the fact store: `$DREAM_FACT_STORE` > dreaming.json
-    `fact_store_path` > Hermes `plugins.hermes-memory-store.db_path` >
-    `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~` and relative paths are
+    `fact_store_path` > (holographic only) Hermes `plugins.hermes-memory-store.db_path`
+    > `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~` and relative paths are
     expanded the way the provider does it — an install that moved its store
-    must not look empty to the dream."""
+    must not look empty to the dream. A generic source (`sqlite`, `jsonl`) has
+    no default: None until `fact_store_path` is set."""
     home = home or HOME
-    raw = (os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path")
-           or _hermes_plugin_db_path(home) or "memory_store.db")
+    raw = os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path")
+    if not raw:
+        if fact_source() != "holographic":
+            return None
+        raw = _hermes_plugin_db_path(home) or "memory_store.db"
     raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
     raw = os.path.expanduser(raw)
     return raw if os.path.isabs(raw) else os.path.join(home, raw)
@@ -449,20 +479,128 @@ def _missing_db(db, what):
     return True
 
 
-def load_facts(db):
-    if _missing_db(db, "treating the fact store as empty"):
+FACT_FIELDS = ["fact_id", "content", "category", "tags", "trust_score", "retrieval_count",
+               "helpful_count", "created_at", "updated_at"]
+# Generic sources (`sqlite`, `jsonl`): column / key names of the user's own
+# store. Only `id` and `content` are required; a missing optional field gets the
+# neutral value the holographic store would have (trust 0.5, no retrievals) —
+# the score is then carried by corroboration, as it mostly is anyway.
+DEFAULT_FACT_COLUMNS = {"id": "id", "content": "content", "created_at": "created_at",
+                        "updated_at": "updated_at", "category": "category", "tags": "tags",
+                        "trust": "trust"}
+
+
+def load_facts(db=None):
+    """Facts of the configured source (`fact_source`) as dicts with FACT_FIELDS.
+
+    `holographic` — the Hermes holographic provider's SQLite `facts` table;
+    `sqlite` — any SQLite table, columns mapped by `fact_columns`;
+    `jsonl` — one JSON object per line, keys mapped the same way;
+    `none` — no fact store: the dream works on the memory files alone.
+    Every store is opened read-only. `db` forces the holographic schema at that
+    path (tests and old callers)."""
+    src = "holographic" if db else fact_source()
+    if src == "none":
         return []
+    path = db or fact_store_path()
+    if not path:
+        print(f"[dream] note: fact_source={src} but fact_store_path is not set — no facts",
+              file=sys.stderr)
+        return []
+    if _missing_db(path, "treating the fact store as empty"):
+        return []
+    if src == "holographic":
+        return _load_holographic(path)
+    cols = dict(DEFAULT_FACT_COLUMNS, **(CONFIG.get("fact_columns") or {}))
+    raw = _load_generic_sqlite(path, cols) if src == "sqlite" else _load_jsonl(path, cols)
+    return [f for f in (_normalize_fact(r, cols) for r in raw) if f]
+
+
+def _load_holographic(db):
     rows = []
     c = _conn(db)
     try:
-        for r in c.execute("select fact_id,content,category,tags,trust_score,retrieval_count,"
-                           "helpful_count,created_at,updated_at from facts"):
-            rows.append(dict(zip(
-                ["fact_id", "content", "category", "tags", "trust_score", "retrieval_count",
-                 "helpful_count", "created_at", "updated_at"], r)))
+        for r in c.execute("select " + ",".join(FACT_FIELDS) + " from facts"):
+            rows.append(dict(zip(FACT_FIELDS, r)))
     finally:
         c.close()  # the sqlite3 context manager commits but does NOT close
     return rows
+
+
+_SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _load_generic_sqlite(db, cols):
+    table = str(CONFIG.get("fact_table") or "facts")
+    if not _SQL_NAME_RE.match(table):
+        raise ValueError(f"fact_table {table!r} is not a plain SQL name")
+    c = _conn(db)
+    try:
+        have = {r[1] for r in c.execute(f'pragma table_info("{table}")')}
+        if not have:
+            raise ValueError(f"table {table!r} not found in {db}")
+        for need in ("id", "content"):
+            if cols[need] not in have:
+                raise ValueError(f"column {cols[need]!r} ({need}) not in table {table!r}")
+        names = [n for n in dict.fromkeys(cols.values()) if n in have]
+        cur = c.execute("select " + ",".join(f'"{n}"' for n in names) + f' from "{table}"')
+        return [dict(zip(names, r)) for r in cur]
+    finally:
+        c.close()
+
+
+def _load_jsonl(path, cols):
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                print(f"[dream] warn: {path}:{n} is not JSON — skipped", file=sys.stderr)
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out
+
+
+def _ts_text(v):
+    """A timestamp in the holographic text form ('YYYY-MM-DD HH:MM:SS', UTC)
+    from epoch seconds / milliseconds or an ISO string with any offset."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        sec = v / 1000 if v > 1e11 else v
+        return datetime.fromtimestamp(sec, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    s = str(v).strip()
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return s  # leave it to _parse_ts; an unparsable date only weakens recency
+    if dt.tzinfo:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_fact(r, cols):
+    content = r.get(cols["content"])
+    fid = r.get(cols["id"])
+    if not isinstance(content, str) or not content.strip() or fid in (None, ""):
+        return None
+    tags = r.get(cols["tags"])
+    if isinstance(tags, (list, tuple)):
+        tags = ",".join(str(t) for t in tags)
+    trust = r.get(cols["trust"])
+    try:
+        trust = float(trust) if trust is not None else 0.5
+    except (TypeError, ValueError):
+        trust = 0.5
+    created = _ts_text(r.get(cols["created_at"]))
+    return {"fact_id": fid, "content": content, "category": r.get(cols["category"]),
+            "tags": tags or "", "trust_score": trust, "retrieval_count": 0, "helpful_count": 0,
+            "created_at": created, "updated_at": _ts_text(r.get(cols["updated_at"])) or created}
 
 
 def _trusted_message(source, chat_type, chat_id, thread_id=None):
@@ -1676,7 +1814,7 @@ def memory_usage(mem_md):
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
     state_db = os.path.join(HOME, "state.db")
-    facts = load_facts(fact_store_path())
+    facts = load_facts()
     messages = load_messages(state_db, corr_days)
     memory_text = load_durable_memory_text(mem_md)
     rejected = load_rejected(rejected_state_path)
@@ -2022,7 +2160,7 @@ def append_diary(path, diary):
 
 def explain(fact_id, mem_md, corr_days):
     """`--explain ID`: per-signal breakdown of one fact (OpenClaw promote-explain)."""
-    facts = [f for f in load_facts(fact_store_path()) if f["fact_id"] == fact_id]
+    facts = [f for f in load_facts() if str(f["fact_id"]) == str(fact_id)]
     if not facts:
         print(f"fact {fact_id} not found", file=sys.stderr)
         return 1
@@ -2050,6 +2188,49 @@ def explain(fact_id, mem_md, corr_days):
     for c in find_conflicts(f["content"], memory_text):
         print(f"possible conflict: {c}")
     return 0
+
+
+def dry_run_summary(result, source):
+    """Plain-text report of a `--dry-run` pass: what the dream would put in
+    front of the agent tonight. Facts carry their ids so a human can follow up
+    with `--explain`; contents are trimmed, secrets never shown."""
+    st = result["stats"]
+    lines = ["Dry run — nothing was written: state files were copied to a temporary",
+             "directory and discarded; no diary, no memory change.",
+             f"fact source: {source} · facts: {st['facts']} · human messages in window: "
+             f"{st['messages_window']}"]
+    usage = ", ".join(f"{name} {rec['percent']}% ({rec['chars']}/{rec['limit']})"
+                      if rec.get("percent") is not None else f"{name} {rec['chars']} chars"
+                      for name, rec in (result.get("memory_usage") or {}).items())
+    if usage:
+        lines.append(f"memory: {usage}")
+
+    def facts(title, items, why=False):
+        lines.append(f"{title}: {len(items)}")
+        for item in items[:8]:
+            text = re.sub(r"\s+", " ", item.get("content") or "")[:110]
+            tail = f"  ({item.get('why')})" if why and item.get("why") else ""
+            lines.append(f"  - [{item.get('fact_id')}] {text}{tail}")
+        if len(items) > 8:
+            lines.append(f"  … and {len(items) - 8} more")
+
+    facts("promotions (candidates for durable memory)", result.get("promotions") or [], why=True)
+    facts("new facts to review", result.get("new_facts") or [])
+    facts("conflicts (same subject, different numbers)", result.get("conflicts") or [])
+    facts("facts that look unused", result.get("fact_decays") or [])
+    md = result.get("md_decays") or []
+    lines.append('memory entries to ask "still relevant?": ' + str(len(md)))
+    for d in md[:8]:
+        lines.append("  - " + re.sub(r"\s+", " ", d.get("entry") or "")[:110])
+    lines.append(f"quarantined (secrets / injection, content hidden): {st.get('quarantined', 0)}")
+    for a in result.get("alerts") or []:
+        lines.append(f"ALERT: {a.get('message') or a}")
+    work = sum(st.get(k, 0) for k in ("promotions", "new_facts_reviewed", "conflicts",
+                                       "fact_decays", "md_decays", "quarantined", "alerts"))
+    lines.append("verdict: the nightly job would wake the agent" if work
+                 else "verdict: nothing to do — the nightly job would stay asleep "
+                      "(unless a memory file is near its limit)")
+    return "\n".join(lines)
 
 
 def _state_default(env_name, cfg_key):
@@ -2082,7 +2263,10 @@ def main(argv=None):
                     help="cooldown of new_facts/fact_decays/conflicts; empty string — off")
     ap.add_argument("--snapshot-state", default=None,
                     help="snapshot for the memory-loss guard; empty string — off")
-    ap.add_argument("--explain", type=int, default=None, metavar="FACT_ID",
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run the pass on throw-away copies of the state files and print a "
+                         "short plain-text report; writes nothing (no state, no diary)")
+    ap.add_argument("--explain", default=None, metavar="FACT_ID",
                     help="print the score breakdown of one fact and exit")
     args = ap.parse_args(argv)
 
@@ -2099,6 +2283,28 @@ def main(argv=None):
     rejected = args.rejected_state if args.rejected_state is not None else _state_default("DREAM_REJECTED_STATE", "rejected")
     seen = args.seen_state if args.seen_state is not None else _state_default("DREAM_SEEN_STATE", "seen")
     snapshot = args.snapshot_state if args.snapshot_state is not None else _state_default("DREAM_SNAPSHOT_STATE", "snapshot")
+
+    if args.dry_run:
+        # The pass itself writes cooldowns and the loss-guard snapshot. A dry run
+        # gets copies of them — real input, nothing written back.
+        sandbox = tempfile.mkdtemp(prefix="dream-dry-")
+        try:
+            paths = []
+            for i, real in enumerate((asked, rejected, seen, snapshot)):
+                if not real:
+                    paths.append(None)
+                    continue
+                copy = os.path.join(sandbox, f"state{i}.json")
+                if os.path.exists(real):
+                    shutil.copyfile(real, copy)
+                paths.append(copy)
+            result = run(window, corr, md_days, mem_md, asked_state_path=paths[0],
+                         rejected_state_path=paths[1], seen_state_path=paths[2],
+                         snapshot_state_path=paths[3])
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
+        print(dry_run_summary(result, fact_source()))
+        return 0
 
     result = run(window, corr, md_days, mem_md,
                  asked_state_path=asked or None,

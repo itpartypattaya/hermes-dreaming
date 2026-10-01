@@ -97,19 +97,19 @@ def save_state(path, data):
 
 
 def fetch_content(fact_id):
-    """Fact text from memory_store.db (read-only). None — the fact is gone."""
-    db = _dream().fact_store_path(HOME)
+    """Fact text from the configured fact source (read-only, the same loader the
+    dream uses). None — the fact is gone or the source cannot be read."""
+    d = _dream()
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    except sqlite3.Error:
+        # holographic: resolve the store against this script's HERMES_HOME.
+        facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"
+                 else d.load_facts())
+    except (OSError, ValueError, sqlite3.Error):
         return None
-    try:
-        row = con.execute("select content from facts where fact_id=?", (fact_id,)).fetchone()
-    except sqlite3.Error:
-        return None
-    finally:
-        con.close()
-    return row[0] if row else None
+    for f in facts:
+        if str(f.get("fact_id")) == str(fact_id):
+            return f.get("content")
+    return None
 
 
 def main(argv=None):

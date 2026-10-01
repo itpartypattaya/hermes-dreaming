@@ -2,12 +2,11 @@
 the optional core patch. These are the parts another agent touches first, so a
 silent failure here costs the whole install."""
 
+import contextlib
 import importlib.util
 import io
 import json
-import os
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,7 +14,10 @@ from pathlib import Path
 
 from test_dream import dream  # noqa: E402  (same directory)
 
-ROOT = Path(__file__).parents[1]
+# The skill directory: `skills/dreaming/` in the plugin repository, or the
+# parent of `tests/` in a copy that keeps the tests next to the skill.
+_HERE = Path(__file__).resolve().parents[1]
+ROOT = _HERE / "skills" / "dreaming" if (_HERE / "skills" / "dreaming" / "SKILL.md").is_file() else _HERE
 
 
 def _load(name, path):
@@ -28,6 +30,7 @@ def _load(name, path):
 
 install_cron = _load("install_cron", ROOT / "scripts/install_cron.py")
 patch_cron = _load("patch_cron_memory", ROOT / "scripts/patch_cron_memory.py")
+install = _load("dream_install", ROOT / "scripts/install.py")
 
 
 class MissingDatabaseTests(unittest.TestCase):
@@ -89,7 +92,15 @@ class InstallCronTests(unittest.TestCase):
         problems = install_cron._preflight()
         self.assertEqual(len(problems), 3)
         self.assertTrue(any("dream-precheck.py" in p for p in problems))
-        self.assertTrue(any("SKILL.md" in p for p in problems))
+        self.assertTrue(any("no skill 'dreaming'" in p for p in problems))
+
+    def test_preflight_finds_the_skill_in_a_category_folder(self):
+        """`hermes skills install --category memory` puts it in skills/memory/dreaming."""
+        for name in (install_cron.DREAM_SCRIPT, install_cron.EXTRACT_SCRIPT):
+            (self.home / "scripts" / name).write_text("# gate", encoding="utf-8")
+        (self.home / "skills" / "memory" / "dreaming").mkdir(parents=True)
+        (self.home / "skills" / "memory" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
+        self.assertEqual(install_cron._preflight(), [])
 
     def test_preflight_clean_when_installed(self):
         self._complete_install()
@@ -182,40 +193,58 @@ class PatchCronMemoryTests(unittest.TestCase):
 
 
 class InstallScriptTests(unittest.TestCase):
-    """`install.sh --check` must be honest on a broken install (no bash on
-    Windows — skipped there)."""
+    """`install.py --check` must be honest on a broken install."""
 
-    @unittest.skipUnless(os.name == "posix", "bash installer is POSIX-only")
+    def _run(self, home, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = install.main(["--hermes-home", str(home), *argv])
+        return rc, out.getvalue()
+
     def test_check_fails_when_gates_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, HERMES_HOME=tmp)
-            proc = subprocess.run(["bash", str(ROOT / "install.sh"), "--check"],
-                                  capture_output=True, text=True, env=env)
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("cron cannot run it", proc.stdout)
+            rc, out = self._run(tmp, "--check")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("cron cannot run it", out)
+            self.assertFalse((Path(tmp) / "scripts").exists())     # --check changes nothing
 
-    @unittest.skipUnless(os.name == "posix", "bash installer is POSIX-only")
-    def test_untouched_example_config_is_flagged_until_edited(self):
+    def test_install_copies_gates_and_untouched_config_is_flagged_until_edited(self):
         """The most common half-install: seeded config nobody edited. It must be
         a warning on install AND on --check, and disappear once edited."""
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, HERMES_HOME=tmp)
-            first = subprocess.run(["bash", str(ROOT / "install.sh")],
-                                   capture_output=True, text=True, env=env)
-            self.assertEqual(first.returncode, 0, first.stdout)
-            self.assertIn("seeded", first.stdout)
-            check = subprocess.run(["bash", str(ROOT / "install.sh"), "--check"],
-                                   capture_output=True, text=True, env=env)
-            self.assertEqual(check.returncode, 0, check.stdout)
-            self.assertIn("still the untouched example", check.stdout)
+            rc, out = self._run(tmp)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("seeded", out)
+            self.assertIn("dry run: fact source: holographic", out)
+            for gate in install.GATES:
+                self.assertTrue((Path(tmp) / "scripts" / gate).is_file())
+            rc, out = self._run(tmp, "--check")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("still the untouched example", out)
             cfg = Path(tmp) / "dreaming.json"
             data = json.loads(cfg.read_text(encoding="utf-8"))
             data["timezone"] = "Asia/Tokyo"
             cfg.write_text(json.dumps(data), encoding="utf-8")
-            edited = subprocess.run(["bash", str(ROOT / "install.sh"), "--check"],
-                                    capture_output=True, text=True, env=env)
-            self.assertNotIn("untouched example", edited.stdout)
-            self.assertIn("is valid JSON", edited.stdout)
+            rc, out = self._run(tmp, "--check")
+            self.assertNotIn("untouched example", out)
+            self.assertIn("is valid JSON", out)
+
+    def test_drifted_gate_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            (Path(tmp) / "scripts" / install.GATES[0]).write_text("# old copy", encoding="utf-8")
+            rc, out = self._run(tmp, "--check")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("differs from the skill copy", out)
+
+    def test_generic_source_without_path_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            (Path(tmp) / "dreaming.json").write_text(json.dumps({"fact_source": "jsonl"}),
+                                                    encoding="utf-8")
+            rc, out = self._run(tmp, "--check")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("needs fact_store_path", out)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,10 @@ from pathlib import Path
 
 from test_dream import DreamFixture, dream, FAMILY_CHAT, EXTERNAL_CHAT  # noqa: E402
 
-ROOT = Path(__file__).parents[1]
+# The skill directory: `skills/dreaming/` in the plugin repository, or the
+# parent of `tests/` in a copy that keeps the tests next to the skill.
+_HERE = Path(__file__).resolve().parents[1]
+ROOT = _HERE / "skills" / "dreaming" if (_HERE / "skills" / "dreaming" / "SKILL.md").is_file() else _HERE
 
 
 def _load(name, path):

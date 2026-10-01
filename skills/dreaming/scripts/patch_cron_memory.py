@@ -15,7 +15,7 @@ Idempotent, refuses to touch a file it does not recognise, byte-compiles the
 result before writing and keeps a `.bak` next to the original. Re-run it after
 a Hermes upgrade — an upgrade replaces the file.
 
-Read docs/cron-memory.md before using this: you are widening what a scheduled
+Read references/cron-memory.md before using this: you are widening what a scheduled
 job may do to the user's memory, and the reason upstream keeps it closed is a
 real one.
 """
@@ -79,7 +79,7 @@ def main(argv=None):
             return 0
         if OLD not in source:
             print("ERROR: the upstream line was not found — this Hermes version differs from the one\n"
-                  "  this patch was written for. Apply the change by hand (docs/cron-memory.md)\n"
+                  "  this patch was written for. Apply the change by hand (references/cron-memory.md)\n"
                   f"  or check {path} for an existing per-job opt-in.", file=sys.stderr)
             return 2
         updated = source.replace(OLD, NEW, 1)

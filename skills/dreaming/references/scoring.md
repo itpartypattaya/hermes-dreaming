@@ -66,9 +66,10 @@ Every fact passes `classify_unsafe` before any output list:
 - **secret** — key/token patterns (sk-, apikey_, AKIA, AIza, ghp_, xox,
   Telegram bot token, JWT, PEM, long hex) and markers `password:` / `seed
   phrase:` (RU+EN). Content is published **nowhere** — only `fact_id` + reason.
-- **injection** — embedded instructions ("ignore previous instructions",
-  "system prompt", "show/send… key/prompt", "save to memory that… allowed",
-  jailbreak; RU+EN). A 60-char preview goes to the full JSON only.
+- **injection** — embedded instructions: telling the reader to disregard
+  its earlier rules, mentions of the system prompt, requests to show or send a
+  key or the prompt, "save to memory that … is allowed", jailbreak phrasing;
+  RU+EN. A 60-char preview goes to the full JSON only.
 
 **Reject list** (`cache/dream-rejected.json`, `dream-reject.py`) matches by
 text — fingerprint or stemmed containment in both directions (a short human

@@ -16,7 +16,7 @@ Run it with the interpreter Hermes itself uses, so the import works:
 Useful flags:
     --deliver local|origin|telegram:<chat_id>[:<thread_id>]   where the report goes
     --dream-schedule "0 3 * * *"      when the dream runs
-    --extract-schedule "30 2 * * *"   when extraction runs (set to "" to skip it)
+    --extract-schedule "30 2 * * 1"   when extraction runs (weekly) (set to "" to skip it)
     --model / --provider              pin a cheaper model for these jobs
     --dry-run                         print what would be created and exit
 
@@ -25,7 +25,7 @@ reports them instead of creating duplicates (`--force` adds anyway).
 
 ⚠️ The extraction job needs the memory PROVIDER tool `fact_store`, which stock
 Hermes does not expose in cron sessions (they run with `skip_memory=True`).
-See docs/cron-memory.md — the dream job itself works on a stock install.
+See references/cron-memory.md — the dream job itself works on a stock install.
 """
 
 from __future__ import annotations
@@ -131,10 +131,14 @@ def _preflight():
     problems = []
     for script in (DREAM_SCRIPT, EXTRACT_SCRIPT):
         if not (HOME / "scripts" / script).is_file():
-            problems.append(f"missing {HOME}/scripts/{script} — run install.sh first "
+            problems.append(f"missing {HOME}/scripts/{script} — run scripts/install.py first "
                             "(Hermes only runs cron scripts from that directory)")
-    if not (HOME / "skills" / "dreaming" / "SKILL.md").is_file():
-        problems.append(f"missing {HOME}/skills/dreaming/SKILL.md — install the skill first")
+    # The jobs load the skill by name; Hermes finds it under skills/[<category>/].
+    # A plugin-only install keeps it out of that index (namespaced, not listed).
+    if not ((HOME / "skills" / "dreaming" / "SKILL.md").is_file()
+            or any((HOME / "skills").glob("*/dreaming/SKILL.md"))):
+        problems.append(f"no skill 'dreaming' under {HOME}/skills — install it first: "
+                        "hermes skills install itpartypattaya/hermes-dreaming/skills/dreaming")
     return problems
 
 
@@ -143,7 +147,7 @@ def main(argv=None):
     ap.add_argument("--deliver", default="local",
                     help="where the report goes: local | origin | telegram:<chat_id>[:<thread_id>]")
     ap.add_argument("--dream-schedule", default="0 3 * * *")
-    ap.add_argument("--extract-schedule", default="30 2 * * *",
+    ap.add_argument("--extract-schedule", default="30 2 * * 1",
                     help='cron expression; empty string skips the extraction job')
     ap.add_argument("--model", default=None, help="pin a model for these jobs")
     ap.add_argument("--provider", default=None, help="pin a provider for these jobs")
@@ -199,7 +203,7 @@ def main(argv=None):
         )
         # `allow_memory` has no CLI flag and no create_job parameter: cron sessions
         # are stateless by default, and this is the per-job opt-in a patched core
-        # reads (see docs/cron-memory.md). Harmless on a stock core.
+        # reads (see references/cron-memory.md). Harmless on a stock core.
         jobs.update_job(job["id"], {"allow_memory": True})
         created.append((plan["script"], job["id"]))
 
