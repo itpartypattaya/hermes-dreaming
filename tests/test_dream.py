@@ -192,7 +192,7 @@ class ConsolidationTests(DreamFixture):
         self.assertGreaterEqual(promo["ref_days"], 2)
 
     def test_uncorroborated_fact_not_promoted(self):
-        # High trust, but not a single confirmation in conversations and no retrievals.
+        # High trust, but no corroboration in either conversations or retrievals.
         self.add_fact("Разовая реплика про случайную покупку зонтика", trust=0.95)
         result = self.run_dream()
         self.assertEqual(result["promotions"], [])
@@ -547,7 +547,7 @@ class RejectionListTests(DreamFixture):
         """Manual memory cleanup: the entry was removed, the fact stayed in the store with
         in_memory=false — and the next pass proposes it again (live case
         08-24: 30→13 entries, and the dream immediately produced 29 promotions, all of
-        them the deleted ones). --from-report closes them with one command."""
+        them the deleted ones). --from-report closes them with one command instead of a hand-written script."""
         self._corroborate_fact(self.FACT)
         report = self.home / "dream.json"
         out = self.run_dream(rejected_state=str(self.state))
@@ -685,7 +685,7 @@ class SeenCooldownTests(DreamFixture):
 
 class QuarantineRejectionTests(DreamFixture):
     """Quarantine was cut off BEFORE the reject list, so a quarantined fact could not
-    be closed at all: deleting from the store needs an explicit request, and `quarantined`
+    be closed at all: deleting from the store is allowed only at the user's (Viktor's) request, and `quarantined`
     is in ACTIONABLE_KEYS and woke the agent indefinitely (fix 2026-07-31)."""
 
     SECRET = "Ключ доступа к панели: sk-abcdefghijklmnopqrstuvwxyz012345"
@@ -1253,8 +1253,8 @@ class DedupeTests(unittest.TestCase):
     # --- reverse direction: a short entry as a digest of a long fact ------
     # Fix 2026-07-31: a rule about cron/jobs.json sat in MEMORY.md since 07-25,
     # the agent answered "already in memory verbatim" six nights in a row, and the
-    # dream proposed the same fact again — forward containment is counted from
-    # the FACT's tokens and cannot be reached for a long fact at all.
+    # dream proposed the same fact again — forward containment is divided by the
+    # FACT's token count, so for a long fact the threshold cannot be reached at all.
     LONG_FACT = (
         "`cron/jobs.json` — одновременно git-файл конфига и live runtime-state "
         "планировщика: поля next_run_at, last_run_at и прочие. Git-операции checkout "
