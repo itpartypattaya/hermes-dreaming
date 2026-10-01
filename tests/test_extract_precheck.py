@@ -97,16 +97,16 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertEqual(total, 0)
 
     def test_excluded_thread_does_not_reach_the_gate(self):
-        """Ветка алертов доверенного чата не должна ни будить извлечение, ни
-        попадать в payload: иначе агент просыпается разбирать собственные
-        уведомления и отвечает [SILENT] за деньги."""
+        """An alert thread of a trusted chat must neither wake extraction nor
+        reach the payload: otherwise the agent wakes up to read its own
+        notifications and answers [SILENT] at a cost."""
         dream.EXCLUDED_THREADS = {FAMILY_CHAT: {"421"}}
         for i in range(4):
             self.add_message(f"Алерт {i}: джоба упала", days_ago=1, thread_id="421")
         payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertIsNone(payload)
         self.assertEqual(total, 0)
-        # ...а обычная ветка того же чата гейт открывает.
+        # ...while an ordinary thread of the same chat opens the gate.
         for i in range(4):
             self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1, thread_id="20")
         payload2, _, total2 = extract.build_payload(dream, self.cfg, {}, self._now())
