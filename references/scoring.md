@@ -155,6 +155,14 @@ the dream.
   `gates.new_facts_cap` (default 30, freshest first).
 - **promotions** — score ≥ min_score, corroboration gate, not in memory,
   not ephemeral. Each carries `why`, `evidence`, `nearest_entry`.
+- **near-duplicates in the store** — the store only has `UNIQUE(content)`, so
+  one statement extracted twice ("X said that …" / "X said: …") is two rows.
+  In `promotions` and `new_facts` one representative per group is shown, the
+  rest go to its `duplicates` (ids) and `stats.store_duplicates`; hidden twins
+  are marked shown with it. Stricter than memory dedupe: every word one side
+  lacks must be a stopword or an inflection of the other's word, so short
+  codes ("profile de" / "kz"), numbers and dates keep facts apart. Nothing is
+  deleted from the store.
 - **conflicts** — see above.
 - **fact_decays** — `retrieval_count==0` and `mentions==0`, older than
   2×window, `trust_score<=0.5`, not in memory → "seems unused" (never
@@ -180,7 +188,19 @@ the dream.
 
 ## Cooldowns and state
 
-`cache/dream-asked.json` (md_decays), `cache/dream-seen.json` (new_facts,
+`cache/dream-asked.json` (md_decays) holds `{at, confirmed?, stems}` per entry
+key (a legacy bare date reads as `{at}`). An entry still present unchanged when
+`md_ask_cooldown_days` runs out is **confirmed** — "not relevant" is answered by
+removing or rewriting the entry, so keeping it is an answer too. So is a
+**rewrite**: the key hashes the text, and the usual reply to "still relevant?"
+is a fresh "as of <date>" stamp — before 2026-10-02 that new text was a new
+question the very next night. An entry without a record of its own inherits the
+record of a vanished asked entry on the same subject (≥4 shared stems, ≥0.7 of
+the shorter side; numbers ignored) and is confirmed by that. A confirmed entry
+rests `md_confirmed_cooldown_days` (90). Records of vanished entries live until
+their own cooldown ends — long enough for a rewrite to find them.
+
+`cache/dream-seen.json` (new_facts,
 fact_decays, conflicts — keyed by text fingerprint, marked only after the
 caps, pruned after two cooldowns), `cache/dream-rejected.json`,
 `cache/dream-snapshot.json`. All 0600; broken JSON is fail-soft.
@@ -209,6 +229,15 @@ must not lose the remainder. A legacy state without `since_id` is read as
 "before every id" — at worst a few rows are handed over twice, deduped by
 `existing_facts`.
 
+The cursor is committed by the agent's answer, the same way as the display
+cooldowns: the payload carries `generated_at`, the chunk's end waits in
+`pending`, and the next run commits it only if `_agent_acked()` finds the cron
+session with that stamp ending in an assistant message (`[SILENT]` counts).
+No answer → the same chunk again; after `extract.max_retries` (3) unanswered
+hand-overs the cursor moves on with a note on stderr, so a chunk that kills the
+turn every time cannot stall extraction. Before this a failed turn silently
+skipped its chunk.
+
 ## Wake gate (`dream-precheck.py`)
 
 The pre-check runs the dream and prints a compact JSON only when
@@ -225,6 +254,9 @@ quiet night the promotions gate stays shut, so without this clause nobody is
 awake to see 95 % coming. It is self-limiting: once consolidated below the
 threshold it closes again. On failure — `{"dream_error": …}` with exit 0
 (exit≠0 would make the scheduler ignore the gate and paste the raw stderr).
+A `dream.py` that does not return within `precheck.timeout_sec` (600) is such
+a failure too — a locked `state.db` must not hold the job until the
+scheduler's own script timeout (an hour) and its raw alert.
 
 ## Notes
 

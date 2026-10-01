@@ -45,7 +45,8 @@ and decisions). The dream will corroborate and promote them later, so:
   schedules, emotions of the moment, secrets, raw medical data, third-party
   claims about the user, chit-chat; skip what `existing_facts` already covers;
 - budget ≤ 8 facts per run, zero is fine; report one line (count + window) or
-  `[SILENT]`.
+  `[SILENT]`. Always answer: the answer is what marks these messages as
+  processed — a turn without one gets the same messages again next run.
 
 The store grows only this way (or through the `memory add` mirror): without
 extraction the dream has nothing to consolidate.
@@ -205,7 +206,9 @@ the candidates tomorrow.
 1. For each `promotions` item weigh the evidence (`why`, `evidence` — the days
    and snippets that corroborated it) and write **one** short verifiable fact
    or rule through the regular `memory` tool. Do not edit MEMORY.md directly.
-   Decided not to write — reject with a reason (see above).
+   Decided not to write — reject with a reason (see above). `duplicates` lists
+   ids of near-identical facts in the store hidden behind this one: they are
+   covered by the same decision, do not look for them.
 2. After promotions review **every** `new_facts` item, even with
    `user_profile_hint=false`.
 3. If a new fact stably describes the user or a household member —
@@ -231,8 +234,10 @@ the candidates tomorrow.
    cooldown. Close the human's "not relevant" by substance: an outdated
    **fact** — via `dream-reject.py` (manual run; no terminal at night), an
    outdated **§-entry of MEMORY.md** — via `memory` remove/replace, because the
-   reject list does not filter §-entries. Entries marked with a pin (📌 by
-   default) are never asked about.
+   reject list does not filter §-entries. "Still relevant" needs no action:
+   an entry kept past the 14 days — or rewritten in place, e.g. with a fresh
+   "as of" date — counts as confirmed and is not asked about for 90 days.
+   Entries marked with a pin (📌 by default) are never asked about.
 
 ## Report
 

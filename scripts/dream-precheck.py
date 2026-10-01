@@ -45,6 +45,7 @@ FACT_FIELDS = (
     "nearest_entry",
     "conflicts",
     "in_memory",
+    "duplicates",
     "ephemeral",
     "user_profile_hint",
 )
@@ -72,9 +73,15 @@ DEFAULT_MAX_CONTENT = 300  # do not drag abnormally long facts into the prompt
 # once consolidated below the threshold, the gate closes again.
 DEFAULT_MEMORY_FULL_PCT = 85
 
+# dream.py normally takes seconds. A locked or huge state.db must not keep the
+# job hanging until the scheduler's own script timeout (Hermes: 1 h by default)
+# — that ends in a raw scheduler alert instead of the one-line `dream_error`.
+DEFAULT_TIMEOUT_SEC = 600
+
 
 def _precheck_config():
-    """`precheck` section of the dream config (max_content, actionable_keys)."""
+    """`precheck` section of the dream config (max_content, actionable_keys,
+    memory_full_pct, timeout_sec)."""
     path = os.environ.get("DREAM_CONFIG") or str(HOME / "dreaming.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -91,7 +98,11 @@ def _precheck_config():
         full_pct = int(section.get("memory_full_pct", DEFAULT_MEMORY_FULL_PCT))
     except (TypeError, ValueError):
         full_pct = DEFAULT_MEMORY_FULL_PCT
-    return keys, max_content, full_pct
+    try:
+        timeout = int(section.get("timeout_sec", DEFAULT_TIMEOUT_SEC))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT_SEC
+    return keys, max_content, full_pct, (timeout if timeout > 0 else None)
 
 
 def compact_fact(item, max_content=DEFAULT_MAX_CONTENT):
@@ -160,12 +171,13 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
 
 
 def main():
-    actionable, max_content, full_pct = _precheck_config()
+    actionable, max_content, full_pct, timeout = _precheck_config()
     try:
         OUT.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             [sys.executable, str(DREAM), "--out", str(OUT), "--diary", str(DIARY)],
             check=True,
+            timeout=timeout,
         )
         data = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 — any error = short signal, not a traceback

@@ -96,6 +96,10 @@ DEFAULT_CONFIG = {
     "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
     "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
               "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
+              # A §-entry that survived a "still relevant?" question — kept as is
+              # past md_ask_cooldown_days, or rewritten in place — counts as
+              # confirmed and is not asked about again for this long.
+              "md_confirmed_cooldown_days": 90,
               "publish_cap": 15},
     "weights": {"relevance": 0.30, "frequency": 0.24, "query_diversity": 0.15,
                 "recency": 0.15, "consolidation": 0.10, "conceptual_richness": 0.06},
@@ -241,7 +245,8 @@ CONFIG = dict(DEFAULT_CONFIG)
 
 def configure(cfg):
     global CONFIG, LOCAL_TZ, WEIGHTS, MIN_SCORE, MIN_MENTIONS, NEW_FACTS_CAP, PUBLISH_CAP
-    global MD_ASK_COOLDOWN_DAYS, SEEN_COOLDOWN_DAYS, TRUSTED_CHAT_IDS, TRUST_PRIVATE
+    global MD_ASK_COOLDOWN_DAYS, MD_CONFIRMED_COOLDOWN_DAYS, SEEN_COOLDOWN_DAYS
+    global TRUSTED_CHAT_IDS, TRUST_PRIVATE
     global TRUST_NO_CHAT, EXCLUDED_THREADS, UNTRUSTED_SOURCES
     global STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
     global PROFILE_HINT_RE, PROFILE_CATEGORIES, DIARY_HEADING, DIARY_SECTION_RE
@@ -257,6 +262,8 @@ def configure(cfg):
     PUBLISH_CAP = int(gates.get("publish_cap", 15))
     MD_ASK_COOLDOWN_DAYS = _env("DREAM_MD_ASK_COOLDOWN_DAYS",
                                 int(gates.get("md_ask_cooldown_days", 14)), int)
+    MD_CONFIRMED_COOLDOWN_DAYS = _env("DREAM_MD_CONFIRMED_COOLDOWN_DAYS",
+                                      int(gates.get("md_confirmed_cooldown_days", 90)), int)
     SEEN_COOLDOWN_DAYS = _env("DREAM_SEEN_COOLDOWN_DAYS",
                               int(gates.get("seen_cooldown_days", 14)), int)
     env_chats = os.environ.get("DREAM_TRUSTED_CHAT_IDS")
@@ -311,7 +318,20 @@ RU_STOP = set("""и в во не на я с со что а то как это о
 их его её им ей мне меня тебя нас вам нам свой своя свои очень более менее как-то кто-то что-то
 надо нужно можно сейчас потом тогда чтобы который которая которые этого этой этим была будет
 сообщение сообщения ветка ветке чат чате топик тред тебе меня себе свои
-привет коротко напомни запиши сделай расскажи покажи какие какой какая пожалуйста спасибо""".split())
+привет коротко напомни запиши сделай расскажи покажи какие какой какая пожалуйста спасибо
+твоего твоей твоих твоим твоими моего моей моих моими нашего нашей наших вашего вашей ваших
+поэтому потому почему зачем одним одной словом может могут можешь пришли ответь посмотри
+проверь напиши давай давайте""".split())
+# Dates in words: never a topic, and two of them ("12 сентября … завтра") were
+# enough for two unrelated texts to "corroborate" each other. Kept apart from
+# RU_STOP because the store-duplicate check must NOT ignore them — "12 сентября"
+# and "12 октября" are different facts.
+RU_TEMPORAL_STOP = set("""сегодня завтра вчера
+января февраля марта апреля августа сентября октября ноября декабря""".split())
+RU_STOP |= RU_TEMPORAL_STOP
+# The additions of 2026-10-02 (possessives, connectives, imperatives addressed to
+# the agent, dates in words) come from the live top of "emerging themes": none
+# of them is a topic.
 
 # Latin stopwords (the tokenizer only keeps len>=4, shorter ones drop anyway).
 # Platform words mirror RU_STOP (chat/thread/topic/message): otherwise any
@@ -881,6 +901,61 @@ def find_conflicts(content, memory_text):
 # reuses ids after the last row is deleted, and the core may re-extract the
 # same fact under a new id. fact_id is kept for tracing only.
 
+# ---------------------------------------------------------------------------
+# Near-duplicates inside the fact store
+# ---------------------------------------------------------------------------
+# The store has no dedupe of its own beyond an exact UNIQUE(content): the same
+# statement extracted twice half an hour apart ("X said that …" / "X said: …")
+# is two rows, and both arrived as two candidates for one memory entry. The
+# dream never deletes from the store; it shows one representative per group
+# and lists the others in `duplicates`.
+#
+# Deliberately stricter than memory dedupe: compared are ALL words, not the
+# signature tokens — the tokenizer drops short words, and "profile de" vs
+# "profile kz" would otherwise be one fact. Every word one side has and the
+# other lacks must be a stopword ("said that X" / "said: X") or an inflection
+# of a word the other side has (same 5-char stem); numbers and short codes never
+# are, so two prices or two dates stay apart. A leading date stamp is provenance
+# and is ignored.
+STORE_DUP_MIN_SHARED = 4
+_WORD_RE = re.compile(r"\w[\w\-]*")
+
+
+def _store_words(text):
+    body = _norm(LEADING_DATE_STAMP_RE.sub("", text or "", count=1)).replace("ё", "е")
+    return set(_WORD_RE.findall(body))
+
+
+def _store_duplicates(a, b):
+    wa, wb = _store_words(a), _store_words(b)
+    if len(wa & wb) < STORE_DUP_MIN_SHARED:
+        return False
+    stop = {s.replace("ё", "е") for s in STOPWORDS - RU_TEMPORAL_STOP}
+    for mine, other in ((wa - wb, wb), (wb - wa, wa)):
+        other_stems = {w[:5] for w in other if len(w) >= 5}
+        for w in mine:
+            if w in stop or (len(w) >= 5 and w[:5] in other_stems):
+                continue
+            return False
+    return True
+
+
+def collapse_store_duplicates(items):
+    """Keep the first fact of every near-duplicate group (callers sort
+    best-first). Returns (kept, hidden); kept items are copies carrying
+    `duplicates` (fact ids) — the input dicts are shared between sections."""
+    kept, hidden = [], []
+    for s in items:
+        for k in kept:
+            if _store_duplicates(k["content"], s["content"]):
+                k.setdefault("duplicates", []).append(s["fact_id"])
+                hidden.append(s)
+                break
+        else:
+            kept.append(dict(s))
+    return kept, hidden
+
+
 def _fact_fingerprint(content):
     return hashlib.md5(_norm(content).encode("utf-8")).hexdigest()[:16]
 
@@ -1422,37 +1497,110 @@ def _revert_unacked(seen, state_db):
 
 
 def _load_asked_state(path):
+    """{entry_key: {"at", "confirmed"?, "stems"?}}. A legacy value (a bare ISO
+    date — the format before confirmations existed) reads as {"at": value}."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            out[k] = {"at": v}
+        elif isinstance(v, dict) and v.get("at"):
+            out[k] = dict(v)
+    return out
+
+
+# A §-entry rewritten after a "still relevant?" question is the SAME entry with
+# a new key: the key hashes the text, and the usual answer to the question is a
+# fresh date stamp ("As of 2026-09-23, …"). Live case 18–19.09 and 24–30.09:
+# three entries rewritten that way were asked again the very next night, and
+# one six days later — the question came back precisely BECAUSE it had been
+# answered. So an entry without a record of its own inherits the record of a
+# vanished one on the same subject (≥4 shared stems, ≥0.7 of the shorter side),
+# and the inheritance itself is the confirmation. Numbers are deliberately
+# ignored: a new date is the very thing a confirming rewrite changes. The bar is
+# lower than dedupe's because the pool is tiny — only entries that vanished
+# after a question — and a false match costs little: a freshly written entry
+# skips one "still relevant?" round. Rewrites inflect words («полке» → «полка»),
+# and crude 5-char stems lose those, so 0.8 missed a plain rephrasing.
+MD_SUCCESSOR_MIN_SHARED = 4
+MD_SUCCESSOR_RATIO = 0.7
+
+
+def _md_successor(stems, orphans):
+    """Key of the vanished asked entry `stems` most likely rewrites, or None."""
+    best, best_ratio = None, 0.0
+    for key, rec in orphans.items():
+        other = set(rec.get("stems") or ())
+        shared = stems & other
+        if len(shared) < MD_SUCCESSOR_MIN_SHARED:
+            continue
+        ratio = len(shared) / min(len(stems), len(other))
+        if ratio >= MD_SUCCESSOR_RATIO and ratio > best_ratio:
+            best, best_ratio = key, ratio
+    return best
+
+
+def _md_cooldown_end(rec):
+    """When the running cooldown of an asked-record ends (None — no cooldown)."""
+    confirmed = _parse_iso(rec.get("confirmed"))
+    if confirmed:
+        return confirmed + timedelta(days=MD_CONFIRMED_COOLDOWN_DAYS)
+    at = _parse_iso(rec.get("at"))
+    return at + timedelta(days=MD_ASK_COOLDOWN_DAYS) if at else None
 
 
 def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=()):
     """§-entries of MEMORY.md that have not surfaced in conversations for long
     → soft flag "still relevant?".
 
-    Cooldown: an entry flagged within the last MD_ASK_COOLDOWN_DAYS is not
-    raised again (state = {entry_key: iso_date}). Without it the dream asked
-    the same thing every night. Keys of entries that disappeared from
-    MEMORY.md are pruned. Only entries that make it into the published slice
-    (`cap`) are marked as asked — an overflow entry never reached the agent.
-    `reask` — keys whose previous showing was never acknowledged by an agent
-    turn (see `_agent_acked`): their cooldown is dropped."""
+    Cooldowns. An entry asked within MD_ASK_COOLDOWN_DAYS is not raised again
+    (without it the dream asked the same thing every night). An entry that
+    SURVIVED a question counts as confirmed and rests for
+    MD_CONFIRMED_COOLDOWN_DAYS: either it is still there unchanged when the
+    short cooldown runs out (the agreed way to say "not relevant" is to remove
+    or rewrite the entry, so keeping it is the answer), or it was rewritten in
+    place — see `_md_successor`. Records outlive their entry until their own
+    cooldown ends: a rewrite must still find the record of the text it replaced.
+
+    Only entries that make it into the published slice (`cap`) are marked as
+    asked — an overflow entry never reached the agent. `reask` — keys whose
+    previous showing was never acknowledged by an agent turn (see
+    `_agent_acked`): their records are dropped, the question is asked anew."""
     out = []
     now = _now()
     now_ts = now.timestamp()
+    stamp = now.isoformat(timespec="seconds")
     asked = _load_asked_state(asked_state_path) if asked_state_path else {}
-    current_keys, changed = set(), False
+    changed = False
     for key in reask:
         if key in asked:
             asked.pop(key, None)
             changed = True
-    for i, entry in enumerate(parse_md_entries(mem_md)):
-        key = _entry_key(entry)
-        current_keys.add(key)
+    entries = [(i, entry, _entry_key(entry)) for i, entry in enumerate(parse_md_entries(mem_md))]
+    current_keys = {key for _, _, key in entries}
+    orphans = {k: r for k, r in asked.items() if k not in current_keys and r.get("stems")}
+    for i, entry, key in entries:
+        stems = _stems(sig_tokens(entry))
+        rec = asked.get(key)
+        if rec is None and orphans:
+            prev = _md_successor(stems, orphans)
+            if prev:
+                rec = orphans.pop(prev)
+                asked.pop(prev, None)
+                rec["confirmed"] = stamp
+                asked[key] = rec
+                changed = True
+                print(f"[dream] note: MEMORY entry #{i} rewrites an entry asked on "
+                      f"{rec.get('at', '?')[:10]} — counted as confirmed", file=sys.stderr)
+        if rec is not None and rec.get("stems") != sorted(stems):
+            rec["stems"] = sorted(stems)  # also upgrades a legacy record
+            changed = True
         if is_pinned(entry):
             continue
         toks = sig_tokens(entry)
@@ -1460,22 +1608,30 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
         days_since = (now_ts - last_ts) / 86400 if last_ts else None
         if not (mentions == 0 or (days_since is not None and days_since > decay_days)):
             continue
-        last_asked = _parse_iso(asked.get(key))
-        if last_asked and (now - last_asked) < timedelta(days=MD_ASK_COOLDOWN_DAYS):
-            continue
+        if rec is not None:
+            end = _md_cooldown_end(rec)
+            if end and now < end:
+                continue
+            if not rec.get("confirmed"):
+                # Asked, short cooldown over, entry still here unchanged: kept.
+                rec["confirmed"] = stamp
+                changed = True
+                continue
         if cap is not None and len(out) >= cap:
             break
-        asked[key] = now.isoformat(timespec="seconds")
+        asked[key] = {"at": stamp, "stems": sorted(stems)}
         changed = True
         out.append({"index": i, "entry": entry[:160], "key": key,
                     "last_mention_days": round(days_since, 1) if days_since is not None else None,
                     "reason": "never surfaced within the window" if mentions == 0
                               else f"not surfaced for ~{round(days_since)} d"})
     if asked_state_path:
-        pruned = {k: v for k, v in asked.items() if k in current_keys}
-        if changed or pruned.keys() != asked.keys():
+        # A record of a vanished entry is kept only while its cooldown runs.
+        kept = {k: v for k, v in asked.items()
+                if k in current_keys or ((_md_cooldown_end(v) or now) > now)}
+        if changed or kept.keys() != asked.keys():
             try:
-                _write_private(asked_state_path, json.dumps(pruned, ensure_ascii=False, indent=1))
+                _write_private(asked_state_path, json.dumps(kept, ensure_ascii=False, indent=1))
             except OSError as e:
                 print(f"[dream] warn: asked-state not written: {e}", file=sys.stderr)
     return out
@@ -1567,7 +1723,6 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     new_facts = unseen(new_facts_pending, seen_new_facts, now)
     new_facts_suppressed = len(new_facts_pending) - len(new_facts)
     new_facts.sort(key=lambda s: (s["meta"]["days_old"], -s["score"]))
-    new_facts = new_facts[:NEW_FACTS_CAP]
 
     promotion_candidates = [
         s for s in safe
@@ -1577,11 +1732,20 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     promotions = [s for s in promotion_candidates if not is_ephemeral_fact(s["content"])]
     promotions.sort(key=lambda s: -s["score"])
     ephemeral_events.sort(key=lambda s: -s["score"])
+    promotions, promotions_dups = collapse_store_duplicates(promotions)
     # A fact already offered as a promotion is not repeated in new_facts: the
     # agent reviews it once (live case: 8 extracted facts arrived in both
-    # sections, doubling the prompt for no extra work).
-    promoted_ids = {s["fact_id"] for s in promotions}
+    # sections, doubling the prompt for no extra work). A duplicate hidden
+    # behind a promotion counts as offered too.
+    promoted_ids = {s["fact_id"] for s in promotions} | {s["fact_id"] for s in promotions_dups}
     new_facts = [s for s in new_facts if s["fact_id"] not in promoted_ids]
+    # Collapsed before the cap, so a hidden twin does not take a slot. Twins of
+    # a published representative are marked shown together with it (below);
+    # twins of one cut by the cap wait for it.
+    new_facts, new_facts_dups = collapse_store_duplicates(new_facts)
+    new_facts = new_facts[:NEW_FACTS_CAP]
+    shown_twins = {i for s in new_facts for i in s.get("duplicates", ())}
+    new_facts_dups = [s for s in new_facts_dups if s["fact_id"] in shown_twins]
 
     # Possible updates of existing entries: same subject, different numbers.
     # Deliberately NOT gated by fuzzy `in_memory`: a reworded fact with a new
@@ -1627,7 +1791,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     published_decays = decays[:PUBLISH_CAP]
     published_conflicts = conflicts[:PUBLISH_CAP]
     if seen_state_path:
-        mark_seen(new_facts, seen_new_facts, now)
+        mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
@@ -1636,7 +1800,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         fp = _fact_fingerprint
         seen["_pending"] = {
             "generated_at": generated_at,
-            "seen": {"new_facts": [fp(s["content"]) for s in new_facts],
+            "seen": {"new_facts": [fp(s["content"]) for s in new_facts + new_facts_dups],
                      "fact_decays": [fp(s["content"]) for s in published_decays],
                      "conflicts": [fp(s["content"]) for s in published_conflicts]},
             "asked": [d["key"] for d in md_dec if d.get("key")],
@@ -1677,13 +1841,15 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "fact_decays": len(decays), "md_decays": len(md_dec), "themes": len(themes),
                   "conflicts": len(conflicts),
                   "quarantined": len(quarantined),
-                  # Informational: silenced by the reject list / cooldown / expiry.
+                  # Informational: silenced by the reject list / cooldown / expiry,
+                  # or hidden behind a near-duplicate twin in the store.
                   # Not work — never in the precheck's actionable keys.
                   "rejected_suppressed": len(suppressed),
                   "new_facts_suppressed": new_facts_suppressed,
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
+                  "store_duplicates": len(promotions_dups) + len(new_facts_dups),
                   "alerts": len(alerts)},
         "memory_usage": usage,
         "alerts": alerts,
@@ -1720,6 +1886,13 @@ def _why(s):
 
 
 def _pub(s):
+    out = _pub_fields(s)
+    if s.get("duplicates"):
+        out["duplicates"] = list(s["duplicates"])
+    return out
+
+
+def _pub_fields(s):
     return {"fact_id": s["fact_id"], "content": s["content"], "category": s["category"],
             "tags": s["tags"], "score": s["score"], "signals": s["signals"],
             "days_old": s["meta"]["days_old"], "retrieval_count": s["meta"]["rc"],

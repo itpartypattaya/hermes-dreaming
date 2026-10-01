@@ -19,15 +19,25 @@ Contract (Hermes cron wake gate):
   - not enough                                   → {"wakeAgent": false};
   - failure                                      → {"dream_error": "..."}, exit 0.
 
-State: `cache/dream-extract-state.json` = {"since_ts": <epoch>} — the timestamp of
-the last message handed over. The first run starts `extract.backfill_days` back and
+State: `cache/dream-extract-state.json` = {"since_ts", "since_id", "pending"?,
+"attempts"?}. `since_*` is the committed cursor — the last message the agent is
+known to have processed. The first run starts `extract.backfill_days` back and
 proceeds in chunks of `extract.max_messages` per run (a backfill takes several
-runs; trigger the job by hand to catch up faster). The cursor advances when the
-payload is printed — a failed agent turn skips that chunk (visible in the report).
+runs; trigger the job by hand to catch up faster).
+
+The cursor is committed by the AGENT'S ANSWER, not by printing. The payload is
+stamped `generated_at` and the chunk's end goes to `pending`; the next run asks
+`dream._agent_acked()` whether the cron session that received that stamp ended
+with an answer (`[SILENT]` counts — "nothing worth storing" is an answer). Yes →
+the cursor moves; no (the model or the scheduler failed) → the same chunk is
+handed over again. Before this a failed turn skipped its chunk for good, and
+nothing said so. After `extract.max_retries` unanswered hand-overs the cursor
+moves anyway with a note on stderr: a chunk that kills the turn every time must
+not stall extraction forever.
 
 Config (`extract` section of dreaming.json; all optional):
   max_messages 200 · max_chars 40000 · min_messages 15 · backfill_days 60 ·
-  message_chars 400 · existing_facts_cap 80
+  message_chars 400 · existing_facts_cap 80 · max_retries 3
 """
 
 from __future__ import annotations
@@ -45,7 +55,8 @@ DREAM = HOME / "skills/dreaming/scripts/dream.py"
 STATE = HOME / "cache/dream-extract-state.json"
 
 DEFAULTS = {"max_messages": 200, "max_chars": 40000, "min_messages": 15,
-            "backfill_days": 60, "message_chars": 400, "existing_facts_cap": 80}
+            "backfill_days": 60, "message_chars": 400, "existing_facts_cap": 80,
+            "max_retries": 3}
 
 
 def _dream():
@@ -71,7 +82,31 @@ def save_state(path, data):
         f.write(json.dumps(data, ensure_ascii=False))
 
 
-REPLY_QUOTE_RE = re.compile(r'\[replying\s+to:?\s*[«"“]?(.*?)[»"”]?\s*\]', re.IGNORECASE | re.DOTALL)
+def resolve_pending(dream, state, max_retries):
+    """Close the previous hand-over: return the state with the cursor committed
+    (agent answered, or retries exhausted) or kept (no answer yet), `pending`
+    removed. A state without `pending` (nothing handed over, or a state written
+    before acknowledgements existed) is returned as is."""
+    state = dict(state)
+    pending = state.pop("pending", None)
+    if not isinstance(pending, dict) or not pending.get("generated_at"):
+        return state
+    acked = dream._agent_acked(str(HOME / "state.db"), pending["generated_at"])
+    attempts = 0 if acked else int(state.get("attempts") or 0) + 1
+    if not acked and attempts < max(1, int(max_retries)):
+        print(f"[dream-extract] the hand-over of {pending['generated_at']} has no agent answer — "
+              f"handing the same chunk over again (attempt {attempts + 1})", file=sys.stderr)
+        state["attempts"] = attempts
+        return state
+    if not acked:
+        print(f"[dream-extract] warn: {attempts} hand-overs without an agent answer — "
+              f"moving on past {pending['generated_at']}", file=sys.stderr)
+    state["since_ts"], state["since_id"] = pending.get("since_ts"), pending.get("since_id")
+    state.pop("attempts", None)
+    return state
+
+
+REPLY_QUOTE_RE =re.compile(r'\[replying\s+to:?\s*[«"“]?(.*?)[»"”]?\s*\]', re.IGNORECASE | re.DOTALL)
 
 
 def _clean(text, n):
@@ -132,22 +167,29 @@ def main():
     try:
         dream = _dream()
         cfg = dream.CONFIG
-        state = load_state(STATE)
-        now_ts = datetime.now(timezone.utc).timestamp()
-        payload, cursor, total = build_payload(dream, cfg, state, now_ts)
+        ext = dict(DEFAULTS, **(cfg.get("extract") or {}))
+        loaded = load_state(STATE)
+        state = resolve_pending(dream, loaded, ext["max_retries"])
+        now = datetime.now(timezone.utc)
+        payload, cursor, total = build_payload(dream, cfg, state, now.timestamp())
     except Exception as exc:  # noqa: BLE001
         print(f"[dream-extract] fail: {exc!r}", file=sys.stderr)
         print(json.dumps({"dream_error": f"{type(exc).__name__}: {exc}"[:300]}, ensure_ascii=False))
         return 0
+    stamp = now.isoformat(timespec="seconds")
+    if payload is not None:
+        # The stamp is how the next run finds this hand-over's cron session.
+        payload = {"note": payload.pop("note"), "generated_at": stamp, **payload}
+        state["pending"] = {"generated_at": stamp, "since_ts": cursor[0], "since_id": cursor[1]}
+    if payload is not None or state != loaded:
+        try:
+            save_state(STATE, dict(state, at=stamp))
+        except OSError as e:
+            print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)
     if payload is None:
         print(f"[dream-extract] {total} new message(s) — below the gate", file=sys.stderr)
         print(json.dumps({"wakeAgent": False}))
         return 0
-    try:
-        save_state(STATE, {"since_ts": cursor[0], "since_id": cursor[1],
-                           "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-    except OSError as e:
-        print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)
     print(f"[dream-extract] {payload['window']['messages']} message(s) handed over, "
           f"{payload['window']['remaining_after_this_chunk']} remaining", file=sys.stderr)
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))

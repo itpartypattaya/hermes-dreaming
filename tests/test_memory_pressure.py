@@ -89,12 +89,39 @@ class TestConfig(unittest.TestCase):
         self.assertGreater(pc.DEFAULT_MEMORY_FULL_PCT, 50)
         self.assertLess(pc.DEFAULT_MEMORY_FULL_PCT, 100)
 
-    def test_config_returns_three_values(self):
-        """_precheck_config gained a third field — callers must be updated with it."""
-        keys, max_content, full_pct = pc._precheck_config()
+    def test_config_returns_four_values(self):
+        """_precheck_config gained fields (full_pct, then timeout) — callers must follow."""
+        keys, max_content, full_pct, timeout = pc._precheck_config()
         self.assertIsInstance(keys, tuple)
         self.assertIsInstance(max_content, int)
         self.assertIsInstance(full_pct, int)
+        self.assertEqual(timeout, pc.DEFAULT_TIMEOUT_SEC)
+
+    def test_hanging_dream_is_a_dream_error_not_a_hang(self):
+        """A dream.py that never returns must end in the usual one-line
+        dream_error, exit 0 — not in the scheduler's own timeout an hour later."""
+        import contextlib, io, json, os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            slow = Path(tmp) / "dream.py"
+            slow.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+            cfg = Path(tmp) / "dreaming.json"
+            cfg.write_text(json.dumps({"precheck": {"timeout_sec": 1}}), encoding="utf-8")
+            saved = (pc.DREAM, pc.OUT, pc.DIARY, os.environ.get("DREAM_CONFIG"))
+            pc.DREAM, pc.OUT, pc.DIARY = slow, Path(tmp) / "out.json", Path(tmp) / "d.md"
+            os.environ["DREAM_CONFIG"] = str(cfg)
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    rc = pc.main()
+            finally:
+                pc.DREAM, pc.OUT, pc.DIARY = saved[:3]
+                if saved[3] is None:
+                    os.environ.pop("DREAM_CONFIG", None)
+                else:
+                    os.environ["DREAM_CONFIG"] = saved[3]
+        self.assertEqual(rc, 0)
+        err = json.loads(out.getvalue().strip())["dream_error"]
+        self.assertIn("TimeoutExpired", err)
 
 
 if __name__ == "__main__":

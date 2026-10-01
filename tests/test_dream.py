@@ -1328,10 +1328,66 @@ class MdDecayCooldownTests(unittest.TestCase):
         data = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertIn(dream._entry_key(self.ENTRY), data)
 
-    def test_cooldown_expiry_reflags(self):
+    def _state(self):
+        return json.loads(self.state.read_text(encoding="utf-8"))
+
+    def test_cooldown_expiry_unchanged_entry_counts_as_confirmed(self):
+        # Legacy record (bare date). Asked, short cooldown over, the entry is
+        # still here as it was: "not relevant" would have removed or rewritten
+        # it, so it is confirmed — not asked again (fix 2026-10-02).
         key = dream._entry_key(self.ENTRY)
         stale = (_ts(dream.MD_ASK_COOLDOWN_DAYS + 1)).isoformat(timespec="seconds")
         self.state.write_text(json.dumps({key: stale}), encoding="utf-8")
+        self.assertEqual(self._decays(), [])
+        rec = self._state()[key]
+        self.assertEqual(rec["at"], stale)
+        self.assertTrue(rec.get("confirmed"))
+        self.assertTrue(rec.get("stems"))  # legacy record upgraded
+        self.assertEqual(self._decays(), [])
+
+    def test_confirmed_entry_rests_long_then_reflags(self):
+        key = dream._entry_key(self.ENTRY)
+        asked_at = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS + 30).isoformat(timespec="seconds")
+        recent = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS - 1).isoformat(timespec="seconds")
+        self.state.write_text(json.dumps({key: {"at": asked_at, "confirmed": recent}}),
+                              encoding="utf-8")
+        self.assertEqual(self._decays(), [])
+        old = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
+        self.state.write_text(json.dumps({key: {"at": asked_at, "confirmed": old}}),
+                              encoding="utf-8")
+        self.assertEqual(len(self._decays()), 1)
+        rec = self._state()[key]
+        self.assertNotIn("confirmed", rec)  # a fresh question, a fresh short cooldown
+
+    def test_rewritten_entry_inherits_record_as_confirmed(self):
+        # Live case 18→19.09: the answer to the question was a rewrite with a
+        # fresh date, and the rewrite was asked again the very next night.
+        self.assertEqual(len(self._decays()), 1)
+        for rewrite in ("На 2026-09-23 старинный граммофон по-прежнему хранится в кладовке "
+                        "на верхней полке слева.",
+                        "Актуально (проверено 2026-10-01): старинный граммофон хранится "
+                        "в кладовке, верхняя полка слева."):
+            with self.subTest(rewrite=rewrite):
+                self.mem_md.write_text(f"§\n{rewrite}\n", encoding="utf-8")
+                self.assertEqual(self._decays(), [])
+                data = self._state()
+                self.assertEqual(list(data), [dream._entry_key(rewrite)])
+                self.assertTrue(data[dream._entry_key(rewrite)].get("confirmed"))
+
+    def test_unrelated_new_entry_is_asked(self):
+        self.assertEqual(len(self._decays()), 1)
+        other = "Генератор отчётов по пятницам выгружает таблицу расходов семьи."
+        self.mem_md.write_text(f"§\n{other}\n", encoding="utf-8")
+        out = self._decays()
+        self.assertEqual(len(out), 1)
+        data = self._state()
+        self.assertNotIn("confirmed", data[dream._entry_key(other)])
+
+    def test_legacy_orphan_without_stems_is_not_a_predecessor(self):
+        # A bare-date record of a vanished entry carries no stems: nothing to
+        # compare with, so the new text is a new question.
+        self.state.write_text(json.dumps({"deadbeefdeadbeef": _ts(1).isoformat()}),
+                              encoding="utf-8")
         self.assertEqual(len(self._decays()), 1)
 
     def test_corrupt_state_fail_soft(self):
@@ -1343,13 +1399,20 @@ class MdDecayCooldownTests(unittest.TestCase):
         self.assertEqual(len(self._decays(state=False)), 1)
         self.assertEqual(len(self._decays(state=False)), 1)
 
-    def test_removed_entry_pruned_from_state(self):
+    def test_removed_entry_record_kept_until_its_cooldown_ends(self):
+        # The record of a vanished entry must outlive it for a while: a rewrite
+        # may show up a night later and has to find its predecessor.
+        key = dream._entry_key(self.ENTRY)
         self._decays()
         self.mem_md.write_text("§\nСовсем другая запись про генератор отчётов.\n",
                                encoding="utf-8")
         self._decays()
-        data = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertNotIn(dream._entry_key(self.ENTRY), data)
+        self.assertIn(key, self._state())
+        data = self._state()
+        data[key]["at"] = _ts(dream.MD_ASK_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
+        self.state.write_text(json.dumps(data), encoding="utf-8")
+        self._decays()
+        self.assertNotIn(key, self._state())
 
     def test_corroborated_entry_not_flagged_and_not_stated(self):
         msg = "Нашли старинный граммофон в кладовке, верхняя полка"

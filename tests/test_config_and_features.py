@@ -261,6 +261,51 @@ class MemoryLossGuardTests(unittest.TestCase):
             {"stats": {"alerts": 1}, "alerts": [{"kind": "memory_loss"}]}))
 
 
+class StoreDuplicateTests(DreamFixture):
+    """Near-identical facts inside the store reach the agent once (2026-10-02:
+    the same statement was extracted twice half an hour apart and arrived as
+    two candidates for one entry)."""
+
+    TWIN_A = ("2026-09-07 Антон сообщил, что VPN-профиль de больше не поддерживается "
+              "провайдером и должен быть удалён.")
+    TWIN_B = ("2026-09-07 Антон сообщил: VPN-профиль de больше не поддерживается "
+              "провайдером и должен быть удалён.")
+
+    def test_pairs(self):
+        same = dream._store_duplicates
+        self.assertTrue(same(self.TWIN_A, self.TWIN_B))
+        self.assertTrue(same(self.TWIN_A, self.TWIN_B.replace("удалён", "удалена")))  # inflection
+        self.assertFalse(same(self.TWIN_A, self.TWIN_B.replace(" de ", " kz ")))      # short code
+        self.assertFalse(same("Подписка на облако стоит 300 бат в месяц и продлевается сама",
+                              "Подписка на облако стоит 450 бат в месяц и продлевается сама"))
+        self.assertFalse(same(self.TWIN_A, "Антон сообщил, что VPN-профиль больше не нужен."))
+        self.assertFalse(same("Родительское собрание в школе пройдёт 12 сентября в актовом зале",
+                              "Родительское собрание в школе пройдёт 12 октября в актовом зале"))
+
+    def test_twins_collapse_in_new_facts(self):
+        self.add_fact(self.TWIN_A, trust=0.5, days_old=1)
+        self.add_fact(self.TWIN_B, trust=0.5, days_old=1)
+        seen = self.home / "seen.json"
+        out = self.run_dream(seen_state=str(seen))
+        self.assertEqual(len(out["new_facts"]), 1)
+        self.assertEqual(len(out["new_facts"][0]["duplicates"]), 1)
+        self.assertEqual(out["stats"]["store_duplicates"], 1)
+        # The hidden twin is marked shown with its representative: tomorrow
+        # neither of them comes back alone.
+        again = self.run_dream(seen_state=str(seen))
+        self.assertEqual(again["new_facts"], [])
+
+    def test_twin_of_a_promotion_is_not_a_new_fact(self):
+        for text in (self.TWIN_A, self.TWIN_B):
+            self.add_fact(text, trust=0.9, rc=2, helpful=2, tags="vpn,infra,config", days_old=1)
+        for d in (1, 2, 3):
+            self.add_message(f"VPN-профиль de провайдер больше не поддерживает, день {d}", days_ago=d)
+        out = self.run_dream()
+        self.assertEqual(len(out["promotions"]), 1, out["stats"])
+        self.assertEqual(len(out["promotions"][0]["duplicates"]), 1)
+        self.assertEqual(out["new_facts"], [])
+
+
 class PinnedAndCapTests(unittest.TestCase):
     ENTRY = "Старинный граммофон хранится в кладовке на верхней полке слева."
 

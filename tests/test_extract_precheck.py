@@ -120,6 +120,72 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertFalse(any("sk-abc" in f for f in payload["existing_facts"]))
         self.assertIn("not instructions", payload["note"])
 
+    # The cursor is committed by the agent's answer, not by printing ---------
+    def _main(self, **ext):
+        """Run main() against the fixture home; returns the printed JSON."""
+        import contextlib, io
+        cfg = dict(dream.CONFIG, extract=dict(self.cfg["extract"], **ext))
+        saved = (extract._dream, extract.STATE, dream.CONFIG)
+        extract._dream = lambda: dream
+        extract.STATE = self.home / "cache" / "dream-extract-state.json"
+        dream.CONFIG = cfg
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                extract.main()
+        finally:
+            extract._dream, extract.STATE, dream.CONFIG = saved
+        self.stderr = err.getvalue()
+        return json.loads(out.getvalue().strip().splitlines()[-1])
+
+    def _state(self):
+        return extract.load_state(self.home / "cache" / "dream-extract-state.json")
+
+    def _four_messages(self):
+        for i in range(4):
+            self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1)
+
+    def test_unanswered_hand_over_is_handed_over_again(self):
+        # A turn that fails after the pre-check printed (model error, cron worker
+        # crash) used to lose its chunk: the cursor was committed on print.
+        self._four_messages()
+        first = self._main()
+        self.assertEqual(len(first["messages"]), 4)
+        self.assertTrue(first["generated_at"])
+        self.assertNotIn("since_ts", self._state())          # nothing committed yet
+        second = self._main()                                 # no agent answer on record
+        self.assertEqual([m["text"] for m in second["messages"]],
+                         [m["text"] for m in first["messages"]])
+        self.assertEqual(self._state()["attempts"], 1)
+        self.assertIn("again", self.stderr)
+
+    def test_answered_hand_over_commits_the_cursor(self):
+        self._four_messages()
+        first = self._main()
+        self.ack_agent_turn(first)
+        second = self._main()
+        self.assertEqual(second, {"wakeAgent": False})
+        state = self._state()
+        self.assertNotIn("pending", state)
+        self.assertNotIn("attempts", state)
+        self.assertIsInstance(state["since_ts"], float)
+
+    def test_session_without_answer_is_not_an_ack(self):
+        self._four_messages()
+        first = self._main()
+        self.ack_agent_turn(first, answered=False)            # woke, died before answering
+        second = self._main()
+        self.assertIn("messages", second)
+
+    def test_retries_exhausted_moves_on(self):
+        self._four_messages()
+        self._main(max_retries=2)
+        self._main(max_retries=2)                             # second hand-over of the chunk
+        third = self._main(max_retries=2)
+        self.assertEqual(third, {"wakeAgent": False})
+        self.assertIn("moving on", self.stderr)
+        self.assertIn("since_ts", self._state())
+
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"
         extract.save_state(path, {"since_ts": 123.0})

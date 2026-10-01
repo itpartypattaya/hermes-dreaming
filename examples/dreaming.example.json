@@ -39,7 +39,8 @@
 
   "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
   "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
-            "seen_cooldown_days": 14, "md_ask_cooldown_days": 14, "publish_cap": 15},
+            "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
+            "md_confirmed_cooldown_days": 90, "publish_cap": 15},
   "weights": {"relevance": 0.30, "frequency": 0.24, "query_diversity": 0.15,
               "recency": 0.15, "consolidation": 0.10, "conceptual_richness": 0.06},
 
@@ -50,6 +51,7 @@
 
   "precheck": {"max_content": 300,
                "memory_full_pct": 85,
+               "timeout_sec": 600,
                "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
                                    "md_decays", "conflicts", "quarantined", "alerts"]}
 }

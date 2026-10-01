@@ -26,7 +26,9 @@ deserves durable memory:
   memory entries, **pinned** entries;
 - **outcomes**: a reject list ("outdated" from a human closes the question for
   good), display cooldowns (nothing is asked twice within 14 days — and a
-  cooldown counts only once the agent turn actually answered), a snapshot
+  cooldown counts only once the agent turn actually answered; a memory entry
+  that survived a "still relevant?" question, kept or rewritten, rests for 90),
+  near-duplicate facts of the store shown once, a snapshot
   **loss guard** (alert when a large share of memory — or the whole file —
   disappears overnight);
 - **wake gate**: the agent (and its tokens) wakes only when there is work — and a
@@ -186,8 +188,10 @@ precedence CLI flag > `DREAM_*` env > config > default. Key fields:
 | `pinned_markers` | entries with these markers are never asked about |
 | `memory_loss_alert_fraction` | loss-guard threshold (default 0.25) |
 | `precheck.actionable_keys`, `precheck.max_content` | what wakes the agent, prompt trimming |
+| `precheck.timeout_sec` | how long the gate waits for `dream.py` before reporting `dream_error` (default 600; Hermes itself waits up to an hour) |
+| `gates.md_confirmed_cooldown_days` | rest period of a memory entry that survived a "still relevant?" question — kept past `md_ask_cooldown_days` or rewritten in place (default 90). Env: `DREAM_MD_CONFIRMED_COOLDOWN_DAYS` |
 | `precheck.memory_full_pct` | fill level (%) at which a durable file alone wakes the agent to consolidate (default 85; `0` disables). The char limit gates **writes** silently, so without this nobody notices the ceiling |
-| `extract.*` | extraction chunking: `max_messages` 200, `max_chars` 40000, `min_messages` 15, `backfill_days` 60 |
+| `extract.*` | extraction chunking: `max_messages` 200, `max_chars` 40000, `min_messages` 15, `backfill_days` 60; `max_retries` 3 — hand-overs of one chunk without an agent answer before the cursor moves on anyway |
 
 ## Files
 
