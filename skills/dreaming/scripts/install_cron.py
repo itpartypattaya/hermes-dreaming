@@ -2,16 +2,16 @@
 """install_cron.py — create the dreaming cron jobs in Hermes.
 
 Why a script instead of a documented `hermes cron add` line: the CLI has no
-flags for `enabled_toolsets` or `allow_memory`, and `cron/jobs.json` is live
+flag for `enabled_toolsets`, and `cron/jobs.json` is live
 scheduler state (counters are rewritten on every fire), so hand-editing it is
-the wrong move. The supported path is the Python API — `cron.jobs.create_job()`
-plus `update_job()` for the fields the CLI cannot set. This script is that path,
-written down and idempotent.
+the wrong move. The supported path is the Python API — `cron.jobs.create_job()`,
+which takes the fields the CLI cannot set. This script is that path, written
+down and idempotent.
 
 Run it with the interpreter Hermes itself uses, so the import works:
 
     ~/.hermes/hermes-agent/venv/bin/python \\
-        ~/.hermes/skills/dreaming/scripts/install_cron.py --deliver local
+        ~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts/install_cron.py --deliver local
 
 Useful flags:
     --deliver local|origin|telegram:<chat_id>[:<thread_id>]   where the report goes
@@ -23,9 +23,13 @@ Useful flags:
 Existing jobs are detected by their `script` field: re-running the installer
 reports them instead of creating duplicates (`--force` adds anyway).
 
-⚠️ The extraction job needs the memory PROVIDER tool `fact_store`, which stock
-Hermes does not expose in cron sessions (they run with `skip_memory=True`).
-See references/cron-memory.md — the dream job itself works on a stock install.
+The jobs load the skill they were installed with. Installed as a plugin
+(`hermes plugins install itpartypattaya/hermes-dreaming`), that is the plugin's
+own, catalog-pinned skill: portable plugin skills are namespaced
+(`agent-plugin-hermes-dreaming-<hash>:dreaming`), so the qualified name is taken
+from Hermes' plugin registry rather than guessed. A regular skill install
+(`skills/[<category>/]dreaming`) is used only when the plugin is absent.
+Requires Hermes >= 0.21: cron sessions reach memory and `fact_store` natively.
 """
 
 from __future__ import annotations
@@ -126,6 +130,47 @@ def _existing(jobs, script):
     return [j for j in listed if (j or {}).get("script") == script]
 
 
+PLUGIN_NAME = "hermes-dreaming"
+
+
+def _plugin_skill_name():
+    """Qualified name under which Hermes registered the plugin's own skill, or
+    None. Asks the plugin registry (the plugin must be enabled to be loaded)
+    instead of re-deriving the namespace hash."""
+    sys.path.insert(0, str(HOME / "hermes-agent"))
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+        pm = get_plugin_manager()
+        root = (HOME / "plugins" / PLUGIN_NAME).resolve()
+        for meta in pm.list_plugin_skill_metadata():
+            name = str(meta.get("name") or "")
+            if not name.endswith(":dreaming"):
+                continue
+            path = pm.find_plugin_skill(name)
+            if path is not None and Path(path).resolve().is_relative_to(root):
+                return name
+    except Exception as exc:  # noqa: BLE001 — environment problem, reported by the caller
+        print(f"note: cannot read the Hermes plugin registry: {exc}", file=sys.stderr)
+    return None
+
+
+def skill_ref():
+    """(skill name for the jobs, problem). The plugin's own skill wins over any
+    other skill called `dreaming`; a regular skill install is the fallback."""
+    if (HOME / "plugins" / PLUGIN_NAME / "plugin.json").is_file():
+        name = _plugin_skill_name()
+        if name:
+            return name, None
+        return None, (f"plugin {PLUGIN_NAME} is installed but its skill is not registered — "
+                      f"enable it: hermes plugins enable {PLUGIN_NAME}")
+    if ((HOME / "skills" / "dreaming" / "SKILL.md").is_file()
+            or any((HOME / "skills").glob("*/dreaming/SKILL.md"))):
+        return "dreaming", None
+    return None, (f"the skill is not installed — hermes plugins install itpartypattaya/{PLUGIN_NAME} "
+                  f"&& hermes plugins enable {PLUGIN_NAME}")
+
+
 def _preflight():
     """Fail loudly on the things that silently produce a broken install."""
     problems = []
@@ -133,12 +178,9 @@ def _preflight():
         if not (HOME / "scripts" / script).is_file():
             problems.append(f"missing {HOME}/scripts/{script} — run scripts/install.py first "
                             "(Hermes only runs cron scripts from that directory)")
-    # The jobs load the skill by name; Hermes finds it under skills/[<category>/].
-    # A plugin-only install keeps it out of that index (namespaced, not listed).
-    if not ((HOME / "skills" / "dreaming" / "SKILL.md").is_file()
-            or any((HOME / "skills").glob("*/dreaming/SKILL.md"))):
-        problems.append(f"no skill 'dreaming' under {HOME}/skills — install it first: "
-                        "hermes skills install itpartypattaya/hermes-dreaming/skills/dreaming")
+    _, problem = skill_ref()
+    if problem:
+        problems.append(problem)
     return problems
 
 
@@ -162,6 +204,7 @@ def main(argv=None):
         for p in problems:
             print(f"ERROR: {p}", file=sys.stderr)
         return 1
+    skill, _ = skill_ref()
 
     planned = [{
         "script": DREAM_SCRIPT,
@@ -178,8 +221,8 @@ def main(argv=None):
         })
 
     if args.dry_run:
-        print(json.dumps([{k: (v[:80] + "…" if k == "prompt" else v) for k, v in p.items()}
-                          for p in planned], ensure_ascii=False, indent=2))
+        print(json.dumps([dict({k: (v[:80] + "…" if k == "prompt" else v) for k, v in p.items()},
+                               skill=skill) for p in planned], ensure_ascii=False, indent=2))
         return 0
 
     jobs = _import_jobs()
@@ -194,17 +237,13 @@ def main(argv=None):
             schedule=plan["schedule"],
             name=plan["name"],
             deliver=args.deliver,
-            skill="dreaming",
-            skills=["dreaming"],
+            skill=skill,
+            skills=[skill],
             script=plan["script"],
             enabled_toolsets=["memory"],
             model=args.model,
             provider=args.provider,
         )
-        # `allow_memory` has no CLI flag and no create_job parameter: cron sessions
-        # are stateless by default, and this is the per-job opt-in a patched core
-        # reads (see references/cron-memory.md). Harmless on a stock core.
-        jobs.update_job(job["id"], {"allow_memory": True})
         created.append((plan["script"], job["id"]))
 
     for script, jid in created:

@@ -162,9 +162,10 @@ def check_fact_source(home, dream, r):
 
 
 def check_core(home, r):
-    # Hermes <= 0.20 runs cron with skip_memory=True, which keeps the memory
-    # PROVIDER (and its fact_store tool) out of the session: the dream job is
-    # fine, extraction has nothing to call. See references/cron-memory.md.
+    # Hermes >= 0.21 gives cron sessions memory like any other session, so the
+    # extraction job can call the provider's fact_store. Older cores keep the
+    # provider out of cron: the dream still works, extraction cannot (read-only
+    # check; nothing here touches the core — see references/cron-memory.md).
     sched = home / "hermes-agent" / "cron" / "scheduler.py"
     try:
         text = sched.read_text(encoding="utf-8")
@@ -173,11 +174,10 @@ def check_core(home, r):
         return
     if re.search(r"^ *skip_memory=False,?$", text, re.MULTILINE):
         r.ok("core gives cron jobs memory natively (Hermes >= 0.21) — the extraction job can use fact_store")
-    elif "allow_memory" in text:
-        r.ok("core honours per-job allow_memory — the extraction job can use fact_store")
     else:
-        r.warn("core runs cron with skip_memory=True: the nightly dream works, but the extraction "
-               "job cannot call fact_store. Fix or skip it — see references/cron-memory.md")
+        r.warn("this Hermes keeps memory providers out of cron sessions: the nightly dream works, "
+               "but the extraction job cannot call fact_store — upgrade to Hermes >= 0.21, or "
+               "install the jobs with --extract-schedule \"\"")
 
 
 def main(argv=None):

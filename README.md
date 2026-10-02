@@ -46,20 +46,32 @@ the agent actually answered: a night that failed halfway re-shows the same items
 
 Requirements: Hermes Agent ≥ 0.21, Python ≥ 3.9 (standard library only).
 
-**1. The skill** — as a regular skill (recommended: the nightly jobs load it by name):
+**1. The plugin** — a portable Agent Plugins v1 package (`plugin.json` + `skills/dreaming/`):
+
+```bash
+hermes plugins install itpartypattaya/hermes-dreaming
+hermes plugins enable hermes-dreaming
+```
+
+The cron jobs below are bound to this plugin's own skill, so they run exactly the copy you installed
+(and the catalog reviewed). Plugin skills are namespaced and kept out of the system prompt's skill
+index; the agent finds them with `skills_list` and loads them with `skill_view`.
+
+<details><summary>Alternative: a regular skill</summary>
 
 ```bash
 hermes skills install itpartypattaya/hermes-dreaming/skills/dreaming
 ```
 
-It also ships as a portable Agent Plugins v1 package (`hermes plugins install
-itpartypattaya/hermes-dreaming`). Plugin skills are namespaced and kept out of the skill index, so for
-the cron jobs below use the regular install.
+The skill then lands in `~/.hermes/skills/dreaming/` and is listed in the skill index. The installer
+scripts below use it only when the plugin is not installed; substitute that path in the commands.
+
+</details>
 
 **2. The gates and the config**
 
 ```bash
-python3 ~/.hermes/skills/dreaming/scripts/install.py
+python3 ~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts/install.py
 ```
 
 Hermes runs cron scripts only from `~/.hermes/scripts/` (a symlink is refused), so the installer
@@ -94,12 +106,15 @@ alerts, assistant bridges, machine-generated cards — under `excluded_threads`.
 
 ```bash
 ~/.hermes/hermes-agent/venv/bin/python \
-    ~/.hermes/skills/dreaming/scripts/install_cron.py --deliver local --dry-run
+    ~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts/install_cron.py --deliver local --dry-run
 # happy with the plan? run it again without --dry-run
 ```
 
 The CLI has no flag for `enabled_toolsets`, and `cron/jobs.json` is live scheduler state, so job
-creation goes through the Hermes Python API. Existing jobs are skipped. Use
+creation goes through the Hermes Python API. The jobs get the plugin skill's qualified name
+(`agent-plugin-hermes-dreaming-<hash>:dreaming`) straight from Hermes' plugin registry, so the plugin
+must be enabled first; both gates likewise prefer the plugin's copy of `dream.py`. Existing jobs are
+skipped. Use
 `--deliver telegram:<chat_id>:<thread_id>` to receive the report in a chat and
 `--extract-schedule ""` to install the dream alone. The extraction job is cheap to run weekly — a
 nightly run mostly answers `[SILENT]` on a small household.
@@ -108,8 +123,10 @@ nightly run mostly answers `[SILENT]` on a small household.
 
 Version 1 was installed by cloning the repository straight into `~/.hermes/skills/dreaming`. Version
 2 keeps the skill in `skills/dreaming/`, so a `git pull` there would hide `SKILL.md` one level down.
-Move the old clone away, install with step 1, then re-run step 2: the gates are replaced, and your
-config and state in `~/.hermes/cache/` stay as they are.
+Move the old clone away, install with step 1, re-run step 2 (the gates are replaced), and re-create the
+jobs with step 4 (`--force`, then remove the old ones with `hermes cron remove <id>`) so they point at
+the plugin's skill. Your config and state in `~/.hermes/cache/` stay as they are. The `allow_memory`
+flag of 1.x jobs is unused since Hermes 0.21 and can stay or go.
 
 ## Fact sources
 
@@ -133,7 +150,7 @@ you still want the dream's corroboration over them, export to `jsonl`.
 ## Using it by hand
 
 ```bash
-S=~/.hermes/skills/dreaming/scripts
+S=~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts
 python3 $S/dream.py --dry-run                 # what tonight's pass would show; writes nothing
 python3 $S/dream.py --explain 42              # why fact 42 scored like that
 python3 $S/dream-reject.py 42 --reason "thread was closed"
@@ -206,7 +223,6 @@ skills/dreaming/
   scripts/dream-reject.py            reject list CLI
   scripts/install.py                 installs and verifies the gates
   scripts/install_cron.py            creates both cron jobs
-  scripts/patch_cron_memory.py       Hermes ≤ 0.20 only: per-job memory opt-in
   references/scoring.md              signals, gates, sections, state files
   references/cron-memory.md          what cron sessions may touch
   examples/                          config and cron job examples

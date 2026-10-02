@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hermes-dreaming",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Nightly deterministic memory consolidation for Hermes: corroborate facts with real conversations, propose the few worth keeping, ask about stale memory, warn before memory fills up.",
   "author": {
     "name": "Anton Vaskov",

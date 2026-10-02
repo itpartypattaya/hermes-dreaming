@@ -101,6 +101,23 @@ class TestConfig(unittest.TestCase):
         self.assertIsInstance(full_pct, int)
         self.assertEqual(timeout, pc.DEFAULT_TIMEOUT_SEC)
 
+    def test_gate_prefers_the_plugin_copy_of_dream(self):
+        """The plugin's reviewed copy wins over any skill called `dreaming`."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            plugin = home / "plugins" / "hermes-dreaming" / "skills" / "dreaming" / "scripts"
+            regular = home / "skills" / "dreaming" / "scripts"
+            other = home / "skills" / "memory" / "dreaming" / "scripts"
+            for d in (plugin, regular, other):
+                d.mkdir(parents=True)
+                (d / "dream.py").write_text("# copy", encoding="utf-8")
+            self.assertEqual(pc.find_dream(home), plugin / "dream.py")
+            (plugin / "dream.py").unlink()
+            self.assertEqual(pc.find_dream(home), regular / "dream.py")
+            (regular / "dream.py").unlink()
+            self.assertEqual(pc.find_dream(home), other / "dream.py")
+
     def test_hanging_dream_is_a_dream_error_not_a_hang(self):
         """A dream.py that never returns must end in the usual one-line
         dream_error, exit 0 — not in the scheduler's own timeout an hour later."""

@@ -41,17 +41,18 @@ def _hermes_home():
 
 
 def find_dream(home):
-    """dream.py of the installed skill. Where it lives depends on how the skill
-    was installed: `hermes skills install` puts it in skills/[<category>/]dreaming/,
-    `hermes plugins install` in plugins/hermes-dreaming/skills/dreaming/.
-    `$DREAM_SCRIPT` overrides (skills.external_dirs or any other layout)."""
+    """dream.py of the installed skill. The plugin's own copy comes first — it is
+    the reviewed, catalog-pinned one, and no other skill that happens to be
+    called `dreaming` may take its place. A regular skill install
+    (skills/[<category>/]dreaming/) is the fallback. `$DREAM_SCRIPT` overrides
+    (skills.external_dirs or any other layout)."""
     explicit = os.environ.get("DREAM_SCRIPT")
     if explicit:
         return Path(explicit)
     tail = Path("dreaming") / "scripts" / "dream.py"
-    candidates = [home / "skills" / tail,
-                  *sorted((home / "skills").glob("*/dreaming/scripts/dream.py")),
-                  home / "plugins" / "hermes-dreaming" / "skills" / tail]
+    candidates = [home / "plugins" / "hermes-dreaming" / "skills" / tail,
+                  home / "skills" / tail,
+                  *sorted((home / "skills").glob("*/dreaming/scripts/dream.py"))]
     return next((c for c in candidates if c.is_file()), candidates[0])
 
 

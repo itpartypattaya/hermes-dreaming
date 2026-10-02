@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.0.0
+version: 2.1.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (written against 0.21.5)

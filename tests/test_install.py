@@ -29,7 +29,6 @@ def _load(name, path):
 
 
 install_cron = _load("install_cron", ROOT / "scripts/install_cron.py")
-patch_cron = _load("patch_cron_memory", ROOT / "scripts/patch_cron_memory.py")
 install = _load("dream_install", ROOT / "scripts/install.py")
 
 
@@ -92,7 +91,7 @@ class InstallCronTests(unittest.TestCase):
         problems = install_cron._preflight()
         self.assertEqual(len(problems), 3)
         self.assertTrue(any("dream-precheck.py" in p for p in problems))
-        self.assertTrue(any("no skill 'dreaming'" in p for p in problems))
+        self.assertTrue(any("the skill is not installed" in p for p in problems))
 
     def test_preflight_finds_the_skill_in_a_category_folder(self):
         """`hermes skills install --category memory` puts it in skills/memory/dreaming."""
@@ -101,6 +100,56 @@ class InstallCronTests(unittest.TestCase):
         (self.home / "skills" / "memory" / "dreaming").mkdir(parents=True)
         (self.home / "skills" / "memory" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
         self.assertEqual(install_cron._preflight(), [])
+
+    def _install_plugin(self):
+        plugin = self.home / "plugins" / "hermes-dreaming"
+        (plugin / "skills" / "dreaming").mkdir(parents=True)
+        (plugin / "plugin.json").write_text("{}", encoding="utf-8")
+        return plugin
+
+    def test_plugin_skill_wins_over_a_regular_skill(self):
+        """Review of the catalog entry: the jobs must run the plugin's own,
+        catalog-pinned copy — never some other skill called `dreaming`."""
+        self._complete_install()                      # a regular skills/dreaming exists too
+        self._install_plugin()
+        old = install_cron._plugin_skill_name
+        install_cron._plugin_skill_name = lambda: "agent-plugin-hermes-dreaming-0a1b2c3d:dreaming"
+        try:
+            self.assertEqual(install_cron.skill_ref(),
+                             ("agent-plugin-hermes-dreaming-0a1b2c3d:dreaming", None))
+            out = io.StringIO()
+            old_out, sys.stdout = sys.stdout, out
+            try:
+                install_cron.main(["--dry-run"])
+            finally:
+                sys.stdout = old_out
+            self.assertIn("agent-plugin-hermes-dreaming-0a1b2c3d:dreaming", out.getvalue())
+        finally:
+            install_cron._plugin_skill_name = old
+
+    def test_installed_but_disabled_plugin_is_a_problem(self):
+        self._complete_install()
+        self._install_plugin()
+        old = install_cron._plugin_skill_name
+        install_cron._plugin_skill_name = lambda: None    # not registered = not enabled
+        try:
+            problems = install_cron._preflight()
+        finally:
+            install_cron._plugin_skill_name = old
+        self.assertTrue(any("hermes plugins enable hermes-dreaming" in p for p in problems))
+
+    def test_regular_skill_is_the_fallback(self):
+        self._complete_install()
+        self.assertEqual(install_cron.skill_ref(), ("dreaming", None))
+
+    def test_no_allow_memory_and_no_core_patch(self):
+        """Catalog plugins may not modify core; the per-job opt-in of the old
+        core patch is gone with it."""
+        src = (ROOT / "scripts" / "install_cron.py").read_text(encoding="utf-8")
+        self.assertNotIn("allow_memory", src)
+        self.assertFalse((ROOT / "scripts" / "patch_cron_memory.py").exists())
+        for name in ("cron-job.example.json", "cron-job-extract.example.json"):
+            self.assertNotIn("allow_memory", (ROOT / "examples" / name).read_text(encoding="utf-8"))
 
     def test_preflight_clean_when_installed(self):
         self._complete_install()
@@ -149,47 +198,6 @@ class InstallCronTests(unittest.TestCase):
         # A user who installs via the script must get the documented prompt.
         example = json.loads((ROOT / "examples" / "cron-job.example.json").read_text(encoding="utf-8"))
         self.assertEqual(install_cron.DREAM_PROMPT.strip(), example["prompt"].strip())
-
-
-class PatchCronMemoryTests(unittest.TestCase):
-    """The optional core patch: idempotent, reversible, and refusing to touch a
-    file it does not recognise."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.sched = Path(self.tmp.name) / "cron" / "scheduler.py"
-        self.sched.parent.mkdir(parents=True)
-        self.sched.write_text(
-            "def run_job(job):\n"
-            "    return start(\n"
-            + patch_cron.OLD + "\n"
-            "    )\n", encoding="utf-8")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_apply_then_idempotent_then_revert(self):
-        self.assertEqual(patch_cron.main([str(self.sched), "--check"]), 1)
-        self.assertEqual(patch_cron.main([str(self.sched)]), 0)
-        text = self.sched.read_text(encoding="utf-8")
-        self.assertIn("allow_memory", text)
-        self.assertTrue(self.sched.with_suffix(".py.bak").exists())
-        self.assertEqual(patch_cron.main([str(self.sched), "--check"]), 0)
-        self.assertEqual(patch_cron.main([str(self.sched)]), 0)          # second run: no-op
-        self.assertEqual(patch_cron.main([str(self.sched), "--revert"]), 0)
-        self.assertNotIn("allow_memory", self.sched.read_text(encoding="utf-8"))
-
-    def test_unknown_file_is_refused(self):
-        self.sched.write_text("def run_job(job):\n    return start(skip_memory=False)\n",
-                              encoding="utf-8")
-        self.assertEqual(patch_cron.main([str(self.sched)]), 2)
-        self.assertNotIn("allow_memory", self.sched.read_text(encoding="utf-8"))
-
-    def test_directory_argument_resolves_to_scheduler(self):
-        self.assertEqual(patch_cron.main([str(self.sched.parents[1]), "--check"]), 1)
-
-    def test_missing_target_reports_cleanly(self):
-        self.assertEqual(patch_cron.main([str(self.sched.parent / "nope.py"), "--check"]), 2)
 
 
 class InstallScriptTests(unittest.TestCase):
