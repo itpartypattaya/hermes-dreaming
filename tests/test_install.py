@@ -1,5 +1,5 @@
 """Tests of the installer surface: missing databases, the cron-job installer and
-the optional core patch. These are the parts another agent touches first, so a
+`install.py --check`. These are the parts another agent touches first, so a
 silent failure here costs the whole install."""
 
 import contextlib
@@ -30,6 +30,60 @@ def _load(name, path):
 
 install_cron = _load("install_cron", ROOT / "scripts/install_cron.py")
 install = _load("dream_install", ROOT / "scripts/install.py")
+
+PLUGIN_SKILL = "agent-plugin-hermes-dreaming-0a1b2c3d:dreaming"
+
+
+@contextlib.contextmanager
+def fake_registry(entries=None, error=None):
+    """Stand-in for Hermes' `hermes_cli.plugins`: `entries` maps a registered
+    skill name to the SKILL.md it serves; `error` makes discovery fail the way
+    a missing dependency does under the wrong interpreter."""
+    import types
+    entries = dict(entries or {})
+
+    class Manager:
+        def list_plugin_skill_metadata(self):
+            return [{"name": name} for name in sorted(entries)]
+
+        def find_plugin_skill(self, name):
+            return Path(entries[name]) if name in entries else None
+
+    def discover_plugins(force=False):
+        if error is not None:
+            raise error
+
+    pkg, mod = types.ModuleType("hermes_cli"), types.ModuleType("hermes_cli.plugins")
+    mod.discover_plugins, mod.get_plugin_manager = discover_plugins, Manager
+    pkg.plugins = mod
+    saved = {k: sys.modules.get(k) for k in ("hermes_cli", "hermes_cli.plugins")}
+    sys.modules.update({"hermes_cli": pkg, "hermes_cli.plugins": mod})
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+class FakeJobs:
+    """The slice of Hermes' `cron.jobs` the installer calls."""
+
+    def __init__(self, listed=()):
+        self.listed, self.created, self.updated = list(listed), [], []
+
+    def list_jobs(self, include_disabled=False):
+        return [j for j in self.listed if include_disabled or j.get("enabled", True)]
+
+    def create_job(self, **kw):
+        self.created.append(kw)
+        return {"id": f"new{len(self.created)}"}
+
+    def update_job(self, job_id, updates):
+        self.updated.append((job_id, updates))
+        return {"id": job_id}
 
 
 class MissingDatabaseTests(unittest.TestCase):
@@ -104,39 +158,114 @@ class InstallCronTests(unittest.TestCase):
     def _install_plugin(self):
         plugin = self.home / "plugins" / "hermes-dreaming"
         (plugin / "skills" / "dreaming").mkdir(parents=True)
+        (plugin / "skills" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
         (plugin / "plugin.json").write_text("{}", encoding="utf-8")
-        return plugin
+        return plugin / "skills" / "dreaming" / "SKILL.md"
 
     def test_plugin_skill_wins_over_a_regular_skill(self):
         """Review of the catalog entry: the jobs must run the plugin's own,
         catalog-pinned copy — never some other skill called `dreaming`."""
         self._complete_install()                      # a regular skills/dreaming exists too
-        self._install_plugin()
-        old = install_cron._plugin_skill_name
-        install_cron._plugin_skill_name = lambda: "agent-plugin-hermes-dreaming-0a1b2c3d:dreaming"
-        try:
-            self.assertEqual(install_cron.skill_ref(),
-                             ("agent-plugin-hermes-dreaming-0a1b2c3d:dreaming", None))
+        own = self._install_plugin()
+        with fake_registry({PLUGIN_SKILL: own}):
+            self.assertEqual(install_cron.skill_ref(), (PLUGIN_SKILL, None))
             out = io.StringIO()
-            old_out, sys.stdout = sys.stdout, out
-            try:
+            with contextlib.redirect_stdout(out):
                 install_cron.main(["--dry-run"])
-            finally:
-                sys.stdout = old_out
-            self.assertIn("agent-plugin-hermes-dreaming-0a1b2c3d:dreaming", out.getvalue())
-        finally:
-            install_cron._plugin_skill_name = old
+        self.assertIn(PLUGIN_SKILL, out.getvalue())
+
+    def test_only_the_registration_of_this_plugins_file_counts(self):
+        """Another plugin's `dreaming`, or a name serving some other file under
+        our directory, must not become the jobs' skill."""
+        self._complete_install()
+        own = self._install_plugin()
+        other = self.home / "plugins" / "other" / "skills" / "dreaming" / "SKILL.md"
+        nested = own.parent / "extra" / "SKILL.md"
+        entries = {"aaa-first:dreaming": nested, "agent-plugin-other-11111111:dreaming": other}
+        with fake_registry(dict(entries, **{PLUGIN_SKILL: own})):
+            self.assertEqual(install_cron.skill_ref(), (PLUGIN_SKILL, None))
+        with fake_registry(entries):                  # ours is not registered
+            name, problem = install_cron.skill_ref()
+        self.assertIsNone(name)
+        self.assertIn("hermes plugins enable hermes-dreaming", problem)
+
+    def test_two_names_for_our_file_is_a_problem_not_a_guess(self):
+        self._complete_install()
+        own = self._install_plugin()
+        with fake_registry({PLUGIN_SKILL: own, "agent-plugin-copy-22222222:dreaming": own}):
+            name, problem = install_cron.skill_ref()
+        self.assertIsNone(name)
+        self.assertIn("several registered skills", problem)
+
+    def test_unreadable_registry_names_the_interpreter(self):
+        """System python3 cannot import Hermes (no ruamel): that is not a
+        disabled plugin, and the problem must say what to run instead."""
+        self._complete_install()
+        self._install_plugin()
+        with fake_registry(error=ModuleNotFoundError("No module named 'ruamel'")):
+            name, problem = install_cron.skill_ref()
+        self.assertIsNone(name)
+        self.assertIn("ruamel", problem)
+        self.assertIn("venv/bin/python", problem)
 
     def test_installed_but_disabled_plugin_is_a_problem(self):
         self._complete_install()
         self._install_plugin()
-        old = install_cron._plugin_skill_name
-        install_cron._plugin_skill_name = lambda: None    # not registered = not enabled
-        try:
+        with fake_registry({}):                       # not registered = not enabled
             problems = install_cron._preflight()
-        finally:
-            install_cron._plugin_skill_name = old
         self.assertTrue(any("hermes plugins enable hermes-dreaming" in p for p in problems))
+
+    # Existing jobs: a 2.0 job keeps the skill it was created with -------------
+    def _run_main(self, fake, *argv):
+        own = self._install_plugin()
+        old = install_cron._import_jobs
+        install_cron._import_jobs = lambda: fake
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with fake_registry({PLUGIN_SKILL: own}), contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                rc = install_cron.main(list(argv))
+        finally:
+            install_cron._import_jobs = old
+        return rc, out.getvalue() + err.getvalue()
+
+    def _old_job(self, **kw):
+        return dict({"id": "old1", "script": install_cron.DREAM_SCRIPT,
+                     "skill": "dreaming", "skills": ["dreaming"]}, **kw)
+
+    def test_job_bound_to_another_skill_is_reported_not_kept_quietly(self):
+        self._complete_install()
+        fake = FakeJobs([self._old_job(enabled=False)])   # paused counts too
+        rc, out = self._run_main(fake)
+        self.assertEqual(rc, 1)
+        self.assertIn("--rebind", out)
+        self.assertEqual(fake.updated, [])
+        # No second nightly job next to the stale one; extraction did not exist yet.
+        self.assertEqual([c["script"] for c in fake.created], [install_cron.EXTRACT_SCRIPT])
+        self.assertEqual(fake.created[0]["skills"], [PLUGIN_SKILL])
+
+    def test_rebind_updates_the_skill_in_place(self):
+        self._complete_install()
+        fake = FakeJobs([self._old_job()])
+        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(fake.updated, [("old1", {"skill": PLUGIN_SKILL, "skills": [PLUGIN_SKILL]})])
+        self.assertEqual(fake.created, [])
+
+    def test_job_already_bound_is_left_alone(self):
+        self._complete_install()
+        fake = FakeJobs([self._old_job(skill=PLUGIN_SKILL, skills=[PLUGIN_SKILL])])
+        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((fake.updated, fake.created), ([], []))
+        self.assertIn("left alone", out)
+
+    def test_rebind_keeps_skills_attached_by_hand(self):
+        job = {"skills": ["dreaming", "house-rules"]}
+        self.assertEqual(install_cron.rebound_skills(job, PLUGIN_SKILL), [PLUGIN_SKILL, "house-rules"])
+        self.assertEqual(install_cron.rebound_skills({"skills": ["house-rules"]}, PLUGIN_SKILL),
+                         [PLUGIN_SKILL, "house-rules"])
+        self.assertEqual(install_cron.job_skills({"skill": "dreaming"}), ["dreaming"])
 
     def test_regular_skill_is_the_fallback(self):
         self._complete_install()
@@ -253,6 +382,86 @@ class InstallScriptTests(unittest.TestCase):
             rc, out = self._run(tmp, "--check")
             self.assertNotEqual(rc, 0)
             self.assertIn("needs fact_store_path", out)
+
+
+class CheckJobsTests(unittest.TestCase):
+    """`install.py --check` reads cron/jobs.json and says whether the dreaming
+    jobs load the skill this install provides — the only other sign of a
+    stale binding is Hermes' 'skill not found' line in a nightly report."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        (self.home / "cron").mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _regular_skill(self):
+        (self.home / "skills" / "dreaming").mkdir(parents=True)
+        (self.home / "skills" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
+
+    def _plugin(self):
+        skill = self.home / "plugins" / "hermes-dreaming" / "skills" / "dreaming" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# skill", encoding="utf-8")
+        (self.home / "plugins" / "hermes-dreaming" / "plugin.json").write_text("{}", encoding="utf-8")
+        return skill
+
+    def _jobs(self, *skills):
+        listed = [{"id": f"j{i}", "script": install.GATES[i % 2], "skills": [s]}
+                  for i, s in enumerate(skills)]
+        listed.append({"id": "other", "script": "backup.py", "skills": ["dreaming-not"]})
+        (self.home / "cron" / "jobs.json").write_text(json.dumps({"jobs": listed}), encoding="utf-8")
+
+    def _check(self, check_only=True):
+        r, out = install.Report(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.check_jobs(self.home, check_only, r)
+        return r, out.getvalue()
+
+    def test_jobs_that_load_the_installed_skill_pass(self):
+        self._regular_skill()
+        self._jobs("dreaming", "dreaming")
+        r, out = self._check()
+        self.assertEqual((r.ok_n, r.warn_n, r.bad_n), (2, 0, 0), out)
+
+    def test_job_left_on_a_removed_plugin_is_a_problem(self):
+        self._regular_skill()                         # plugin gone, regular install remains
+        self._jobs(PLUGIN_SKILL)
+        r, out = self._check()
+        self.assertEqual(r.bad_n, 1, out)
+        self.assertIn("--rebind", out)
+
+    def test_plugin_job_passes_with_the_registry(self):
+        own = self._plugin()
+        self._jobs(PLUGIN_SKILL, PLUGIN_SKILL)
+        with fake_registry({PLUGIN_SKILL: own}):
+            r, out = self._check()
+        self.assertEqual((r.ok_n, r.bad_n), (2, 0), out)
+
+    def test_disabled_plugin_is_a_problem(self):
+        self._plugin()
+        self._jobs(PLUGIN_SKILL)
+        with fake_registry({}):
+            r, out = self._check()
+        self.assertEqual(r.bad_n, 1, out)
+        self.assertIn("hermes plugins enable", out)
+
+    def test_unreadable_registry_is_a_warning_not_a_verdict(self):
+        self._plugin()
+        self._jobs(PLUGIN_SKILL)
+        with fake_registry(error=ModuleNotFoundError("No module named 'ruamel'")):
+            r, out = self._check()
+        self.assertEqual((r.warn_n, r.bad_n), (1, 0), out)
+        self.assertIn("venv/bin/python", out)
+
+    def test_no_jobs_warns_on_check_only(self):
+        self._regular_skill()
+        r, _ = self._check(check_only=True)
+        self.assertEqual(r.warn_n, 1)
+        r, out = self._check(check_only=False)       # first install: the next step says it
+        self.assertEqual((r.ok_n, r.warn_n, r.bad_n), (0, 0, 0), out)
 
 
 if __name__ == "__main__":

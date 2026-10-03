@@ -27,6 +27,44 @@ def _load(name, path):
 extract = _load("dream_extract", ROOT / "scripts/dream-extract-precheck.py")
 
 
+class GateHomeTests(unittest.TestCase):
+    """Which dream.py the extraction gate loads, and with which home."""
+
+    def test_gate_prefers_the_plugin_copy_of_dream(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            plugin = home / "plugins" / "hermes-dreaming" / "skills" / "dreaming" / "scripts"
+            regular = home / "skills" / "dreaming" / "scripts"
+            other = home / "skills" / "memory" / "dreaming" / "scripts"
+            for d in (plugin, regular, other):
+                d.mkdir(parents=True)
+                (d / "dream.py").write_text("# copy", encoding="utf-8")
+            self.assertEqual(extract.find_dream(home), plugin / "dream.py")
+            (plugin / "dream.py").unlink()
+            self.assertEqual(extract.find_dream(home), regular / "dream.py")
+            (regular / "dream.py").unlink()
+            self.assertEqual(extract.find_dream(home), other / "dream.py")
+
+    def test_dream_module_is_loaded_with_the_gate_home(self):
+        """dream.py reads HERMES_HOME when imported; a gate that found its home
+        another way must re-point it, or config and store come from ~/.hermes."""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "dreaming.json").write_text(
+                json.dumps({"fact_source": "jsonl", "fact_store_path": "facts.jsonl"}), encoding="utf-8")
+            saved = (extract.DREAM, extract.HOME)
+            extract.DREAM, extract.HOME = ROOT / "scripts" / "dream.py", home
+            try:
+                mod = extract._dream()
+            finally:
+                extract.DREAM, extract.HOME = saved
+            self.assertEqual(mod.HOME, str(home))
+            self.assertEqual(mod.fact_source(), "jsonl")          # this home's config
+            self.assertEqual(mod.fact_store_path(), os.path.join(str(home), "facts.jsonl"))
+
+
 class ExtractPrecheckTests(DreamFixture):
     def setUp(self):
         super().setUp()

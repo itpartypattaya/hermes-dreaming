@@ -2244,7 +2244,11 @@ def _state_default(env_name, cfg_key):
 
 
 def main(argv=None):
+    global HOME
     ap = argparse.ArgumentParser(description="Read-only dreaming pass over agent memory")
+    ap.add_argument("--hermes-home", default=None,
+                    help="Hermes home (default: $HERMES_HOME or ~/.hermes); the cron gates pass "
+                         "the home they were installed into")
     ap.add_argument("--config", default=None, help="JSON config (default: $DREAM_CONFIG or "
                                                    "$HERMES_HOME/dreaming.json)")
     ap.add_argument("--window", type=int, default=None, help="window for emerging themes / new facts")
@@ -2270,6 +2274,8 @@ def main(argv=None):
                     help="print the score breakdown of one fact and exit")
     args = ap.parse_args(argv)
 
+    if args.hermes_home:
+        HOME = args.hermes_home
     configure(load_config(args.config))
     if args.explain is not None:
         return explain(args.explain, args.memory_md or os.path.join(HOME, "memories", "MEMORY.md"),

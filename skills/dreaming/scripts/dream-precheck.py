@@ -203,8 +203,11 @@ def main():
     actionable, max_content, full_pct, timeout = _precheck_config()
     try:
         OUT.parent.mkdir(parents=True, exist_ok=True)
+        # --hermes-home: this gate may have found its home without HERMES_HOME
+        # (installed into <home>/scripts); dream.py on its own would read ~/.hermes.
         subprocess.run(
-            [sys.executable, str(DREAM), "--out", str(OUT), "--diary", str(DIARY)],
+            [sys.executable, str(DREAM), "--hermes-home", str(HOME),
+             "--out", str(OUT), "--diary", str(DIARY)],
             check=True,
             timeout=timeout,
         )

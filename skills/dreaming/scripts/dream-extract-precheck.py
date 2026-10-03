@@ -95,6 +95,12 @@ def _dream():
     spec = importlib.util.spec_from_file_location("_dream_for_extract", str(DREAM))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # dream.py takes its home from HERMES_HOME when imported. Point it at the
+    # home this gate settled on and reload its config, or a gate installed into
+    # a non-default home would mix this home's messages with the config and
+    # fact store of ~/.hermes.
+    mod.HOME = str(HOME)
+    mod.configure(mod.load_config())
     return mod
 
 

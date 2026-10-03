@@ -234,6 +234,30 @@ class DryRunTests(DreamFixture):
         self.assertFalse((self.home / "memories" / "DREAMS.md").exists())
         self.assertFalse(list(self.home.glob("**/dream-snapshot.json")))
 
+    def test_hermes_home_flag_points_the_pass_at_another_home(self):
+        """The cron gates pass --hermes-home: everything — config, fact store,
+        transcripts, memory files — must come from that home."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            other = type(self.home)(tmp)
+            (other / "dreaming.json").write_text(
+                json.dumps({"fact_source": "jsonl", "fact_store_path": "facts.jsonl"}), encoding="utf-8")
+            (other / "facts.jsonl").write_text(
+                json.dumps({"id": "f-1", "content": "Фикус поливают по субботам"}) + "\n",
+                encoding="utf-8")
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    rc = dream.main(["--hermes-home", str(other), "--dry-run"])
+            finally:
+                from test_dream import TEST_CONFIG
+                dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, TEST_CONFIG))
+                dream.HOME = str(self.home)
+                dream.TRUSTED_CHAT_IDS = {"-100111"}
+        self.assertEqual(rc, 0)
+        self.assertIn("fact source: jsonl", out.getvalue())
+        self.assertIn("facts: 1", out.getvalue())
+
     def test_quiet_night(self):
         rc, out = self._main("--dry-run")
         self.assertEqual(rc, 0)

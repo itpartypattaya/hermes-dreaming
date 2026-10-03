@@ -114,18 +114,32 @@ The CLI has no flag for `enabled_toolsets`, and `cron/jobs.json` is live schedul
 creation goes through the Hermes Python API. The jobs get the plugin skill's qualified name
 (`agent-plugin-hermes-dreaming-<hash>:dreaming`) straight from Hermes' plugin registry, so the plugin
 must be enabled first; both gates likewise prefer the plugin's copy of `dream.py`. Existing jobs are
-skipped. Use
+skipped; one that loads another skill than this install provides is reported, and `--rebind` points
+it at the right one in place. Use
 `--deliver telegram:<chat_id>:<thread_id>` to receive the report in a chat and
 `--extract-schedule ""` to install the dream alone. The extraction job is cheap to run weekly — a
 nightly run mostly answers `[SILENT]` on a small household.
+
+A job keeps the skill name it was created with. The hash in it comes from the plugin's `name` in
+`plugin.json`, so updates and reinstalls keep it. Disabling or removing the plugin does not: the job
+then runs without its skill, and Hermes starts the nightly report with
+`⚠️ Skill(s) not found and skipped`. `install.py --check` names such a job; re-enable the plugin, or
+run `install_cron.py --rebind` against the install you kept. The check reads Hermes' plugin
+registry, so run it with Hermes' interpreter (`~/.hermes/hermes-agent/venv/bin/python`) — a plain
+`python3` only gets a warning that it cannot tell.
+
+### Upgrading from 2.0
+
+2.0 bound the jobs to a regular `dreaming` skill. After installing the plugin, re-run step 2 (the
+gates changed) and then step 4 with `--rebind`: the existing jobs switch to the plugin's skill without
+losing their schedule, delivery or history.
 
 ### Upgrading from 1.x
 
 Version 1 was installed by cloning the repository straight into `~/.hermes/skills/dreaming`. Version
 2 keeps the skill in `skills/dreaming/`, so a `git pull` there would hide `SKILL.md` one level down.
-Move the old clone away, install with step 1, re-run step 2 (the gates are replaced), and re-create the
-jobs with step 4 (`--force`, then remove the old ones with `hermes cron remove <id>`) so they point at
-the plugin's skill. Your config and state in `~/.hermes/cache/` stay as they are. The `allow_memory`
+Move the old clone away, install with step 1, re-run step 2 (the gates are replaced), and run step 4
+with `--rebind` so the existing jobs point at the plugin's skill. Your config and state in `~/.hermes/cache/` stay as they are. The `allow_memory`
 flag of 1.x jobs is unused since Hermes 0.21 and can stay or go.
 
 ## Fact sources

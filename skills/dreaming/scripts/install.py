@@ -161,6 +161,53 @@ def check_fact_source(home, dream, r):
                "the file appears with the first stored fact")
 
 
+def _load_install_cron(home):
+    spec = importlib.util.spec_from_file_location("_install_cron_for_check",
+                                                  SKILL_DIR / "scripts" / "install_cron.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.HOME = Path(home)
+    return mod
+
+
+def check_jobs(home, check_only, r):
+    # A job keeps the skill name it was created with. If that skill stops
+    # loading — a 2.0 job still bound to a regular `dreaming`, a plugin disabled
+    # or removed after install_cron — Hermes runs the job without it and only
+    # flags the skipped skill at the top of the nightly report.
+    path = home / "cron" / "jobs.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as exc:
+        r.warn(f"cannot read {path}: {exc}")
+        return
+    listed = data.get("jobs", []) if isinstance(data, dict) else data
+    ours = [j for j in listed if isinstance(j, dict) and j.get("script") in GATES]
+    if not ours:
+        if check_only:
+            r.warn("no dreaming cron jobs yet — create them with install_cron.py")
+        return
+    ic = _load_install_cron(home)
+    try:
+        expected, problem = ic.resolve_skill()
+    except ic.RegistryError as exc:
+        r.warn(f"cannot tell which skill the cron jobs should load: {exc}")
+        return
+    if problem:
+        r.bad(f"the dreaming cron jobs cannot load their skill: {problem}")
+        return
+    for job in ours:
+        label = f"job {job.get('id')} ({job.get('script')})"
+        if ic.bound_to(job, expected):
+            r.ok(f"{label} loads {expected}")
+        else:
+            current = ic.job_skills(job)
+            r.bad(f"{label} loads {', '.join(current) or 'no skill'}, but this install provides "
+                  f"{expected} — run install_cron.py --rebind")
+
+
 def check_core(home, r):
     # Hermes >= 0.21 gives cron sessions memory like any other session, so the
     # extraction job can call the provider's fact_store. Older cores keep the
@@ -203,6 +250,7 @@ def main(argv=None):
     check_dry_run(dream, cfg, r)
     check_core(home, r)
     check_fact_source(home, dream, r)
+    check_jobs(home, args.check, r)
 
     print(f"\n== {r.ok_n} ok, {r.warn_n} warning(s), {r.bad_n} problem(s) ==")
     if not r.bad_n and not args.check:

@@ -18,10 +18,14 @@ Useful flags:
     --dream-schedule "0 3 * * *"      when the dream runs
     --extract-schedule "30 2 * * 1"   when extraction runs (weekly) (set to "" to skip it)
     --model / --provider              pin a cheaper model for these jobs
+    --rebind                          point existing jobs at the skill this install provides
     --dry-run                         print what would be created and exit
 
 Existing jobs are detected by their `script` field: re-running the installer
-reports them instead of creating duplicates (`--force` adds anyway).
+reports them instead of creating duplicates (`--force` adds anyway). An existing
+job that loads another skill than this install provides — a 2.0 job bound to a
+regular `dreaming`, or a plugin reinstalled under another name — is reported as
+a problem; `--rebind` updates its skill in place.
 
 The jobs load the skill they were installed with. Installed as a plugin
 (`hermes plugins install itpartypattaya/hermes-dreaming`), that is the plugin's
@@ -122,7 +126,10 @@ def _import_jobs():
 
 def _existing(jobs, script):
     try:
-        listed = jobs.list_jobs()
+        try:
+            listed = jobs.list_jobs(include_disabled=True)   # a paused job is still ours
+        except TypeError:  # older API without the flag
+            listed = jobs.list_jobs()
     except Exception:  # noqa: BLE001 — older/newer API shapes
         listed = []
     if isinstance(listed, dict):
@@ -130,34 +137,77 @@ def _existing(jobs, script):
     return [j for j in listed if (j or {}).get("script") == script]
 
 
+def job_skills(job):
+    """The job's skill list, read the way the scheduler reads it: `skills`
+    (list or string) first, the legacy single `skill` otherwise."""
+    skills = job.get("skills")
+    if skills is None:
+        skills = [job["skill"]] if job.get("skill") else []
+    elif isinstance(skills, str):
+        skills = [skills]
+    return [str(s).strip() for s in skills if str(s).strip()]
+
+
+def _is_dreaming(name):
+    return name == "dreaming" or name.endswith(":dreaming") or name.endswith("/dreaming")
+
+
+def bound_to(job, skill):
+    """True when the job loads `skill` and no other `dreaming`."""
+    current = job_skills(job)
+    return skill in current and not any(_is_dreaming(s) and s != skill for s in current)
+
+
+def rebound_skills(job, skill):
+    """The job's skill list with every `dreaming` entry replaced by `skill`;
+    other skills someone attached by hand stay where they are."""
+    out = []
+    for s in [skill if _is_dreaming(s) else s for s in job_skills(job)]:
+        if s not in out:
+            out.append(s)
+    return out if skill in out else [skill, *out]
+
+
 PLUGIN_NAME = "hermes-dreaming"
+
+
+class RegistryError(Exception):
+    """The plugin registry gave no usable answer; the message says why."""
 
 
 def _plugin_skill_name():
     """Qualified name under which Hermes registered the plugin's own skill, or
-    None. Asks the plugin registry (the plugin must be enabled to be loaded)
-    instead of re-deriving the namespace hash."""
+    None when it is not registered (a disabled plugin is not loaded). Asks the
+    plugin registry instead of re-deriving the namespace hash, and accepts only
+    the registration whose file IS this plugin's SKILL.md.
+    Raises RegistryError when the registry cannot be read or is ambiguous."""
     sys.path.insert(0, str(HOME / "hermes-agent"))
+    own = (HOME / "plugins" / PLUGIN_NAME / "skills" / "dreaming" / "SKILL.md").resolve()
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
         pm = get_plugin_manager()
-        root = (HOME / "plugins" / PLUGIN_NAME).resolve()
+        names = []
         for meta in pm.list_plugin_skill_metadata():
             name = str(meta.get("name") or "")
             if not name.endswith(":dreaming"):
                 continue
             path = pm.find_plugin_skill(name)
-            if path is not None and Path(path).resolve().is_relative_to(root):
-                return name
+            if path is not None and Path(path).resolve() == own:
+                names.append(name)
     except Exception as exc:  # noqa: BLE001 — environment problem, reported by the caller
-        print(f"note: cannot read the Hermes plugin registry: {exc}", file=sys.stderr)
-    return None
+        raise RegistryError(
+            f"cannot read the Hermes plugin registry ({type(exc).__name__}: {exc}) — run this with "
+            f"Hermes' own interpreter: {HOME}/hermes-agent/venv/bin/python") from exc
+    if len(names) > 1:
+        raise RegistryError(f"several registered skills point at {own}: {', '.join(names)}")
+    return names[0] if names else None
 
 
-def skill_ref():
+def resolve_skill():
     """(skill name for the jobs, problem). The plugin's own skill wins over any
-    other skill called `dreaming`; a regular skill install is the fallback."""
+    other skill called `dreaming`; a regular skill install is the fallback.
+    Raises RegistryError (see _plugin_skill_name)."""
     if (HOME / "plugins" / PLUGIN_NAME / "plugin.json").is_file():
         name = _plugin_skill_name()
         if name:
@@ -169,6 +219,14 @@ def skill_ref():
         return "dreaming", None
     return None, (f"the skill is not installed — hermes plugins install itpartypattaya/{PLUGIN_NAME} "
                   f"&& hermes plugins enable {PLUGIN_NAME}")
+
+
+def skill_ref():
+    """resolve_skill() with a registry failure turned into a problem line."""
+    try:
+        return resolve_skill()
+    except RegistryError as exc:
+        return None, str(exc)
 
 
 def _preflight():
@@ -196,6 +254,8 @@ def main(argv=None):
     ap.add_argument("--name-prefix", default="Dreaming",
                     help="prefix for the job names shown in `hermes cron list`")
     ap.add_argument("--force", action="store_true", help="create even if a job already exists")
+    ap.add_argument("--rebind", action="store_true",
+                    help="point existing dreaming jobs at the skill this install provides")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -226,11 +286,20 @@ def main(argv=None):
         return 0
 
     jobs = _import_jobs()
-    created, skipped = [], []
+    created, skipped, rebound, stale = [], [], [], []
     for plan in planned:
         already = _existing(jobs, plan["script"])
         if already and not args.force:
-            skipped.append((plan["script"], already[0].get("id")))
+            for job in already:
+                current = job_skills(job)
+                if bound_to(job, skill):
+                    skipped.append((plan["script"], job.get("id")))
+                elif args.rebind:
+                    new = rebound_skills(job, skill)
+                    jobs.update_job(job["id"], {"skill": new[0], "skills": new})
+                    rebound.append((plan["script"], job.get("id"), current))
+                else:
+                    stale.append((plan["script"], job.get("id"), current))
             continue
         job = jobs.create_job(
             prompt=plan["prompt"],
@@ -250,10 +319,17 @@ def main(argv=None):
         print(f"OK: created {script} → job {jid}")
     for script, jid in skipped:
         print(f"-- {script} already exists as job {jid} — left alone (use --force to add another)")
+    for script, jid, old in rebound:
+        print(f"OK: job {jid} ({script}) now loads {skill} (was: {', '.join(old) or 'no skill'})")
+    for script, jid, old in stale:
+        # Left as is, the job would run tonight without this install's skill:
+        # Hermes skips a skill it cannot load and only flags it in the report.
+        print(f"ERROR: job {jid} ({script}) loads {', '.join(old) or 'no skill'}, but this install "
+              f"provides {skill} — re-run with --rebind", file=sys.stderr)
     if created:
         print("\nNext: check them with `hermes cron list`, and trigger one run by hand:")
         print(f"  hermes cron run {created[0][1]}")
-    return 0
+    return 1 if stale else 0
 
 
 if __name__ == "__main__":

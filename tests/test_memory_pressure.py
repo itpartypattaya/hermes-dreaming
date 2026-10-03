@@ -118,6 +118,34 @@ class TestConfig(unittest.TestCase):
             (regular / "dream.py").unlink()
             self.assertEqual(pc.find_dream(home), other / "dream.py")
 
+    def test_gate_hands_its_home_to_dream(self):
+        """The gate may find its home without HERMES_HOME (installed into
+        <home>/scripts); dream.py on its own would read ~/.hermes, so the gate
+        passes the home it settled on as --hermes-home."""
+        import contextlib, io, json, os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "dream.py"
+            fake.write_text(
+                "import json, os, sys\n"
+                "arg = lambda name: sys.argv[sys.argv.index(name) + 1]\n"
+                "open(os.path.join(os.path.dirname(__file__), 'seen.txt'), 'w')"
+                ".write(arg('--hermes-home'))\n"
+                "json.dump({'stats': {}, 'memory_usage': {}}, open(arg('--out'), 'w'))\n",
+                encoding="utf-8")
+            home = Path(tmp) / "home"
+            saved = (pc.DREAM, pc.OUT, pc.DIARY, pc.HOME, os.environ.get("DREAM_CONFIG"))
+            pc.DREAM, pc.OUT, pc.DIARY, pc.HOME = fake, Path(tmp) / "out.json", Path(tmp) / "d.md", home
+            os.environ.pop("DREAM_CONFIG", None)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    rc = pc.main()
+            finally:
+                pc.DREAM, pc.OUT, pc.DIARY, pc.HOME = saved[:4]
+                if saved[4] is not None:
+                    os.environ["DREAM_CONFIG"] = saved[4]
+            self.assertEqual(rc, 0)
+            self.assertEqual((Path(tmp) / "seen.txt").read_text(), str(home))
+
     def test_hanging_dream_is_a_dream_error_not_a_hang(self):
         """A dream.py that never returns must end in the usual one-line
         dream_error, exit 0 — not in the scheduler's own timeout an hour later."""
