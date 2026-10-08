@@ -201,6 +201,8 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
         "ephemeral_events": [compact_fact(x, max_content) for x in data.get("ephemeral_events", [])],
         "fact_decays": [compact_fact(x, max_content) for x in data.get("fact_decays", [])],
         "md_decays": data.get("md_decays", []),
+        # Rides along when the agent is awake anyway (not an actionable key).
+        "trust_feedback": data.get("trust_feedback", []),
         # `emerging_themes` never reach the prompt: the report must not show
         # them, they open no gate, and they weighed 15 themes × 120-char samples
         # per wake. The full list stays in cache/dream.json for debugging.

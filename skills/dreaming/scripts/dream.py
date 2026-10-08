@@ -123,8 +123,14 @@ DEFAULT_CONFIG = {
     # an approval gate in the way, or a budget that cut them off, that meant the
     # same wake-up forever — hence a short rest, much shorter than the 14 days
     # of the other sections.
+    # A fact a human rejected keeps its trust in the store, so the provider's
+    # prefetch goes on injecting it into ordinary turns — the rejection taught
+    # the dream, not the retrieval. `trust_feedback` offers the agent the one
+    # call that fixes that (`fact_feedback unhelpful`, -0.10 trust; below
+    # `feedback_trust_floor` the fact leaves search and prefetch).
     "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
               "promotion_cooldown_days": 3,
+              "feedback_trust_floor": 0.3, "feedback_cap": 5,
               "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
               # A §-entry that survived a "still relevant?" question — kept as is
               # past md_ask_cooldown_days, or rewritten in place — counts as
@@ -381,6 +387,7 @@ def configure(cfg):
     global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
     global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
+    global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP
     CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
     # from Hermes' own config.yaml, so here it is simply used.
@@ -397,6 +404,11 @@ def configure(cfg):
                                       int(gates.get("md_confirmed_cooldown_days", 90)), int)
     PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
                                    int(gates.get("promotion_cooldown_days", 3)), int)
+    try:
+        FEEDBACK_TRUST_FLOOR = float(gates.get("feedback_trust_floor", 0.3))
+        FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
+    except (TypeError, ValueError):
+        FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP = 0.3, 5
     pend = cfg.get("pending") or {}
     PENDING_DIR = str(pend.get("dir") or "pending/memory")
     try:
@@ -1421,6 +1433,43 @@ def _fact_fingerprint(content):
     return hashlib.md5(_norm(content).encode("utf-8")).hexdigest()[:16]
 
 
+def trust_feedback_items(suppressed, rejected, fact_source_name):
+    """Rejected facts that the store still treats as trustworthy.
+
+    `dream-reject.py` closes a question for the DREAM; the store knows nothing
+    about it, so with the holographic provider the same fact keeps arriving in
+    ordinary turns through prefetch (it only drops out below trust 0.3). The one
+    call that teaches retrieval is `fact_feedback(action="unhelpful")` — the
+    agent has it in the nightly session; the pass itself never writes the store.
+    Only for the holographic source: nobody else has that tool."""
+    if fact_source_name != "holographic":
+        return []
+    out = []
+    for s in suppressed:
+        trust = s.get("trust_score")
+        trust = 0.5 if trust is None else float(trust)
+        if trust < FEEDBACK_TRUST_FLOOR:
+            continue                      # уже ниже порога — prefetch его не поднимет
+        reason, when = "", ""
+        fingerprint = _fact_fingerprint(s["content"])
+        rec = rejected.get(fingerprint)
+        if isinstance(rec, dict):
+            reason = str(rec.get("reason") or "")
+            when = str(rec.get("at") or rec.get("rejected_at") or "")[:10]
+        out.append({
+            "fact_id": s["fact_id"],
+            "content": s["content"][:200],
+            "trust": round(trust, 2),
+            "rejected_at": when,
+            "rejected_reason": reason[:160],
+            "why": (f"rejected by a human{' on ' + when if when else ''}, but the store still "
+                    f"trusts it at {round(trust, 2)} — prefetch keeps offering it"),
+            "call": {"tool": "fact_feedback", "action": "unhelpful", "fact_id": s["fact_id"]},
+        })
+    out.sort(key=lambda i: -i["trust"])
+    return out
+
+
 def load_rejected(path):
     """Read the reject list. Missing / broken JSON — fail-soft: run without it."""
     if not path:
@@ -2392,6 +2441,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     seen_fact_decays = seen.setdefault("fact_decays", {})
     seen_conflicts = seen.setdefault("conflicts", {})
     seen_promotions = seen.setdefault("promotions", {})
+    seen_feedback = seen.setdefault("trust_feedback", {})
     # A write waiting for approval is not in memory yet, but it IS the answer to
     # the candidate that produced it: offering it again every night only grows
     # the queue. The staged texts are treated as a second memory file — the same
@@ -2513,6 +2563,16 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         if classify_unsafe(t.get("sample")):
             t["sample"] = "[hidden: suspicious content]"
 
+    # Rejected facts the store still trusts: offer the one call that teaches
+    # retrieval. Shown at most once per cooldown, and never on a source without
+    # the tool.
+    feedback_pending = trust_feedback_items(suppressed, rejected, fact_source())
+    feedback_fresh = unseen(feedback_pending, seen_feedback, now)
+    # Only the shown slice is marked, so what the cap cuts off is not suppressed
+    # — it simply comes tomorrow. The counter means "resting", nothing else.
+    feedback = feedback_fresh[:FEEDBACK_CAP]
+    feedback_suppressed = len(feedback_pending) - len(feedback_fresh)
+
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
                        staged_removals=staged_removals,
                        reask=reask_md)
@@ -2524,11 +2584,13 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     if seen_state_path:
         mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
         mark_seen(published_promotions, seen_promotions, now)
+        mark_seen(feedback, seen_feedback, now)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
             prune_seen(bucket, now)
         prune_seen(seen_promotions, now, cooldown_days=PROMOTION_COOLDOWN_DAYS)
+        prune_seen(seen_feedback, now)
         # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
         fp = _fact_fingerprint
         seen["_pending"] = {
@@ -2588,6 +2650,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   # human's queue, not the agent's work.
                   "staged_suppressed": staged_suppressed,
                   "pending_writes": len(pending_writes),
+                  "trust_feedback": len(feedback),
+                  "trust_feedback_suppressed": feedback_suppressed,
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
@@ -2600,6 +2664,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "ephemeral_events": [_pub(s) for s in ephemeral_events[:PUBLISH_CAP]],
         # Read-only: never in `precheck.actionable_keys`, so it opens no gate.
         "expired_events": [_pub(s) for s in expired[:PUBLISH_CAP]],
+        # Not in `precheck.actionable_keys` by default: a trust nudge is worth
+        # doing when the agent is already awake, not worth waking it for.
+        "trust_feedback": feedback,
         "fact_decays": [_pub(s) for s in decays[:PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,

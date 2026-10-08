@@ -1287,5 +1287,79 @@ class NumbersAndMonthsTests(unittest.TestCase):
         self.assertEqual(dream.find_conflicts(fact, mem), [])
 
 
+class TrustFeedbackTests(DreamFixture):
+    """A fact a human rejected is still trusted by the store, so prefetch keeps
+    injecting it into ordinary turns. The one lever is `fact_feedback
+    unhelpful` — offer it to the agent (idea from the review)."""
+
+    FACT = "Марина ходит на утренние тренировки по вторникам в зале у дома"
+
+    def _rejected(self, content, reason="неактуально", at="2026-10-01"):
+        path = self.home / "rejected.json"
+        key = dream._fact_fingerprint(content)
+        path.write_text(json.dumps({key: {"fingerprint": key, "content": content,
+                                          "reason": reason, "at": at}}, ensure_ascii=False),
+                        encoding="utf-8")
+        return str(path)
+
+    def test_rejected_fact_above_the_floor_is_offered(self):
+        self.add_fact(self.FACT, trust=0.5)
+        result = self.run_dream(rejected_state=self._rejected(self.FACT))
+        items = result["trust_feedback"]
+        self.assertEqual(len(items), 1, items)
+        item = items[0]
+        self.assertEqual(item["call"], {"tool": "fact_feedback", "action": "unhelpful",
+                                        "fact_id": item["fact_id"]})
+        self.assertEqual(item["trust"], 0.5)
+        self.assertEqual(item["rejected_at"], "2026-10-01")
+        self.assertIn("prefetch", item["why"])
+        self.assertEqual(result["stats"]["trust_feedback"], 1)
+        # and it does not bring the fact back into play: it stays suppressed
+        self.assertEqual(result["stats"]["promotions"], 0)
+        self.assertEqual(result["stats"]["new_facts_reviewed"], 0)
+
+    def test_already_sunk_fact_is_not_offered(self):
+        """Below the floor prefetch does not surface it anyway — nothing to do."""
+        self.add_fact(self.FACT, trust=0.2)
+        result = self.run_dream(rejected_state=self._rejected(self.FACT))
+        self.assertEqual(result["trust_feedback"], [])
+
+    def test_offered_once_then_cooldown(self):
+        self.add_fact(self.FACT, trust=0.5)
+        rej = self._rejected(self.FACT)
+        seen = self.home / "seen.json"
+        first = self.run_dream(rejected_state=rej, seen_state=str(seen))
+        second = self.run_dream(rejected_state=rej, seen_state=str(seen))
+        self.assertEqual(len(first["trust_feedback"]), 1)
+        self.assertEqual(second["trust_feedback"], [])
+        self.assertEqual(second["stats"]["trust_feedback_suppressed"], 1)
+
+    def test_other_fact_sources_have_no_such_tool(self):
+        """jsonl/sqlite/none have no fact_feedback, so there is nothing to offer."""
+        self.add_fact(self.FACT, trust=0.5)
+        old = dream.CONFIG
+        try:
+            dream.CONFIG = dict(old, fact_source="none")
+            self.assertEqual(
+                dream.trust_feedback_items(
+                    [{"fact_id": 1, "content": self.FACT, "trust_score": 0.5}],
+                    {}, dream.fact_source()),
+                [])
+        finally:
+            dream.CONFIG = old
+
+    def test_gate_passes_the_section_but_does_not_wake_for_it(self):
+        payload = {"stats": {"facts": 1, "trust_feedback": 1},
+                   "trust_feedback": [{"fact_id": 1, "content": "x", "trust": 0.5,
+                                       "call": {"tool": "fact_feedback"}}]}
+        self.assertIsNone(precheck.compact_payload(payload),
+                          "trust_feedback alone must not wake the model")
+        payload["stats"]["promotions"] = 1
+        payload["promotions"] = [{"fact_id": 2, "content": "y"}]
+        compact = precheck.compact_payload(payload)
+        self.assertIn("trust_feedback", compact,
+                      "but once the agent is awake the section must travel")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -121,6 +121,15 @@ changed meaning, and old state files are still read.
 
 ### Added
 
+- **`trust_feedback`.** A fact a human rejected with `dream-reject.py` keeps its
+  trust in the store, so the holographic provider's prefetch goes on injecting
+  it into ordinary turns — the rejection taught the dream, not retrieval. The
+  pass now lists such facts (trust at or above `gates.feedback_trust_floor`,
+  0.3) with a ready `fact_feedback(action="unhelpful", fact_id=…)` call for the
+  agent. The script still never writes the store; the section is deliberately
+  **not** in `precheck.actionable_keys` (worth doing while the agent is awake,
+  not worth a wake), capped by `gates.feedback_cap` and rested by its own
+  cooldown. Only for `fact_source: holographic` — no other source has the tool.
 - `matched_entry` and the atomic `operations[]` batch are now part of the
   instructions: two or more changes go in one all-or-nothing call whose char
   limit is checked against the final state, so freeing space and adding an entry
@@ -133,7 +142,7 @@ The review also reported that a CRLF memory file parses as a single entry. It
 does not: the core reads memory through `read_text`, i.e. with universal
 newlines (verified against 0.21.5). A test now pins that.
 
-**Tests:** 304 (was 255).
+**Tests:** 309 (was 255).
 
 ## 2.1.1 — 2026-10-03
 

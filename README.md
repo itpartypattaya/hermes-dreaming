@@ -32,6 +32,9 @@ memory; the agent applies its proposals through the regular `memory` tool and re
   starts. A memory file close to its char limit counts as work (`memory_pressure`) — the limit gates
   writes silently, so otherwise nobody notices until facts stop being recorded.
 - **A loss guard.** If a large share of memory disappears overnight, the next report says so.
+- **Feedback to retrieval.** A fact you rejected keeps its trust in the fact store, so the
+  provider's prefetch goes on offering it. Such facts are listed with a ready
+  `fact_feedback(unhelpful)` call, so a rejection teaches retrieval too.
 - **A diary** (`memories/DREAMS.md`) with provenance for every candidate.
 
 ## Every item gets an outcome
