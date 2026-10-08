@@ -184,7 +184,26 @@ def load_config(path=None):
     except (OSError, ValueError) as e:
         print(f"[dream] warn: config {path} ignored: {e}", file=sys.stderr)
         data = {}
-    return _deep_merge(DEFAULT_CONFIG, data)
+    merged = _deep_merge(DEFAULT_CONFIG, data)
+    # Keys the file does not mention are taken from Hermes itself, not guessed:
+    # the example ships the CORE defaults (2200/1375), and on an install with
+    # raised limits that produced "memory at 285%" every night. An explicit
+    # value — even one equal to the default — stays untouched; only absence
+    # delegates (external review, 2026-10-07).
+    if "timezone" not in data:
+        hermes_tz = (_hermes_config() or {}).get("timezone")
+        if hermes_tz:
+            merged["timezone"] = str(hermes_tz)
+    if "memory_char_limits" not in data:
+        hermes_mem = hermes_memory_settings()
+        limits = {name: int(value) for name, value in
+                  (("memories/MEMORY.md", hermes_mem.get("memory_char_limit")),
+                   ("memories/USER.md", hermes_mem.get("user_char_limit")))
+                  if isinstance(value, (int, float)) and int(value) > 0}
+        if limits:
+            merged["memory_char_limits"] = limits
+            print(f"[dream] note: char limits taken from config.yaml: {limits}", file=sys.stderr)
+    return merged
 
 
 def _hermes_config_text(home=None):
@@ -363,13 +382,9 @@ def configure(cfg):
     global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
     CONFIG = cfg
-    # No timezone of our own → Hermes' own, and only then UTC. A dream filed
-    # under yesterday's UTC date is the mildest symptom; day bucketing of
-    # mentions is the real one.
-    tz_name = _env("DREAM_TIMEZONE", cfg.get("timezone"))
-    if not tz_name or tz_name == DEFAULT_CONFIG.get("timezone"):
-        tz_name = (_hermes_config() or {}).get("timezone") or tz_name
-    LOCAL_TZ = _tz(tz_name)
+    # A timezone the config does not mention is filled in by load_config()
+    # from Hermes' own config.yaml, so here it is simply used.
+    LOCAL_TZ = _tz(_env("DREAM_TIMEZONE", cfg.get("timezone")))
     WEIGHTS = dict(DEFAULT_CONFIG["weights"], **(cfg.get("weights") or {}))
     gates = cfg.get("gates") or {}
     MIN_SCORE = _env("DREAM_MIN_SCORE", float(gates.get("min_score", 0.55)), float)
@@ -433,17 +448,6 @@ def configure(cfg):
     DIARY_PATH = str(diary.get("path") or "memories/DREAMS.md")
     DURABLE_MEMORY_PATHS = list(cfg.get("durable_memory_paths") or [])
     MEMORY_CHAR_LIMITS = dict(cfg.get("memory_char_limits") or {})
-    if not MEMORY_CHAR_LIMITS:
-        # Not configured here → ask Hermes, do not guess. Guessing meant the
-        # example's 2200/1375 (core defaults) on an install with raised limits.
-        hermes_mem = hermes_memory_settings()
-        pairs = (("memories/MEMORY.md", hermes_mem.get("memory_char_limit")),
-                 ("memories/USER.md", hermes_mem.get("user_char_limit")))
-        MEMORY_CHAR_LIMITS = {name: int(limit) for name, limit in pairs
-                              if isinstance(limit, (int, float)) and int(limit) > 0}
-        if MEMORY_CHAR_LIMITS:
-            print(f"[dream] note: char limits taken from config.yaml: "
-                  f"{MEMORY_CHAR_LIMITS}", file=sys.stderr)
     PINNED_MARKERS = [str(m) for m in (cfg.get("pinned_markers") or []) if m]
     try:
         MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))

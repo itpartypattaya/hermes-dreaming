@@ -1175,17 +1175,29 @@ class HermesConfigTests(unittest.TestCase):
         self.assertEqual(got.get("provider"), "holographic")
         self.assertIs(got.get("write_approval"), True)
 
+    def _load(self, data=None):
+        """The real path: a config file → load_config → configure."""
+        path = self.home / "dreaming.json"
+        path.write_text(json.dumps(data or {}), encoding="utf-8")
+        cfg = dream.load_config(str(path))
+        dream.configure(cfg)
+        return cfg
+
     def test_limits_fall_back_to_hermes(self):
-        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {}))
+        self._load()
         self.assertEqual(dream.MEMORY_CHAR_LIMITS,
                          {"memories/MEMORY.md": 12000, "memories/USER.md": 16000})
         usage = dream.memory_usage(str(self.mem))
         self.assertEqual(usage["memories/MEMORY.md"]["limit"], 12000)
 
     def test_own_limits_win(self):
-        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {
-            "memory_char_limits": {"memories/MEMORY.md": 4200}}))
+        self._load({"memory_char_limits": {"memories/MEMORY.md": 4200}})
         self.assertEqual(dream.MEMORY_CHAR_LIMITS, {"memories/MEMORY.md": 4200})
+
+    def test_explicit_timezone_is_not_overridden(self):
+        """An explicit UTC in the config is a choice, not "unset"."""
+        cfg = self._load({"timezone": "UTC"})
+        self.assertEqual(cfg["timezone"], "UTC")
 
     def test_timezone_falls_back_to_hermes(self):
         """No timezone of our own → take Hermes'. On Windows without the tzdata
@@ -1195,13 +1207,13 @@ class HermesConfigTests(unittest.TestCase):
             from zoneinfo import ZoneInfo
             ZoneInfo("Europe/Lisbon")
         except Exception:                      # no zone database — nothing more to check
-            self.skipTest("zoneinfo без tzdata")
-        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {}))
+            self.skipTest("zoneinfo without tzdata")
+        self._load()
         self.assertIn("Lisbon", str(dream.LOCAL_TZ))
 
     def test_no_yaml_no_crash(self):
         (self.home / "config.yaml").write_text("not: [a valid: mapping", encoding="utf-8")
-        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {}))
+        self._load()
         self.assertIsInstance(dream.MEMORY_CHAR_LIMITS, dict)
 
 
