@@ -102,8 +102,11 @@ It does not extract facts by itself (an optional extraction job does) and never 
    long the review takes) instead of re-matching the anchor against a file that may have moved on.
 
    Use `replace` only when `nearest_entry` is the same subject and carries `old_text`. If a
-   `replace` fails, copy an exact substring from the error's `current_entries`, retry **once**,
-   then stop and report.
+   single `replace` fails, copy an exact substring from the error's `current_entries`, retry
+   **once**, then stop and report. A failed **batch** is different: it answers without
+   `current_entries` on purpose (the inventory it would echo is what the consolidation was
+   called to shrink), with at most a few `closest_entries` on newer cores — so recover by
+   re-issuing the ops one at a time, not by guessing a new anchor.
 4a. **More than one change — one atomic call.** `memory` takes `operations[]`: all of them apply or
    none do, and the char limit is checked against the FINAL state. So "remove a stale entry and
    add a new one" fits in a single call even when memory is already full, instead of an `add` that

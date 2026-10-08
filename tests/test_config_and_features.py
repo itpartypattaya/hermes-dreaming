@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import unittest
 from datetime import datetime, timezone
@@ -660,16 +661,49 @@ class ReviewFixesTests(DreamFixture):
         self.assertTrue(dream.exact_or_alias_in_memory(reworded, mem))
 
 
-def core_replace(text, old_text, new_content):
-    """What the core's `memory replace` does: find the entry containing
-    `old_text` and swap THE WHOLE of it for `new_content`
-    (tools/memory_tool_store.py:298-302). The tests then check the outcome of an
-    edit, not our idea of it."""
+# Typography the core folds before its tolerant comparison (0.21.6,
+# `tools/memory_tool_store.py:_MATCH_FOLD`): every quote -> "'", every dash -> "-".
+CORE_MATCH_FOLD = str.maketrans({**dict.fromkeys("\"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f", "'"),
+                                 **dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212", "-")})
+
+
+def core_fold(text):
+    return " ".join(str(text).replace("\\n", " ").translate(CORE_MATCH_FOLD).split())
+
+
+def core_find(entries, old_text, fold=True):
+    """The core's `_find_unique_match`: `(index, ambiguous)`.
+
+    An exact match against a WHOLE entry wins absolutely — otherwise a short
+    entry could not be addressed while its text sits inside a longer sibling.
+    Then substrings: byte-exact first, and only if that found nothing, with
+    folded typography (added in 0.21.6; `fold=False` reproduces 0.21.5).
+    Identical duplicate entries are not ambiguity (the first one wins),
+    DISTINCT ones are, and the core refuses the edit.
+    """
+    exact = [i for i, e in enumerate(entries) if e == old_text]
+    matches = exact or [i for i, e in enumerate(entries) if old_text in e]
+    if not matches and fold:
+        needle = core_fold(old_text)
+        if any(c.isalnum() for c in needle):
+            matches = [i for i, e in enumerate(entries) if needle in core_fold(e)]
+    if len({entries[i] for i in matches}) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
+
+
+def core_replace(text, old_text, new_content, fold=True):
+    """The outcome of the core's `memory replace`: locate the entry by the
+    anchor and swap THE WHOLE of it for `new_content`
+    (`tools/memory_tool_store.py`). The tests then check the result of an edit,
+    not our idea of it."""
     entries = dream._memory_entries(text)
-    hits = [i for i, e in enumerate(entries) if old_text in e]
-    if len(hits) != 1:
-        return None, f"old_text matched {len(hits)} entries"
-    entries[hits[0]] = new_content
+    idx, ambiguous = core_find(entries, old_text, fold=fold)
+    if ambiguous:
+        return None, f"ambiguous: '{old_text}' matched several distinct entries"
+    if idx is None:
+        return None, f"no entry matched '{old_text}'"
+    entries[idx] = new_content
     return dream.MEMORY_ENTRY_DELIMITER.join(entries), None
 
 
@@ -1359,6 +1393,153 @@ class TrustFeedbackTests(DreamFixture):
         compact = precheck.compact_payload(payload)
         self.assertIn("trust_feedback", compact,
                       "but once the agent is awake the section must travel")
+
+
+class CoreMatchingTests(unittest.TestCase):
+    """How the core locates `old_text`, and our anchors against those rules
+    (Hermes 0.21.5 / 0.21.6).
+
+    0.21.6 added a fallback pass with folded typography on top of the
+    byte-exact search (`_normalize_for_match`); the whole-entry priority and
+    the refusal on ambiguity were already there in 0.21.5. The skill's anchors
+    must stay unambiguous under THOSE rules, not under our idea of them.
+    """
+
+    def test_whole_entry_match_beats_a_longer_sibling(self):
+        entries = ["Тесты зелёные.", "Тесты зелёные. Деплой после ревью, не раньше."]
+        idx, ambiguous = core_find(entries, "Тесты зелёные.")
+        self.assertFalse(ambiguous)
+        self.assertEqual(idx, 0, "a whole entry stays addressable inside a longer sibling")
+
+    def test_identical_duplicates_are_not_ambiguous(self):
+        entries = ["Марина пьёт жасминовый чай.", "Марина пьёт жасминовый чай."]
+        self.assertEqual(core_find(entries, "жасминовый"), (0, False))
+
+    def test_distinct_matches_are_refused(self):
+        entries = ["Марина пьёт жасминовый чай.", "Сергей пьёт жасминовый чай."]
+        idx, ambiguous = core_find(entries, "жасминовый")
+        self.assertTrue(ambiguous)
+        self.assertIsNone(idx)
+        out, err = core_replace(dream.MEMORY_ENTRY_DELIMITER.join(entries), "жасминовый", "х")
+        self.assertIsNone(out, "the core does not edit at random when the anchor is ambiguous")
+        self.assertIn("ambiguous", err)
+
+    def test_dash_retyped_as_hyphen_matches_only_on_0216(self):
+        entries = ["После 22:00 — не писать в рабочий чат."]
+        retyped = "После 22:00 - не писать"
+        self.assertEqual(core_find(entries, retyped, fold=True), (0, False))
+        self.assertEqual(core_find(entries, retyped, fold=False), (None, False),
+                         "before 0.21.6 there was no fallback pass at all")
+
+    def test_russian_guillemets_are_NOT_folded(self):
+        """Only Latin quotes and dashes are folded: «» (U+00AB/BB) are not in the
+        core's `_MATCH_FOLD`, and in Russian memory those are the default quotes —
+        so the 0.21.6 tolerance barely helps us, and the anchor must stay verbatim."""
+        entries = ["Марина называет это «правилом тишины»."]
+        self.assertEqual(core_find(entries, '"правилом тишины"', fold=True), (None, False))
+        self.assertEqual(core_find(entries, "«правилом тишины»", fold=True), (0, False))
+
+    def test_punctuation_alone_never_selects_an_entry(self):
+        entries = ["Запись первая.", "Запись вторая."]
+        self.assertEqual(core_find(entries, " — "), (None, False))
+
+    def test_our_anchors_address_exactly_one_entry_under_core_rules(self):
+        """The contract that matters: a `_replace_anchor` anchor is searched for
+        byte-exactly and is unique, so the folded fallback never even runs — and
+        0.21.6 cannot turn our anchor into an ambiguous one."""
+        entries = [
+            "## Марина\nХодит на утренние тренировки по вторникам в зале у дома.\n\n"
+            "Не пьёт кофе после полудня, предпочитает жасминовый чай.",
+            "Марина не пьёт кофе после полудня.",
+            "Проект Аврора переезжает на новый хостинг в сентябре 2026 года.",
+            "Марина называет это «правилом тишины» — после 22:00 не писать.",
+        ]
+        sources = [(None, e) for e in entries]
+        checked = 0
+        for entry in entries:
+            anchor = dream._replace_anchor(entry, sources)
+            if anchor is None:
+                continue
+            checked += 1
+            self.assertIn(anchor, entry, "the anchor must be a verbatim substring of the entry")
+            for fold in (True, False):
+                idx, ambiguous = core_find(entries, anchor, fold=fold)
+                self.assertFalse(ambiguous, f"anchor {anchor!r} is ambiguous (fold={fold})")
+                self.assertEqual(entries[idx], entry, f"anchor {anchor!r} selected the wrong entry")
+        self.assertGreaterEqual(checked, 3, "the test was supposed to check at least three anchors")
+
+
+class PendingBatchTests(DreamFixture):
+    """An `operations[]` batch staged for approval is ONE queued record.
+
+    The core stages a batch as a single record with `action: "batch"` and the
+    ops inside (`tools/memory_tool.py`: "batch if operations is not None"),
+    and the skill is the side that asks for batches. While only the top level
+    was read, a staged batch looked like an empty write: `_staged_text` never
+    saw it, and the pass would offer the same candidates again the next night.
+    """
+
+    def _queue(self, *records):
+        pending = self.home / "pending" / "memory"
+        pending.mkdir(parents=True, exist_ok=True)
+        for i, rec in enumerate(records):
+            (pending / f"rec{i}.json").write_text(json.dumps(rec, ensure_ascii=False),
+                                                 encoding="utf-8")
+        return dream.load_pending_writes(str(self.home))
+
+    def test_batch_ops_are_expanded(self):
+        rows = self._queue({
+            "id": "abc123", "created_at": 1760000000.0,
+            "payload": {"action": "batch", "target": "memory", "operations": [
+                {"action": "remove", "old_text": "Старая запись про балет"},
+                {"action": "add", "content": "Марина ходит на балет по средам с 2026-10-01."},
+            ]},
+        })
+        self.assertEqual(len(rows), 2, rows)
+        self.assertEqual({r["action"] for r in rows}, {"remove", "add"})
+        self.assertEqual({r["record_id"] for r in rows}, {"abc123"})
+        self.assertEqual({r["target"] for r in rows}, {"memory"},
+                         "an op without its own target inherits the batch target")
+        self.assertIn("балет по средам", dream._staged_text(rows))
+        self.assertIn("Старая запись про балет", " ".join(dream._staged_removals(rows)))
+
+    def test_single_write_keeps_its_plain_id(self):
+        rows = self._queue({"id": "solo1", "created_at": 1760000001.0,
+                            "payload": {"action": "add", "target": "user",
+                                        "content": "Сергей ездит на велосипеде."}})
+        self.assertEqual([r["id"] for r in rows], ["solo1"])
+        self.assertEqual(rows[0]["record_id"], "solo1")
+
+    def test_malformed_operations_degrade_to_one_write(self):
+        rows = self._queue(
+            {"id": "bad1", "payload": {"action": "batch", "operations": "nope",
+                                       "content": "Запись с кривым пакетом"}},
+            {"id": "bad2", "payload": {"action": "batch", "operations": [None, 7]}},
+        )
+        self.assertEqual(len(rows), 2, rows)
+        self.assertIn("кривым пакетом", dream._staged_text(rows))
+
+    def test_alert_names_both_writes_and_records(self):
+        rows = self._queue({
+            "id": "big", "created_at": time.time() - 30 * 86400,
+            "payload": {"action": "batch", "target": "memory", "operations": [
+                {"action": "add", "content": f"Факт номер {i} про проект Аврора."} for i in range(6)]},
+        })
+        alert = dream.pending_alert(rows, {}, dream._now())
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert["count"], 6)
+        self.assertEqual(alert["records"], 1)
+        self.assertIn("6 memory write(s) in 1 queued record(s)", alert["message"])
+
+    def test_plain_queue_message_is_unchanged(self):
+        rows = self._queue(*[{"id": f"p{i}", "created_at": time.time() - 30 * 86400,
+                              "payload": {"action": "add", "target": "memory",
+                                          "content": f"Отдельная запись {i}."}}
+                             for i in range(5)])
+        alert = dream.pending_alert(rows, {}, dream._now())
+        self.assertIsNotNone(alert)
+        self.assertEqual((alert["count"], alert["records"]), (5, 5))
+        self.assertIn("5 memory write(s) are waiting", alert["message"])
 
 
 if __name__ == "__main__":

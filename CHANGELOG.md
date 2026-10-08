@@ -3,6 +3,48 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.2.1 — 2026-10-08
+
+Checked against Hermes **v0.21.6** (tag `818c13be`), released the same day. The
+skill needed no adaptation — the cron wake gate, `skip_memory` for cron jobs,
+the pending-record shape and the memory limit keys are unchanged, and the
+`messages` table only gained a column (the loader reads columns through PRAGMA
+anyway). The audit did surface two gaps of our own, both of which also exist
+against 0.21.5:
+
+### Fixed
+
+- **A staged `operations[]` batch was invisible to the pass.** The core stages a
+  batch as ONE pending record whose payload carries `action: "batch"` and the
+  ops inside, and `load_pending_writes` read only the top level: the record
+  looked like an empty write, `_staged_text` never saw its content, and the pass
+  would offer the same candidates again the next night — the exact failure this
+  reader exists to prevent, and batches are what step 4a asks the agent for.
+  Ops are now expanded, each carries the `record_id` of its queue record, and
+  the queue alert names both ("6 memory write(s) in 1 queued record(s)") so the
+  numbers agree with what a human sees in `/memory pending`. A batch whose ops
+  cannot be read still contributes its text instead of silently reading as
+  "nothing is waiting".
+- **"The error carries `current_entries`" is not true for a batch.** A failed
+  batch answers without the inventory on purpose (echoing it grew the context
+  the consolidation was called to shrink); 0.21.6 adds up to three
+  `closest_entries` instead. `SKILL.md` and the installer's cron prompt now say
+  so and tell the agent to re-issue the ops one at a time rather than guess a
+  new anchor.
+
+### Tests
+
+- `core_replace` in the suite now matches the real core: an exact whole-entry
+  match wins absolutely, identical duplicate entries are not ambiguity, and
+  0.21.6's folded-typography fallback sits behind a `fold` flag so both editions
+  are covered.
+- A contract test asserts that every anchor `_replace_anchor` produces addresses
+  exactly one entry **under the core's rules**. Pinned along the way: the core's
+  folding does **not** cover the Russian guillemets `«»`, so an anchor still has
+  to be verbatim — the 0.21.6 tolerance barely helps non-Latin memory.
+
+**Tests:** 321 (was 309).
+
 ## 2.2.0 — 2026-10-08
 
 An external review of 2.1.1 (another agent read the code against the Hermes

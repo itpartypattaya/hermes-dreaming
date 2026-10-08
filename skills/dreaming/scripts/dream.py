@@ -2190,17 +2190,43 @@ def load_pending_writes(home=None):
         if not isinstance(data, dict):
             continue
         payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
-        content = payload.get("content") or payload.get("new_content") or ""
-        out.append({
-            "id": str(data.get("id") or name[:-5]),
-            "action": str(payload.get("action") or data.get("action") or ""),
-            "target": str(payload.get("target") or ""),
-            "content": content if isinstance(content, str) else "",
-            "old_text": payload.get("old_text") if isinstance(payload.get("old_text"), str) else "",
-            "created_at": data.get("created_at") if isinstance(data.get("created_at"), (int, float)) else None,
-        })
+        record_id = str(data.get("id") or name[:-5])
+        created = data.get("created_at") if isinstance(data.get("created_at"), (int, float)) else None
+        for pos, op in enumerate(_pending_ops(payload)):
+            content = op.get("content") or op.get("new_content") or ""
+            out.append({
+                "id": record_id if len(_pending_ops(payload)) == 1 else "%s#%d" % (record_id, pos),
+                "record_id": record_id,
+                "action": str(op.get("action") or data.get("action") or ""),
+                "target": str(op.get("target") or payload.get("target") or ""),
+                "content": content if isinstance(content, str) else "",
+                "old_text": op.get("old_text") if isinstance(op.get("old_text"), str) else "",
+                "created_at": created,
+            })
     out.sort(key=lambda p: p.get("created_at") or 0, reverse=True)
     return out
+
+
+def _pending_ops(payload):
+    """The writes inside one queued record: a single write, or every op of a
+    batch. The core stages an `operations[]` call as ONE record whose payload
+    carries `action: "batch"` and the ops themselves (`memory_tool.py`:
+    "batch if operations is not None"), and the skill is the side that asks for
+    batches — so reading only the top level made every staged batch look like an
+    empty write: invisible to `_staged_text`, and the pass would offer the same
+    candidates again the next night, which is the one thing this queue reader
+    exists to prevent. Malformed input degrades to "one write", never raises."""
+    ops = payload.get("operations")
+    if isinstance(ops, (list, tuple)):
+        inner = [op for op in ops if isinstance(op, dict)]
+        if inner:
+            return inner
+    if str(payload.get("action") or "") == "batch":
+        # A batch whose ops are unreadable: keep whatever text the record carries
+        # and drop the "batch" label, so the queue still counts as staged instead
+        # of silently reading as "nothing is waiting".
+        return [dict(payload, action="")]
+    return [payload]
 
 
 def _staged_text(pending):
@@ -2237,8 +2263,15 @@ def pending_alert(pending, seen, now):
     if last and (now - last) < timedelta(days=SEEN_COOLDOWN_DAYS):
         return None
     seen["_pending_alert"] = {"at": now.isoformat(timespec="seconds"), "count": len(pending)}
-    return {"kind": "pending_writes", "count": len(pending), "oldest_days": round(age_days),
-            "message": (f"{len(pending)} memory write(s) are waiting for approval, the oldest for "
+    # Writes and queued records differ when a record holds an `operations[]` batch:
+    # the human reviewing the queue sees records, so name both rather than let the
+    # numbers disagree with what `/memory pending` shows.
+    records = len({p.get("record_id") or p.get("id") for p in pending})
+    scope = (f"{len(pending)} memory write(s)" if records == len(pending)
+             else f"{len(pending)} memory write(s) in {records} queued record(s)")
+    return {"kind": "pending_writes", "count": len(pending), "records": records,
+            "oldest_days": round(age_days),
+            "message": (f"{scope} are waiting for approval, the oldest for "
                         f"{round(age_days)} days — nothing from them is in memory yet. "
                         f"Review them (`/memory` in Hermes) or turn the gate off.")}
 
