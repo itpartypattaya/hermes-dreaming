@@ -125,6 +125,19 @@ def _memory_provider(home):
     return (found.group(1).strip().strip("\"'") if found else "")
 
 
+def _write_approval(home):
+    """`memory.write_approval` of Hermes config.yaml (False when unreadable)."""
+    try:
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    block = re.search(r"^memory:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
+    if not block:
+        return False
+    found = re.search(r"^[ \t]+write_approval:[ \t]*([^#\n]*)", block.group(1), re.MULTILINE)
+    return bool(found) and found.group(1).strip().strip("\"'").lower() in ("true", "yes", "1")
+
+
 def check_fact_source(home, dream, r):
     try:
         source = dream.fact_source()
@@ -151,9 +164,19 @@ def check_fact_source(home, dream, r):
         # Hermes ships the holographic provider but leaves memory.provider empty.
         # Without it there is no fact store: the pass still reviews the memory
         # files, but promotions/new_facts/conflicts stay empty forever.
+        advice = ("Set 'memory.provider: holographic' (it ships with Hermes), "
+                  "point fact_source at your own export, or set fact_source to 'none'")
+        if _write_approval(home):
+            # Worth saying before the advice is taken: `fact_store` writes to
+            # memory_store.db directly, and the approval gate covers MEMORY.md,
+            # USER.md and skills — not the provider (external review, 2026-10-07).
+            advice = ("⚠️ memory.write_approval is ON, and the holographic provider writes facts "
+                      "through `fact_store` — a channel the approval gate does NOT cover (it gates "
+                      "MEMORY.md, USER.md and skills), including from cron; its prefetch then feeds "
+                      "those facts into ordinary turns. If that is not what you want, set "
+                      "fact_source to 'none' and keep the nightly memory review only")
         r.warn(f"memory.provider is {provider or 'not set'} — there is no holographic fact store, so "
-               "promotions stay empty. Set 'memory.provider: holographic' (it ships with Hermes), "
-               "point fact_source at your own export, or set fact_source to 'none'")
+               f"promotions stay empty. {advice}")
     elif os.path.exists(path):
         r.ok(f"memory provider 'holographic', fact store present ({path})")
     else:

@@ -2,6 +2,8 @@
 
 ![hermes-dreaming — nightly memory consolidation for Hermes Agent](docs/banner.png)
 
+*[Русская версия](README.ru.md)*
+
 Nightly, deterministic **memory consolidation ("dreaming")** for
 [Hermes Agent](https://github.com/NousResearch/hermes-agent), in the spirit of OpenClaw dreaming.
 
@@ -128,6 +130,16 @@ run `install_cron.py --rebind` against the install you kept. The check reads Her
 registry, so run it with Hermes' interpreter (`~/.hermes/hermes-agent/venv/bin/python`) — a plain
 `python3` only gets a warning that it cannot tell.
 
+### Install from the catalog, not from a URL
+
+```bash
+hermes plugins install hermes-dreaming      # the reviewed, pinned catalog entry
+```
+
+`hermes plugins install itpartypattaya/hermes-dreaming` installs HEAD as a custom, unreviewed
+source, and the next `plugins update` does a `git pull` past the pinned SHA. Same code today,
+different trust tomorrow.
+
 ### Upgrading from 2.0
 
 2.0 bound the jobs to a regular `dreaming` skill. After installing the plugin, re-run step 2 (the
@@ -141,6 +153,21 @@ Version 1 was installed by cloning the repository straight into `~/.hermes/skill
 Move the old clone away, install with step 1, re-run step 2 (the gates are replaced), and run step 4
 with `--rebind` so the existing jobs point at the plugin's skill. Your config and state in `~/.hermes/cache/` stay as they are. The `allow_memory`
 flag of 1.x jobs is unused since Hermes 0.21 and can stay or go.
+
+## Writes that wait for a human
+
+If your Hermes runs with `memory.write_approval: true`, a write from a cron session answers
+`success: true, staged: true` and the file on disk does not change: the entry sits in
+`pending/memory/` until you approve it. The pass reads that queue, so a candidate already waiting
+is not offered again, an entry whose removal is queued is not asked about, and a queue that is both
+large and old raises a `pending_writes` alert. Two things follow:
+
+- the nightly report says "sent for approval", not "saved" — believe it;
+- enabling the **holographic provider** for the fact store opens a second write channel that the
+  approval gate does **not** cover: `fact_store` writes to `memory_store.db` directly, including
+  from cron, and its prefetch then feeds those facts into ordinary turns. With the gate on, consider
+  `fact_source: none` (the nightly memory review keeps working) — `install.py --check` says this out
+  loud too.
 
 ## Fact sources
 
@@ -192,21 +219,26 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 
 | field | meaning |
 |---|---|
-| `timezone` | IANA zone for the diary date and day-bucketing of mentions |
+| `timezone` | IANA zone for the diary date and day-bucketing of mentions. Not set → Hermes' own `timezone`, then UTC |
 | `trusted_chat_ids` | group chats whose messages corroborate memory (**fail-closed**: empty = none) |
 | `excluded_threads` | threads of a trusted chat that must not corroborate — `{"<chat_id>": ["<thread_id>", …]}` |
-| `untrusted_sources` | session sources that are machine prompts — `cron` always; add `cli` when scripts drive the agent |
+| `untrusted_sources` | session sources that are machine prompts — `cron`, `subagent` and `tool` by default; add `cli` when scripts drive the agent |
+| `exclude_patterns` | regexes; a message whose text matches never corroborates (bridge briefs, forwarded digests — machine text with no source of its own) |
+| `trust_private_chats`, `trust_sessions_without_chat` | whether a DM, and a session with no chat metadata, count as human speech (both default `true`) |
 | `agent_names`, `extra_stopwords` | noise words for the tokenizer |
 | `alias_rules` | declarative "same fact, other words" rules — `{"fact": [["a","b"],["c"]], "memory": [["x"]]}` |
 | `fact_source`, `fact_store_path`, `fact_table`, `fact_columns` | where candidate facts come from (above). Env: `DREAM_FACT_SOURCE`, `DREAM_FACT_STORE` |
 | `durable_memory_paths` | files that already are memory (dedupe targets) |
-| `memory_char_limits` | char limits of MEMORY.md / USER.md (mirror Hermes `memory.*_char_limit`) |
+| `memory_char_limits` | char limits of MEMORY.md / USER.md. **Leave it out** and the limits are read from Hermes' own `memory.memory_char_limit` / `user_char_limit`; the example's numbers are the core defaults and will misreport an install that raised them |
+| `pending.dir`, `pending.alert_min`, `pending.alert_days` | the approval queue (`pending/memory`): when ≥`alert_min` writes have waited longer than `alert_days`, one alert is raised |
 | `pinned_markers` | entries with these markers are never asked about |
 | `windows`, `gates`, `weights` | scoring knobs — `references/scoring.md`; `gates.md_confirmed_cooldown_days` (90) is the rest period of a confirmed entry |
 | `precheck.memory_full_pct` | fill level (%) at which a memory file alone wakes the agent (default 85; `0` disables) |
 | `precheck.timeout_sec` | how long the gate waits for `dream.py` before reporting `dream_error` (default 600) |
 | `extract.*` | extraction chunking: `max_messages` 200, `max_chars` 40000, `min_messages` 15, `backfill_days` 60, `max_retries` 3 |
-| `diary.heading`, `diary.keep_sections`, `memory_loss_alert_fraction` | diary header and rotation; loss-guard threshold (0.25) |
+| `diary.heading`, `diary.keep_sections`, `diary.path` | diary header, rotation and where it lives (`memories/DREAMS.md`) |
+| `memory_loss_alert_fraction` | loss-guard threshold (0.25) — applied to the share of lost entries **and** of lost characters |
+| `gates.promotion_cooldown_days` | rest for a promotion already shown (3 days); without it a candidate the agent could not write came back every night |
 
 ## Safety and privacy
 
@@ -221,9 +253,15 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
   copies in `~/.hermes/scripts/` plus a seeded `dreaming.json`.
 - **The agent writes** memory entries through the `memory` tool (at most 6 changes a night) and, in
   the extraction job, candidate facts through `fact_store`. Nothing is ever deleted from the store.
-- Message and fact contents are treated as data, never as instructions; secrets and injection
-  attempts never reach the prompt. No tools, hooks, middleware or environment variables are
-  registered.
+- Message and fact contents are treated as data, never as instructions. Facts, the evidence quoted
+  next to them, the messages the extraction job hands over and the "still relevant?" previews are
+  all screened for credentials and injection directives; a hit is quarantined (a secret's text is
+  published nowhere, an injection keeps a 60-char preview in the full JSON only).
+  **The screening is a regex filter, not a guarantee:** it knows the common key shapes
+  (`sk-`, `gsk_`, `ntn_`, `gho_`, AWS, Google, Slack, Telegram, JWT, PEM), credential markers in
+  Russian and English, and the injection phrasings the core's own cron scanner looks for — a
+  wording nobody has seen yet can still get through. Keep the approval gate on if that matters.
+  No tools, hooks, middleware or environment variables are registered.
 
 ## Repository layout
 

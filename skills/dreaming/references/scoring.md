@@ -40,18 +40,41 @@ That is by design: the dream promotes what real conversations confirm.
 Instead of a (non-existent) query log we count real reinforcement from the
 transcripts (`state.db`, window `windows.corroboration_days`, default 60): for
 every fact / entry take its signature tokens and look for human messages with an
-overlap ≥2 tokens (or ≥1 "distinctive" token of ≥8 chars).
+overlap of **≥2 stems**, or ≥1 "distinctive" stem (a token of ≥8 chars for
+Latin, ≥10 for anything else — in Russian 8 characters is not rare, and one
+shared «обязательно» was enough for a false mention).
 
-**Tokenizer** — Unicode words (`[^\W\d_][\w\-]*`), Latin ≥4 chars, others ≥5,
-minus built-in RU/EN stopwords, `agent_names` and `extra_stopwords`. Reply
-quotes and voice transcripts are unwrapped before bracket blocks are cut; image
-descriptions stay metadata. **URLs are removed whole** before tokenizing (a
-link is a locator, not speech; tracking params used to be "distinctive"
-tokens). Harness envelopes (compaction banner, skill injection) are not human
-speech and are skipped.
+**Stems, not word forms.** Russian inflects, so exact comparison missed the
+same statement said differently («переехали» / «переехал», «Лиссабоне» /
+«Лиссабон»). `_stem()` strips the frequent endings and then cuts to 6 chars
+(5 for Latin) — a plain prefix cut collapsed «контент» and «контейнер».
 
-**Trusted sources** (fail-closed): cron sessions never corroborate (their
-role=user rows are job prompts); group chats only from `trusted_chat_ids`;
+**Tokenizer** — Unicode words (`[^\W\d_][\w\-]*`) over NFC-normalized text with
+ё→е, Latin ≥4 chars, others ≥5, minus built-in RU/EN stopwords, `agent_names`
+and `extra_stopwords`. Short words (`Илья`, `сын`, `дом`) do drop out — raise
+`token_min_len` if that matters more than the noise it brings back. Reply quotes
+and voice transcripts are unwrapped before bracket blocks are cut, **but a quote
+counts only when the person added words of their own** (a bare "ок" under a
+quoted cron report used to corroborate everything the report mentioned), and a
+quoted machine report never counts. Image descriptions stay metadata. **URLs are
+removed whole** before tokenizing (a link is a locator, not speech; tracking
+params used to be "distinctive" tokens). Harness inserts are not human speech
+and are skipped: the compaction banner, the skill injection, the preserved todo
+snapshot and both turn-failure notices — matched anywhere in the text, because
+the core glues the todo snapshot into a real reply.
+
+**Role and visibility** are filtered in SQL, not in Python: `role='user' OR
+observed=1` and `active=1 OR compacted=1` (a rewound row is not speech). Rows
+are then deduplicated by `(session_id, content, timestamp)` — compression keeps
+a copy of the row it folds, and both copies are visible, so one compaction used
+to add +0.04 to a fact's score.
+
+**Trusted sources** (fail-closed): machine-paced sessions never corroborate —
+`untrusted_sources` defaults to `cron`, `subagent` and `tool` (a subagent brief
+reads exactly like a person talking, and the core groups them the same way);
+`exclude_patterns` drops machine text that has no source of its own (bridge
+briefs, forwarded digests) by regex on the content; group chats only from
+`trusted_chat_ids`;
 private chats and legacy sessions without chat_id — per
 `trust_private_chats` / `trust_sessions_without_chat` (default true). If the
 `sessions` table is missing (old dump) the filter is disabled with a warning.
@@ -168,6 +191,10 @@ the dream.
 - **fact_decays** — `retrieval_count==0` and `mentions==0`, older than
   2×window, `trust_score<=0.5`, not in memory → "seems unused" (never
   auto-deleted). Cooldown 14 d.
+- **expired_events** — dated events whose date has passed. Read-only (never in
+  `precheck.actionable_keys`, so they open no gate): they used to disappear from
+  every section without a trace, which also swallowed durable facts that merely
+  contained a trigger word.
 - **md_decays** — §-entries of MEMORY.md not seen in conversations for
   `windows.md_decay_days` (default 60) → soft "still relevant?". Conservative:
   rules can be valid without being said aloud. Cooldown
@@ -186,6 +213,48 @@ the dream.
 - **memory_pressure** — present only when a file is at or above
   `precheck.memory_full_pct`: `[{file, percent, chars, limit}]`, worst first. The
   prompt keys its consolidation instruction off this field, not off raw percentages.
+
+## The unit of memory is the §-entry
+
+The core splits a memory file on the FULL delimiter `\n§\n`, strips each entry
+and drops empty ones (`tools/memory_tool_store.py:_parse_entries`), reads it as
+`utf-8-sig`, and `memory replace` **replaces the whole entry it finds** —
+`old_text` only locates it. This script mirrors that exactly (plus one
+tolerance: a delimiter at the very start of a file, which a hand edit often
+leaves).
+
+That is why `nearest_entry` ships:
+
+| field | why |
+|---|---|
+| `entry` | preview, 160 chars — never usable as `old_text` |
+| `entry_chars` | the entry is bigger than the preview |
+| `multi_section` | more than one line: `new_content` must carry all of it |
+| `full_entry` | the exact text about to be overwritten (≤1200 chars), also the value for `matched_entry` |
+| `old_text` | a verbatim, raw, single-line anchor unique among entries |
+| `replace_unsafe` | too long to show in full → do not replace blind |
+
+Splitting on blank lines (as versions up to 2.1.1 did) produced anchors from
+the middle of an entry and anchors with collapsed whitespace: on a live
+MEMORY.md one "correct" replace cut the file from 6 261 to 996 characters, and
+5 of 56 anchors matched nothing at all.
+
+## Writes waiting for approval
+
+With `memory.write_approval: true` a cron write answers `success: true,
+staged: true` and the file does not change. The pass reads
+`pending/memory/*.json` (`pending.dir`), treats those texts as a second memory
+file for dedupe, and therefore:
+
+- a candidate already queued is not offered again (`stats.staged_suppressed`);
+- an entry whose removal is queued is not asked about, and does not become
+  "confirmed" by waiting;
+- promotions get a short rest after being shown (`gates.promotion_cooldown_days`,
+  3 days) — they used to repeat every night "until written", which under an
+  approval gate meant forever;
+- a queue of ≥`pending.alert_min` items older than `pending.alert_days` raises
+  one `pending_writes` alert, then rests for the usual cooldown. It is the
+  human's job, not the agent's.
 
 ## Cooldowns and state
 

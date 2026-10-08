@@ -28,7 +28,7 @@ regular `dreaming`, or a plugin reinstalled under another name — is reported a
 a problem; `--rebind` updates its skill in place.
 
 The jobs load the skill they were installed with. Installed as a plugin
-(`hermes plugins install itpartypattaya/hermes-dreaming`), that is the plugin's
+(`hermes plugins install hermes-dreaming`), that is the plugin's
 own, catalog-pinned skill: portable plugin skills are namespaced
 (`agent-plugin-hermes-dreaming-<hash>:dreaming`), so the qualified name is taken
 from Hermes' plugin registry rather than guessed. A regular skill install
@@ -57,11 +57,22 @@ DREAM_PROMPT = (
     "HOW TO WRITE: memory add is the default. Use memory replace ONLY when the candidate has a "
     "nearest_entry with an old_text field — copy that anchor verbatim (the core matches old_text "
     "as a substring of a live entry; a paraphrase, the fact's own text or the truncated `entry` "
-    "preview never match). nearest_entry.target says which file to edit: memory or user. If "
+    "preview never match). Pass nearest_entry.full_entry as matched_entry when the tool accepts "
+    "it: the edit is then pinned to that exact entry. REPLACE REWRITES THE WHOLE ENTRY: old_text "
+    "only locates it, and the "
+    "core swaps that entire §-entry for your new_content. nearest_entry.full_entry is what you "
+    "are about to overwrite — merge your update into it and keep the rest; with multi_section "
+    "the entry has several lines, and with replace_unsafe it is too long to show, so add a "
+    "separate entry or ask instead of replacing blind. nearest_entry.target says which file to "
+    "edit: memory or user. If "
     "replace fails, the tool response carries current_entries with the live text: retry ONCE with "
     "an exact substring copied from there and stop guessing — after ~4 failures the core locks "
     "memory for the whole turn and nothing is written at all. Budget (a ceiling, not a target): "
     "at most 6 memory changes per night, at most 3 new entries; zero writes is a fine outcome. "
+    "Planning two or more changes — send them as ONE memory call with operations[]: all apply or "
+    "none, and the char limit is checked against the final state, so freeing space and adding fit "
+    "together. If the tool answers staged: true, the write is only QUEUED for a human (nothing "
+    "changed on disk): report it as sent for approval, not as saved, and do not rewrite it. "
     "One verifiable statement per entry; two candidates about the same thing become one entry, "
     "not two. Write absolute dates (take them from the fact's own date), never 'yesterday'. "
     "Apply each admissible promotion: one verifiable fact or rule per entry. Then review EVERY new_facts item: stable, important "
@@ -306,6 +317,9 @@ def main(argv=None):
             schedule=plan["schedule"],
             name=plan["name"],
             deliver=args.deliver,
+            # A non-local report goes to a chat, so the job needs a session
+            # attached; without it the delivery quietly stays local.
+            attach_to_session=args.deliver != "local",
             skill=skill,
             skills=[skill],
             script=plan["script"],

@@ -33,6 +33,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -63,7 +64,16 @@ DEFAULT_CONFIG = {
     # existed). Add `cli` when scripts drive the agent non-interactively — a
     # nightly "summarize this git diff" prompt is otherwise read as family talk,
     # and the diff's vocabulary becomes the top "emerging theme".
-    "untrusted_sources": ["cron"],
+    # Machine-paced sources never count as human speech. Hermes itself groups
+    # cron, subagent and tool runs that way (MACHINE_PACED_SOURCES), and a
+    # subagent brief looks exactly like a person talking — same wording, same
+    # role=user rows (external review, 2026-10-07).
+    "untrusted_sources": ["cron", "subagent", "tool"],
+    # Regexes; a message whose text matches any of them never corroborates.
+    # For machine text that carries no source of its own — bridge briefs
+    # ("via to-mia"), bot digests, forwarded reports — which land in whatever
+    # thread their author used, so `excluded_threads` cannot catch them.
+    "exclude_patterns": [],
     # Threads (forum topics) of a TRUSTED chat that must NOT corroborate:
     # {"<chat_id>": ["<thread_id>", …]}. A trusted chat is trusted as a whole,
     # but an agent's own alerts, machine-generated cards and assistant bridges
@@ -104,9 +114,17 @@ DEFAULT_CONFIG = {
     "profile_categories": ["user", "user_pref", "preference", "profile", "personal", "family"],
     # Declarative near-duplicate rules (see `_semantic_memory_alias`).
     "alias_rules": [],
-    "diary": {"heading": "## Dream", "keep_sections": 90},
+    # Where the diary lives (relative to HERMES_HOME). It was hard-wired in the
+    # gate, so an install that keeps its memories elsewhere got a second
+    # DREAMS.md next to the first one (external review, 2026-10-07).
+    "diary": {"heading": "## Dream", "keep_sections": 90, "path": "memories/DREAMS.md"},
     "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
+    # Promotions used to repeat every night by design ("until written"). With
+    # an approval gate in the way, or a budget that cut them off, that meant the
+    # same wake-up forever — hence a short rest, much shorter than the 14 days
+    # of the other sections.
     "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
+              "promotion_cooldown_days": 3,
               "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
               # A §-entry that survived a "still relevant?" question — kept as is
               # past md_ask_cooldown_days, or rewritten in place — counts as
@@ -124,6 +142,11 @@ DEFAULT_CONFIG = {
     # than this fraction of yesterday's entries is gone, an alert is raised
     # (a bad LLM turn or a wrong `memory replace` — never silent).
     "memory_loss_alert_fraction": 0.25,
+    # Writes waiting for a human (`memory.write_approval: true` in Hermes).
+    # A staged write answers "success, staged" to the agent but does not change
+    # MEMORY.md, so without this the same candidate woke the agent every night
+    # and piled up new pending files (external review, 2026-10-07).
+    "pending": {"dir": "pending/memory", "alert_min": 5, "alert_days": 7},
     "state": {"asked": "cache/dream-asked.json",
               "rejected": "cache/dream-rejected.json",
               "seen": "cache/dream-seen.json",
@@ -164,23 +187,79 @@ def load_config(path=None):
     return _deep_merge(DEFAULT_CONFIG, data)
 
 
+def _hermes_config_text(home=None):
+    try:
+        with open(os.path.join(home or HOME, "config.yaml"), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _hermes_config(home=None):
+    """Hermes config.yaml as a dict, or {} without PyYAML or on a parse error.
+    Callers must degrade gracefully: the pass never requires a dependency."""
+    text = _hermes_config_text(home)
+    if not text:
+        return {}
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — no yaml, or a file it cannot parse
+        return {}
+
+
+def hermes_memory_settings(home=None):
+    """`memory:` of Hermes config.yaml — the limits and the provider that decide
+    what the dream can see and what counts as "memory is filling up".
+
+    The defaults shipped in the example config are the CORE defaults (2200 and
+    1375), so an install that raised its limits got "memory at 285%" and a
+    nightly order to merge and drop entries (external review, 2026-10-07). The
+    numbers live in one place; read them from there."""
+    mem = (_hermes_config(home) or {}).get("memory")
+    if isinstance(mem, dict):
+        out = {}
+        for key in ("memory_char_limit", "user_char_limit", "provider", "write_approval"):
+            if key in mem:
+                out[key] = mem[key]
+        if out:
+            return out
+    # No PyYAML (or an unparsable file): scan the block for the few keys.
+    text = _hermes_config_text(home)
+    block = re.search(r"^memory:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
+    if not block:
+        return {}
+    out = {}
+    for key in ("memory_char_limit", "user_char_limit", "provider", "write_approval"):
+        hit = re.search(rf"^[ \t]+{key}:[ \t]*([^#\n]*)", block.group(1), re.MULTILINE)
+        if not hit:
+            continue
+        raw = hit.group(1).strip().strip("\"'")
+        if key.endswith("_limit"):
+            try:
+                out[key] = int(raw)
+            except ValueError:
+                continue
+        elif key == "write_approval":
+            out[key] = raw.lower() in ("true", "yes", "1")
+        else:
+            out[key] = raw
+    return out
+
+
 def _hermes_plugin_db_path(home=None):
     """`plugins.hermes-memory-store.db_path` from Hermes config.yaml, or None.
     Read with PyYAML when available, else a narrow line scanner — the pass must
     not grow a dependency for one key."""
-    cfg = os.path.join(home or HOME, "config.yaml")
-    try:
-        with open(cfg, encoding="utf-8") as f:
-            text = f.read()
-    except OSError:
+    text = _hermes_config_text(home)
+    if not text:
         return None
-    try:
-        import yaml  # type: ignore
-        data = yaml.safe_load(text) or {}
+    data = _hermes_config(home)
+    if data:
         value = ((data.get("plugins") or {}).get("hermes-memory-store") or {}).get("db_path")
-        return str(value) if value else None
-    except Exception:  # noqa: BLE001 — no yaml, or a file it cannot parse
-        pass
+        if value:
+            return str(value)
     section = re.search(r"^plugins:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
     if not section:
         return None
@@ -277,13 +356,20 @@ def configure(cfg):
     global CONFIG, LOCAL_TZ, WEIGHTS, MIN_SCORE, MIN_MENTIONS, NEW_FACTS_CAP, PUBLISH_CAP
     global MD_ASK_COOLDOWN_DAYS, MD_CONFIRMED_COOLDOWN_DAYS, SEEN_COOLDOWN_DAYS
     global TRUSTED_CHAT_IDS, TRUST_PRIVATE
-    global TRUST_NO_CHAT, EXCLUDED_THREADS, UNTRUSTED_SOURCES
+    global TRUST_NO_CHAT, EXCLUDED_THREADS, UNTRUSTED_SOURCES, EXCLUDE_PATTERNS
     global STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
     global PROFILE_HINT_RE, PROFILE_CATEGORIES, DIARY_HEADING, DIARY_SECTION_RE
     global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
-    global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION
+    global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
+    global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
     CONFIG = cfg
-    LOCAL_TZ = _tz(_env("DREAM_TIMEZONE", cfg.get("timezone")))
+    # No timezone of our own → Hermes' own, and only then UTC. A dream filed
+    # under yesterday's UTC date is the mildest symptom; day bucketing of
+    # mentions is the real one.
+    tz_name = _env("DREAM_TIMEZONE", cfg.get("timezone"))
+    if not tz_name or tz_name == DEFAULT_CONFIG.get("timezone"):
+        tz_name = (_hermes_config() or {}).get("timezone") or tz_name
+    LOCAL_TZ = _tz(tz_name)
     WEIGHTS = dict(DEFAULT_CONFIG["weights"], **(cfg.get("weights") or {}))
     gates = cfg.get("gates") or {}
     MIN_SCORE = _env("DREAM_MIN_SCORE", float(gates.get("min_score", 0.55)), float)
@@ -294,6 +380,15 @@ def configure(cfg):
                                 int(gates.get("md_ask_cooldown_days", 14)), int)
     MD_CONFIRMED_COOLDOWN_DAYS = _env("DREAM_MD_CONFIRMED_COOLDOWN_DAYS",
                                       int(gates.get("md_confirmed_cooldown_days", 90)), int)
+    PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
+                                   int(gates.get("promotion_cooldown_days", 3)), int)
+    pend = cfg.get("pending") or {}
+    PENDING_DIR = str(pend.get("dir") or "pending/memory")
+    try:
+        PENDING_ALERT_MIN = int(pend.get("alert_min", 5))
+        PENDING_ALERT_DAYS = int(pend.get("alert_days", 7))
+    except (TypeError, ValueError):
+        PENDING_ALERT_MIN, PENDING_ALERT_DAYS = 5, 7
     SEEN_COOLDOWN_DAYS = _env("DREAM_SEEN_COOLDOWN_DAYS",
                               int(gates.get("seen_cooldown_days", 14)), int)
     env_chats = os.environ.get("DREAM_TRUSTED_CHAT_IDS")
@@ -312,6 +407,12 @@ def configure(cfg):
                    else (cfg.get("untrusted_sources") or []))
     # `cron` is not configurable away: a job prompt is never speech.
     UNTRUSTED_SOURCES = {"cron"} | {str(s).strip() for s in raw_sources if str(s).strip()}
+    EXCLUDE_PATTERNS = []
+    for pat in (cfg.get("exclude_patterns") or []):
+        try:
+            EXCLUDE_PATTERNS.append(re.compile(str(pat), re.IGNORECASE))
+        except re.error as exc:
+            print(f"[dream] warn: exclude_patterns {pat!r} ignored: {exc}", file=sys.stderr)
     STOPWORDS = set(RU_STOP) | set(EN_STOP)
     STOPWORDS |= {_norm(w) for w in (cfg.get("agent_names") or []) if w}
     STOPWORDS |= {_norm(w) for w in (cfg.get("extra_stopwords") or []) if w}
@@ -329,8 +430,20 @@ def configure(cfg):
     DIARY_SECTION_RE = re.compile(rf"^{re.escape(DIARY_HEADING)} \d{{4}}-\d{{2}}-\d{{2}}",
                                   re.MULTILINE)
     DIARY_KEEP_SECTIONS = _env("DREAM_DIARY_KEEP", int(diary.get("keep_sections", 90)), int)
+    DIARY_PATH = str(diary.get("path") or "memories/DREAMS.md")
     DURABLE_MEMORY_PATHS = list(cfg.get("durable_memory_paths") or [])
     MEMORY_CHAR_LIMITS = dict(cfg.get("memory_char_limits") or {})
+    if not MEMORY_CHAR_LIMITS:
+        # Not configured here → ask Hermes, do not guess. Guessing meant the
+        # example's 2200/1375 (core defaults) on an install with raised limits.
+        hermes_mem = hermes_memory_settings()
+        pairs = (("memories/MEMORY.md", hermes_mem.get("memory_char_limit")),
+                 ("memories/USER.md", hermes_mem.get("user_char_limit")))
+        MEMORY_CHAR_LIMITS = {name: int(limit) for name, limit in pairs
+                              if isinstance(limit, (int, float)) and int(limit) > 0}
+        if MEMORY_CHAR_LIMITS:
+            print(f"[dream] note: char limits taken from config.yaml: "
+                  f"{MEMORY_CHAR_LIMITS}", file=sys.stderr)
     PINNED_MARKERS = [str(m) for m in (cfg.get("pinned_markers") or []) if m]
     try:
         MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
@@ -351,13 +464,22 @@ RU_STOP = set("""и в во не на я с со что а то как это о
 привет коротко напомни запиши сделай расскажи покажи какие какой какая пожалуйста спасибо
 твоего твоей твоих твоим твоими моего моей моих моими нашего нашей наших вашего вашей ваших
 поэтому потому почему зачем одним одной словом может могут можешь пришли ответь посмотри
-проверь напиши давай давайте""".split())
+проверь напиши давай давайте
+только просто конечно наверное например обязательно получается кажется значит вообще
+совсем именно понятно видимо похоже ладно хорошо отлично понял поняла помню помнишь
+думаю считаю знаю хочу хотел хотела будем сегодня завтра вчера утром вечером""".split())
 # Dates in words: never a topic, and two of them ("12 сентября … завтра") were
 # enough for two unrelated texts to "corroborate" each other. Kept apart from
 # RU_STOP because the store-duplicate check must NOT ignore them — "12 сентября"
 # and "12 октября" are different facts.
 RU_TEMPORAL_STOP = set("""сегодня завтра вчера
 января февраля марта апреля августа сентября октября ноября декабря""".split())
+# Negations and comparatives are stopwords for corroboration (they are not a
+# topic) but MUST stay significant for the store-duplicate check: «<person> ест
+# острое» and «<person> не ест острое» are opposite facts, and ignoring «не»
+# collapsed them into one (external review, 2026-10-07).
+RU_POLARITY_STOP = set("""не нет без ни никогда нельзя
+более менее больше меньше""".split())
 RU_STOP |= RU_TEMPORAL_STOP
 # The additions of 2026-10-02 (possessives, connectives, imperatives addressed to
 # the agent, dates in words) come from the live top of "emerging themes": none
@@ -389,8 +511,18 @@ def _parse_ts(s):
         return None
 
 
+def _fold(s):
+    """Unicode NFC plus ё→е.
+
+    The same word arrives in different shapes: "ёлка"/"елка" are two strings,
+    and a decomposed "й" (и + U+0306) is a third one after a copy-paste out of
+    a browser. Both broke comparison silently — the tokens simply did not meet
+    (external review, 2026-10-07)."""
+    return unicodedata.normalize("NFC", s or "").replace("ё", "е").replace("Ё", "Е")
+
+
 def _norm(s):
-    return re.sub(r"\s+", " ", (s or "").lower()).strip()
+    return re.sub(r"\s+", " ", _fold(s).lower()).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -418,11 +550,25 @@ VOICE_QUOTE_RE = re.compile(
 HARNESS_ENVELOPE_RE = re.compile(
     r"^\s*\[(?:context\s+compaction|important:\s*the\s+user\s+has\s+invoked)",
     re.IGNORECASE)
+# Service text the harness persists as an ordinary message. Matched ANYWHERE in
+# the text, not just at the start: the core glues the todo snapshot into a real
+# reply, and a failure notice can be quoted (exact strings from Hermes 0.21.5 —
+# tools/todo_tool.py:21, agent/turn_failure_copy.py:39-45,208).
+HARNESS_INSERTS = (
+    "[Your active task list was preserved across context compression]",
+    "Your request was not processed. Send it again if you still want me to carry it out.",
+    "This turn did not complete. Some actions may already have run; verify their effects",
+    "Operation interrupted: waiting for model response (",
+    "Operation interrupted.",
+)
 
 
 def is_harness_envelope(text):
     """True for harness service inserts that are not human speech."""
-    return bool(HARNESS_ENVELOPE_RE.match(text or ""))
+    raw = text or ""
+    if HARNESS_ENVELOPE_RE.match(raw):
+        return True
+    return any(ins in raw for ins in HARNESS_INSERTS)
 
 
 # A URL is a locator, not speech, and has no place in corroboration. It broke
@@ -449,6 +595,12 @@ def _keep_token(tok):
     return len(tok) >= TOKEN_MIN_OTHER
 
 
+def _raw_tokens(text):
+    """Significant tokens of an already unwrapped string (brackets are metadata)."""
+    low = re.sub(r"\[[^\]]*\]", " ", strip_urls(_fold(text))).lower()
+    return {w for w in TOKEN_RE.findall(low) if _keep_token(w)}
+
+
 def sig_tokens(text):
     """Signature tokens: Unicode words without stopwords (Latin ≥4, other ≥5 chars).
 
@@ -457,11 +609,28 @@ def sig_tokens(text):
     (otherwise a short "yes, still Honda" gives 0 tokens and the dream asks the
     same thing every night). Other [..] blocks (sender tags, [id=N], image
     descriptions) are still cut as metadata."""
-    unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", text or "")
+    raw = text or ""
+    # A reply quote counts only when the person added words of their own. A bare
+    # "ок" under a quoted cron report used to corroborate everything the report
+    # mentioned — including the entries it proposed to drop (external review,
+    # 2026-10-07). The live case that put the unwrapping here ("Да, всё ещё
+    # Honda") keeps working: its tail has its own tokens.
+    tail = VOICE_QUOTE_RE.sub(" ", REPLY_QUOTE_RE.sub(" ", raw))
+    tail_tokens = _raw_tokens(tail)
+    quoted = " ".join(m.group(1) for m in REPLY_QUOTE_RE.finditer(raw))
+    if not tail_tokens and quoted:
+        return set()
+    if quoted and MACHINE_QUOTE_RE.search(quoted):
+        # Quoting a machine (a cron report, a script block) is not speech about
+        # the subject, however much the person adds around it.
+        return tail_tokens
+    unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", raw)
     unwrapped = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", unwrapped)
-    unwrapped = strip_urls(unwrapped)
-    low = re.sub(r"\[[^\]]*\]", " ", unwrapped).lower()
-    return {w for w in TOKEN_RE.findall(low) if _keep_token(w)}
+    return _raw_tokens(unwrapped)
+
+
+MACHINE_QUOTE_RE = re.compile(
+    r"cronjob\s+response|##\s*script\s+output|\[dream[\]-]|wakeagent", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +772,15 @@ def _normalize_fact(r, cols):
             "created_at": created, "updated_at": _ts_text(r.get(cols["updated_at"])) or created}
 
 
+def _table_columns(conn, table):
+    """Column names of `table` ([] when it does not exist). The query is built
+    from this instead of catching OperationalError three times over."""
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
 def _trusted_message(source, chat_type, chat_id, thread_id=None):
     """Only humans corroborate memory: no machine-driven sources, no group chats
     outside the trusted list (fail-closed), no excluded threads of a trusted
@@ -639,44 +817,75 @@ def load_messages(db, days):
     cutoff = _now().timestamp() - days * 86400
     out = []
     c = _conn(db)
-    _SELECT = ("select m.id, m.role, m.content, m.timestamp, m.observed, "
-               "s.source, s.chat_type, s.chat_id, {thread} "
-               "from messages m left join sessions s on m.session_id = s.id "
-               "where m.timestamp>=? and m.content is not null")
     try:
+        msg_cols = _table_columns(c, "messages")
+        sess_cols = _table_columns(c, "sessions")
+        if not msg_cols:
+            print("[dream] warn: no messages table — nothing corroborates", file=sys.stderr)
+            return []
+        # Role and visibility go into the WHERE, not into Python: a 60-day
+        # window on a busy install is tens of thousands of rows, 90% of them
+        # tool output (53k rows / ~200M chars and ~0.5 GB RSS on the install the
+        # external review measured). The flags are the core's own visibility
+        # model: active=1 is a live row, compacted=1 is folded by compression
+        # but still visible, 0/0 is rewound — and a rewound row is not speech.
+        where = ["m.timestamp>=?", "m.content is not null", "m.content != ''"]
+        if "observed" in msg_cols:
+            where.append("(m.role='user' or m.observed=1)")
+        else:
+            where.append("m.role='user'")
+        if "active" in msg_cols and "compacted" in msg_cols:
+            where.append("(coalesce(m.active,1)=1 or coalesce(m.compacted,0)=1)")
+        cols = ["m.id", "m.role", "m.content", "m.timestamp",
+                "m.observed" if "observed" in msg_cols else "0",
+                "m.session_id"]
+        if sess_cols:
+            cols += ["s.source", "s.chat_type", "s.chat_id",
+                     "s.thread_id" if "thread_id" in sess_cols else "null"]
+            join = " left join sessions s on m.session_id = s.id"
+        else:
+            # No usable `sessions` table: the source of a message is unknown.
+            # Fail closed, not open — without it a cron job's own prompt rows
+            # (role=user) corroborated facts. What is still known is the session
+            # id: Hermes names cron sessions `cron_…`, so those are dropped
+            # outright; the rest are "sessions without chat" and go through the
+            # same config switch as any other session lacking chat metadata.
+            print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
+                  "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
+            cols += ["null", "null", "null", "null"]
+            join = ""
+        sql = (f"select {', '.join(cols)} from messages m{join} "
+               f"where {' and '.join(where)}")
         try:
-            rows = list(c.execute(_SELECT.format(thread="s.thread_id"), (cutoff,)))
-        except sqlite3.OperationalError:
-            try:
-                # `sessions` without a `thread_id` column (older Hermes, and the
-                # reason this is a separate tier): threads are unknown, so
-                # `excluded_threads` simply never matches. Falling straight
-                # through to the branch below would ALSO drop chat_id and blind
-                # corroboration completely — a schema detail must not do that.
-                rows = list(c.execute(_SELECT.format(thread="null"), (cutoff,)))
-            except sqlite3.OperationalError:
-                # No usable `sessions` table: the source of a message is unknown.
-                # Fail closed, not open — without it a cron job's own prompt rows
-                # (role=user) corroborated facts. What is still known is the session
-                # id: Hermes names cron sessions `cron_…`, so those are dropped
-                # outright; the rest are "sessions without chat" and go through the
-                # same config switch as any other session lacking chat metadata.
-                print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
-                      "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
-                rows = [(mid, role, content, ts, observed,
-                         "cron" if str(sid or "").startswith("cron_") else None, None, None, None)
-                        for mid, sid, role, content, ts, observed in c.execute(
-                            "select id,session_id,role,content,timestamp,observed from messages "
-                            "where timestamp>=? and content is not null", (cutoff,))]
+            rows = list(c.execute(sql, (cutoff,)))
+        except sqlite3.OperationalError as exc:
+            print(f"[dream] warn: message query failed ({exc}) — corroboration skipped",
+                  file=sys.stderr)
+            return []
     finally:
         c.close()
-    for mid, role, content, ts, observed, source, chat_type, chat_id, thread_id in rows:
+    seen_rows = set()
+    for row in rows:
+        mid, role, content, ts, observed, sid = row[:6]
+        source, chat_type, chat_id, thread_id = row[6:10]
+        if not sess_cols and str(sid or "").startswith("cron_"):
+            source = "cron"
         if not content or not (role == "user" or observed == 1):
             continue
         if not _trusted_message(source, chat_type, chat_id, thread_id):
             continue
         if is_harness_envelope(content):
             continue
+        if any(p.search(content) for p in EXCLUDE_PATTERNS):
+            continue
+        # Compression copies the row it folds, and both copies are visible. The
+        # same sentence must not corroborate twice (it was worth +0.04 of score
+        # per copy, enough to cross the 0.55 gate). Same key as the core's own
+        # _dedupe_display_generations: session, text, timestamp.
+        key = (sid, content, ts)
+        if key in seen_rows:
+            continue
+        seen_rows.add(key)
         out.append({"id": mid, "content": content, "ts": ts, "day": _day_of(ts),
                     "tokens": sig_tokens(content)})
     return out
@@ -687,22 +896,33 @@ def load_messages(db, days):
 # ---------------------------------------------------------------------------
 
 EVIDENCE_MAX = 3
+# One shared word is evidence only when the word is rare. Latin keeps the
+# historical 8 characters; Cyrillic needs more — see corroborate().
+DISTINCTIVE_LATIN = 8
+DISTINCTIVE_OTHER = 10
 
 
 def corroborate(item_tokens, messages, evidence=False):
     """How many different days / messages mention the token set.
 
-    Match: overlap ≥2 tokens, or ≥1 "distinctive" token (len ≥8).
+    Match: overlap ≥2 STEMS, or ≥1 "distinctive" stem. Stems, because Russian
+    inflects: «Мы окончательно переехали, в Лиссабоне…» did not corroborate
+    «Илья переехал в Лиссабон» while «Мой брат переехал в Москву» did (external
+    review, 2026-10-07). "Distinctive" means rare enough that one hit is
+    evidence — and 8 characters is not rare in Russian (41-45% of words reach
+    it: «например», «обязательно»), hence a higher bar for non-Latin.
     Returns (mentions, ref_days, last_ts) or, with evidence=True,
     (mentions, ref_days, last_ts, samples) where samples are up to
     EVIDENCE_MAX (day, snippet) pairs from different days — provenance for the
     reviewer ("why does the dream think this is confirmed?")."""
     if not item_tokens:
         return (0, 0, None, []) if evidence else (0, 0, None)
-    distinctive = {t for t in item_tokens if len(t) >= 8}
+    item_stems = _stems(item_tokens)
+    distinctive = {_stem(t) for t in item_tokens
+                   if len(t) >= (DISTINCTIVE_LATIN if t.isascii() else DISTINCTIVE_OTHER)}
     days, mentions, last_ts, samples = set(), 0, None, []
     for m in messages:
-        inter = item_tokens & m["tokens"]
+        inter = item_stems & _stems(m["tokens"])
         if len(inter) >= 2 or (inter & distinctive):
             mentions += 1
             # A message still counts as a mention, but its text travels to the
@@ -778,26 +998,62 @@ def _memory_candidate_paths(mem_md):
     return out
 
 
+# The unit of durable memory is the §-ENTRY, not the paragraph. The core
+# splits on the FULL delimiter "\n§\n" (so a bare § inside a line survives),
+# strips each entry and drops empty ones — and `memory replace` locates an
+# entry by `old_text` and then rewrites THAT WHOLE ENTRY
+# (tools/memory_tool_store.py:23, 298-302, 510-512).
+#
+# This script used to split on blank lines as well. Two consequences, both
+# reported from a live install (external review of v2.1.1, 2026-10-07): an
+# anchor taken from the second paragraph of a multi-paragraph entry made the
+# agent's replace wipe the entry whole (6 261 → 996 chars on a real
+# MEMORY.md), and an anchor with collapsed whitespace was not found at all
+# because the core matches `old_text` as a RAW substring.
+MEMORY_ENTRY_DELIMITER = "\n§\n"
+
+
+def _read_memory_file(path):
+    """Memory file as the core reads it: utf-8-sig, so a BOM never becomes part
+    of the first entry (and of an anchor built from it)."""
+    with open(path, encoding="utf-8-sig") as f:
+        return f.read()
+
+
+LEADING_DELIMITER_RE = re.compile("^[" + chr(92) + "s" + chr(0xFEFF) + "]*§[ " + chr(92) + "t]*\r?\n")
+
+
+def _memory_entries(text):
+    """§-entries exactly as the core parses them.
+
+    One documented tolerance: a delimiter at the very START of the file. The
+    core never writes one (it joins entries with the delimiter), but a hand
+    edit often does, and then the core carries a stray "§" into entry #1 —
+    which would show up in our preview, our anchor and our loss-guard key."""
+    raw = LEADING_DELIMITER_RE.sub("", text or "", count=1)
+    return [e for e in (p.strip() for p in raw.split(MEMORY_ENTRY_DELIMITER)) if e]
+
+
 def load_durable_memory_text(mem_md):
     chunks = []
     for path in _memory_candidate_paths(mem_md):
         if os.path.exists(path):
             try:
-                with open(path, encoding="utf-8") as f:
-                    chunks.append(f.read())
+                text = _read_memory_file(path)
             except OSError:
-                pass
-    return "\n\n".join(chunks)
+                continue
+            # CRLF не особый случай: ядро читает память через read_text, то есть
+            # с универсальными переводами строк — \r\n приходит как \n (проверено
+            # на 0.21.5). Наш open() в текстовом режиме делает то же.
+            chunks.append(text)
+    # Joined with the delimiter, not a blank line: otherwise the last entry of
+    # one file and the first of the next merge into one comparison unit.
+    return MEMORY_ENTRY_DELIMITER.join(chunks)
 
 
 def _memory_chunks(memory_text):
-    """Split memory/profile text into comparison chunks for fuzzy dedupe."""
-    chunks = []
-    for part in re.split(r"\n\s*§\s*\n|\n{2,}", memory_text or ""):
-        part = part.strip()
-        if len(part) > 20:
-            chunks.append(part)
-    return chunks or [memory_text or ""]
+    """Comparison units for fuzzy dedupe — the core's §-entries."""
+    return _memory_entries(memory_text) or [(memory_text or "").strip()]
 
 
 def load_durable_memory_sources(mem_md):
@@ -813,11 +1069,10 @@ def load_durable_memory_sources(mem_md):
         if not path or not os.path.exists(path):
             continue
         try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
+            text = _read_memory_file(path)
         except OSError:
             continue
-        out.extend((target, chunk) for chunk in _memory_chunks(text))
+        out.extend((target, entry) for entry in _memory_entries(text))
     return out
 
 
@@ -860,13 +1115,43 @@ def _semantic_memory_alias(content, memory_text, rules=None):
     return any(_groups_hit(r.get("fact"), c) and _groups_hit(r.get("memory"), m) for r in rules)
 
 
+# Inflectional endings, longest first. Not a morphological analyser — just the
+# endings that make one word look like two: «переехали»/«переехал»,
+# «Лиссабоне»/«Лиссабон», «транспортные»/«транспорт». A bare prefix cut was too
+# crude the other way: at 5 characters «контент» and «контейнер» collapsed into
+# one stem (external review, 2026-10-07).
+RU_SUFFIXES = (
+    "иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
+    "ость", "ться", "лась", "лись", "ются", "ешься", "ишься",
+    "ах", "ях", "ов", "ев", "ей", "ой", "ый", "ий", "ом", "ем", "ую", "юю",
+    "ые", "ие", "ая", "яя", "ее", "ое", "ам", "ям", "ют", "ут", "ат", "ят",
+    "ет", "ит", "ла", "ло", "ли", "ся", "сь", "шь",
+    "а", "е", "и", "о", "у", "ы", "я", "ю", "й", "ь",
+)
+STEM_CHARS_LATIN = 5
+STEM_CHARS_OTHER = 6
+STEM_MIN_ROOT = 4
+
+
+def _stem(token):
+    """One crude stem for fuzzy comparison. Latin keeps the old 5-char prefix."""
+    if token.isascii():
+        return token[:STEM_CHARS_LATIN]
+    t = token
+    for suf in RU_SUFFIXES:
+        if len(t) - len(suf) >= STEM_MIN_ROOT and t.endswith(suf):
+            t = t[: -len(suf)]
+            break
+    return t[:STEM_CHARS_OTHER]
+
+
 def _stems(tokens):
-    """Crude stems (first 5 chars) for fuzzy comparison only.
+    """Stems for fuzzy comparison.
 
     Inflection breaks exact comparison («транспортные»≠«транспорт») — a
     reworded duplicate scored containment 0.3–0.5 against the 0.62 threshold
-    and resurfaced in promotions every night. corroborate() keeps exact tokens."""
-    return {t[:5] for t in tokens}
+    and resurfaced in promotions every night."""
+    return {_stem(t) for t in tokens}
 
 
 # Reverse dedupe direction: a short memory entry as a digest of a long fact.
@@ -1068,11 +1353,12 @@ def _store_duplicates(a, b):
     wa, wb = _store_words(a), _store_words(b)
     if len(wa & wb) < STORE_DUP_MIN_SHARED:
         return False
-    stop = {s.replace("ё", "е") for s in STOPWORDS - RU_TEMPORAL_STOP}
+    stop = {s.replace("ё", "е")
+            for s in STOPWORDS - RU_TEMPORAL_STOP - RU_POLARITY_STOP}
     for mine, other in ((wa - wb, wb), (wb - wa, wa)):
-        other_stems = {w[:5] for w in other if len(w) >= 5}
+        other_stems = {_stem(w) for w in other if len(w) >= 5}
         for w in mine:
-            if w in stop or (len(w) >= 5 and w[:5] in other_stems):
+            if w in stop or (len(w) >= 5 and _stem(w) in other_stems):
                 continue
             return False
     return True
@@ -1206,7 +1492,11 @@ THAI_MONTHS_RE = (r"มกราคม|กุมภาพันธ์|มีน�
 # words and `\b` needs a \w/non-\w boundary, so `\bสอบ\b` never matched «สอบ»
 # inside «การสอบ» and Thai school messages were never seen as temporary events.
 EPHEMERAL_HINTS_RE = re.compile(
-    r"\b(?:тест|контрольн\w*|экзамен\w*|экскурс\w*|дедлайн\w*|"
+    r"\b(?:тест\w*|контрольн\w*|экзамен\w*|экскурс\w*|дедлайн\w*|"
+    r"встреч\w*|созвон\w*|звонок|совещани\w*|собеседовани\w*|"
+    r"вылет\w*|рейс\w*|прилёт\w*|прилет\w*|поезд\w*|"
+    r"приём\w*|прием\w*|запись\s+к\s+врачу|визит\w*|"
+    r"meeting|call|flight|appointment|interview|"
     r"test|exam\w*|deadline\w*|field\s+trip|bring|submit|prepare|"
     r"sight\s+words?|страниц\w*|лист\w*\s+для\s+чтени\w*|"
     r"завтра|сегодня|послезавтра|принести|сдать|подготовить)\b"
@@ -1351,22 +1641,42 @@ SECRET_RE = re.compile(
     r"|AIza[0-9A-Za-z_\-]{30,}"                     # Google API key
     r"|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
     r"|xox[abprs]-[A-Za-z0-9\-]{10,}"               # Slack
+    r"|gsk_[A-Za-z0-9]{20,}"                        # Groq
+    r"|ntn_[A-Za-z0-9]{20,}|secret_[A-Za-z0-9]{32,}"  # Notion (new and legacy)
+    r"|sk_[a-f0-9]{32,}"                            # ElevenLabs and friends
+    r"|gh[osu]_[A-Za-z0-9]{20,}"                    # GitHub OAuth/server/user tokens
     r"|\b\d{8,10}:AA[A-Za-z0-9_\-]{30,}"            # Telegram bot token
     r"|eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}"  # JWT
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|\b[0-9a-f]{40,}\b"                           # long hex (keys/sessions)
     r")")
+# A credential marker is rarely glued to the colon: "Пароль от wifi в квартире:
+# X" and "Password for the router is X" both carry one. Up to four words are
+# allowed between the marker and the separator — but they must not contain a
+# verb of change, so "сменила пароль от Wi-Fi" (an event, not a secret) stays
+# out (external review, 2026-10-07).
 PASSWORD_MARKER_RE = re.compile(
     r"(?:парол[ьяию]|password|passwd|passphrase|seed[- ]?фраза|seed[- ]?phrase|"
-    r"секретн\w{0,4}\s+(?:ключ|код)|api[- ]?ключ|private\s+key|2fa[- ]?код)"
-    r"\s*[:=—]\s*\S{4,}",
+    r"секретн\w{0,4}\s+(?:ключ|код)|api[- ]?ключ|private\s+key|2fa[- ]?код|"
+    r"пин[- ]?код|\bпин\b|\bpin\b|код\s+от)"
+    r"(?:[^\n:=—]{0,40})?[:=—]\s*\S{4,}",
+    re.IGNORECASE)
+# …and these say "we changed it", not "here it is".
+PASSWORD_EVENT_RE = re.compile(
+    r"(?:смен\w+|помен\w+|обнов\w+|сброс\w+|забыл\w*|changed|rotated|reset|forgot)",
     re.IGNORECASE)
 INJECTION_RE = re.compile(
     r"(?:"
-    r"игнорируй\s+(?:все\s+)?(?:предыдущие|прошлые|прежние)\s+(?:инструкции|правила|указания)"
-    r"|ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|rules)"
-    r"|disregard\s+(?:all\s+)?(?:previous|prior|above)"
-    r"|забудь\s+(?:все|всё|свои)\s+(?:инструкции|правила|ограничения)"
+    # Stems, not exact forms: «Игнорируйте», «игнорировать», «забудьте» are the
+    # same instruction (external review, 2026-10-07). Up to two words may stand
+    # between the verb and its object.
+    r"игнорир\w*\s+(?:\w+\s+){0,2}?(?:инструкци\w*|правил\w*|указани\w*|предыдущ\w*|прошл\w*)"
+    r"|ignore\s+(?:\w+\s+){0,3}?(?:previous|prior|above|earlier|all)\s+(?:\w+\s+){0,2}?instructions?"
+    r"|disregard\s+(?:all\s+|any\s+|your\s+)?(?:previous|prior|above|instructions|rules|guidelines)"
+    r"|do\s+not\s+tell\s+the\s+user|system\s+prompt\s+override"
+    r"|forget\s+(?:all\s+|your\s+|the\s+)?(?:previous\s+|prior\s+)?(?:instructions?|rules?)"
+    r"|забуд\w*\s+(?:\w+\s+){0,2}?(?:инструкци\w*|правил\w*|ограничени\w*)"
+    r"|запомни\s*[:,]?\s*(?:всегда|никогда|что\s+тебе\s+разреш)"
     r"|системн\w+\s+промпт|system\s+prompt"
     r"|(?:developer|god|dan)\s+mode|режим\s+разработчика"
     r"|new\s+instructions?\s*:|новые\s+инструкции\s*:"
@@ -1385,7 +1695,10 @@ def classify_unsafe(content):
     """'secret' | 'injection' | None. Conservative quarantine: exclusion from
     auto-promotion with a note in the report, never deletion."""
     text = content or ""
-    if SECRET_RE.search(text) or PASSWORD_MARKER_RE.search(text):
+    if SECRET_RE.search(text):
+        return "secret"
+    marker = PASSWORD_MARKER_RE.search(text)
+    if marker and not PASSWORD_EVENT_RE.search(text[:marker.end()]):
         return "secret"
     if INJECTION_RE.search(text):
         return "injection"
@@ -1432,12 +1745,14 @@ def extract_themes(messages, window_days):
 
 
 def parse_md_entries(mem_md):
+    """§-entries of a memory file, parsed exactly as the core does."""
     if not os.path.exists(mem_md):
         return []
-    with open(mem_md, encoding="utf-8") as f:
-        text = f.read()
-    parts = [p.strip() for p in text.split("§")]
-    return [p for p in parts if len(p) > 10]
+    try:
+        text = _read_memory_file(mem_md)
+    except OSError:
+        return []
+    return [e for e in _memory_entries(text) if len(e) > 10]
 
 
 def _entry_key(entry):
@@ -1457,15 +1772,44 @@ def is_pinned(entry):
 # four zero-match errors tripped the core's per-turn consolidation guard and
 # nothing was written that night. Hence: hand the anchor over, ready to copy.
 REPLACE_ANCHOR_CHARS = 60
+ANCHOR_MIN_CHARS = 12
+# Above this the whole entry is not handed over verbatim (prompt budget); the
+# agent is told the entry is bigger than the preview instead.
+FULL_ENTRY_MAX_CHARS = 1200
 
 
-def _replace_anchor(chunk, sources):
-    """A verbatim head of `chunk` that occurs in exactly one durable entry."""
-    head = " ".join((chunk or "").split())[:REPLACE_ANCHOR_CHARS].strip()
-    if not head:
+def _replace_anchor(entry, sources):
+    """A VERBATIM substring of `entry` that occurs in exactly one entry.
+
+    Raw, with the original whitespace: the core looks for `old_text` as a
+    literal substring, so collapsing spaces (as this did until 2026-10-08)
+    made 5 of 56 anchors unfindable on a live memory file.
+
+    Preference order is "what a human would copy": a whole single line, from
+    the top down, trimmed to REPLACE_ANCHOR_CHARS and then at full length. A
+    heading-only line like "## Marina" is too short and too common to locate
+    anything, hence ANCHOR_MIN_CHARS. The last resort is a raw prefix of the
+    entry, newline and all — it still matches, it is just less pleasant to
+    copy. The anchor only LOCATES the entry; `replace` then rewrites the whole
+    of it, which is why `nearest_entry` ships the full text next to it."""
+    raw = entry or ""
+    if not raw.strip():
         return None
-    hits = sum(1 for _, other in sources if head in " ".join(other.split()))
-    return head if hits == 1 else None
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    candidates = []
+    for line in lines:
+        candidates.append(line[:REPLACE_ANCHOR_CHARS].rstrip())
+        if len(line) > REPLACE_ANCHOR_CHARS:
+            candidates.append(line)
+    candidates.append(raw[:REPLACE_ANCHOR_CHARS].rstrip())
+    seen = set()
+    for cand in candidates:
+        if len(cand) < ANCHOR_MIN_CHARS or cand in seen:
+            continue
+        seen.add(cand)
+        if sum(1 for _, other in sources if cand in (other or "")) == 1:
+            return cand
+    return None
 
 
 def nearest_entry(content, memory_text=None, sources=None):
@@ -1496,9 +1840,27 @@ def nearest_entry(content, memory_text=None, sources=None):
     item = {"entry": best[:160], "overlap": round(best_score, 2)}
     if best_src:
         item["target"] = best_src
+    # `replace` rewrites the WHOLE entry, so the agent must know what it is
+    # about to overwrite: how big the entry is, whether it has more than one
+    # line/section, and — while it fits the prompt budget — its full text, so
+    # the edit can keep what is already there (and pin `matched_entry`).
+    if len(best) > 160:
+        item["entry_chars"] = len(best)
+    sections = [ln for ln in best.split("\n") if ln.strip()]
+    if len(sections) > 1:
+        item["multi_section"] = True
+        item["note"] = ("replace rewrites this ENTIRE entry — carry over everything "
+                        "worth keeping into new_content")
     anchor = _replace_anchor(best, sources)
-    if anchor:
-        item["old_text"] = anchor
+    if len(best) <= FULL_ENTRY_MAX_CHARS:
+        item["full_entry"] = best
+        if anchor:
+            item["old_text"] = anchor
+    elif anchor:
+        # Too big to show, so an update cannot be composed safely here.
+        item["replace_unsafe"] = True
+        item["note"] = ("this entry is longer than the preview and is not shown in full: "
+                        "do not replace it blind — add a separate entry or ask")
     return item
 
 
@@ -1514,6 +1876,55 @@ def nearest_entry(content, memory_text=None, sources=None):
 
 def _entry_keys_of(path):
     return {_entry_key(e) for e in parse_md_entries(path)}
+
+
+ENTRY_HEAD_CHARS = 60
+# Below this an entry is too short for "it shrank" to mean anything.
+SHRINK_MIN_CHARS = 160
+# A file with this much text is worth guarding even when it holds few entries
+# (a 4-entry MEMORY.md is normal; losing 90% of its characters is not).
+LOSS_MIN_CHARS = 400
+
+
+def _entry_head_key(entry):
+    """Key of an entry's BEGINNING — survives a truncation that `_entry_key`
+    (first 200 normalized chars) would see as a different entry."""
+    return hashlib.md5(_norm(entry)[:ENTRY_HEAD_CHARS].encode("utf-8")).hexdigest()[:16]
+
+
+def _entry_sizes_of(path):
+    """Snapshot of one file: sizes by entry key and by entry head.
+
+    Sizes make the guard notice that one BIG entry vanished among small ones;
+    head keys make it notice an entry that kept its beginning and lost its
+    body — the exact shape of a replace that swallowed a multi-section entry."""
+    entries = parse_md_entries(path)
+    return {"entries": {_entry_key(e): len(e) for e in entries},
+            "heads": {_entry_head_key(e): len(e) for e in entries}}
+
+
+def _ints(value):
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for k, v in value.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _snapshot_sizes(value):
+    """Previous snapshot for one file → ({entry_key: chars}, {head_key: chars}).
+    Tolerates both older formats: a bare list of keys and a flat {key: chars}."""
+    if isinstance(value, list):
+        return {str(k): 0 for k in value}, {}
+    if isinstance(value, dict):
+        if "entries" in value or "heads" in value:
+            return _ints(value.get("entries")), _ints(value.get("heads"))
+        return _ints(value), {}
+    return {}, {}
 
 
 def load_snapshot(path):
@@ -1534,7 +1945,8 @@ def check_memory_loss(mem_md, snapshot_path):
     current, alerts = {}, []
     for p in _memory_candidate_paths(mem_md):
         name = _rel_home(p)
-        prev = set(previous.get(name) or [])
+        prev_sizes, prev_heads = _snapshot_sizes(previous.get(name))
+        prev = set(prev_sizes)
         if not os.path.exists(p):
             # A file that was there yesterday and is gone today is the loudest
             # loss there is — it must not slip through as "nothing to compare"
@@ -1547,17 +1959,40 @@ def check_memory_loss(mem_md, snapshot_path):
                                           f"present at the previous pass are gone. "
                                           f"Check whether that was intended."})
             continue
-        keys = _entry_keys_of(p)
-        current[name] = sorted(keys)
-        if len(prev) >= 4 and keys is not None:
+        snap = _entry_sizes_of(p)
+        current[name] = snap
+        sizes, heads = snap["entries"], snap["heads"]
+        keys = set(sizes)
+        prev_total = sum(prev_sizes.values())
+        if len(prev) >= 4 or prev_total >= LOSS_MIN_CHARS:
             lost = prev - keys
             frac = len(lost) / len(prev)
-            if frac > MEMORY_LOSS_ALERT_FRACTION:
+            prev_chars = prev_total
+            lost_chars = sum(prev_sizes.get(k, 0) for k in lost)
+            char_frac = (lost_chars / prev_chars) if prev_chars else 0.0
+            if frac > MEMORY_LOSS_ALERT_FRACTION or char_frac > MEMORY_LOSS_ALERT_FRACTION:
+                # Entry count alone misses "one big entry vanished"; the share of
+                # characters alone misses "many small entries gone". Both, then.
                 alerts.append({"kind": "memory_loss", "file": name,
                                "lost": len(lost), "had": len(prev),
+                               "lost_chars": lost_chars, "had_chars": prev_chars,
                                "message": f"{name}: {len(lost)} of {len(prev)} entries present at the "
-                                          f"previous pass are gone ({round(100 * frac)}%). "
+                                          f"previous pass are gone "
+                                          f"({round(100 * frac)}% of entries, "
+                                          f"{round(100 * char_frac)}% of characters). "
                                           f"Check whether that was intended."})
+            # An entry that kept its head but lost most of its body: a replace
+            # that swallowed the rest of a multi-section entry.
+            for key, was in prev_heads.items():
+                now_len = heads.get(key)
+                if not was or now_len is None or was < SHRINK_MIN_CHARS:
+                    continue
+                if now_len < was * (1 - MEMORY_LOSS_ALERT_FRACTION * 2):
+                    alerts.append({"kind": "entry_truncated", "file": name,
+                                   "had_chars": was, "chars": now_len,
+                                   "message": f"{name}: an entry shrank from {was} to {now_len} "
+                                              f"characters while keeping its beginning — check that "
+                                              f"a replace did not drop the rest of it."})
     try:
         _write_private(snapshot_path, json.dumps(
             {**current, "_at": _now().isoformat(timespec="seconds")}, ensure_ascii=False))
@@ -1590,18 +2025,27 @@ def _agent_acked(state_db, generated_at):
     c = _conn(state_db)
     try:
         try:
+            msg_cols = _table_columns(c, "messages")
             sids = [r[0] for r in c.execute(
                 "select distinct session_id from messages where role='user' and timestamp>=? "
                 "and (instr(coalesce(content,''),?)>0 or instr(coalesce(content,''),?)>0)",
                 (since, *needles))]
             if not sids:
                 return False
+            # An answer is an answer: not a harness notice, not a row the core
+            # typed as a failed turn, not the text that preceded a tool call in
+            # a turn that then died. "Operation interrupted." used to count
+            # (external review, 2026-10-07).
+            where = ["session_id=?", "role='assistant'", "trim(coalesce(content,''))!=''"]
+            if "display_kind" in msg_cols:
+                where.append("coalesce(display_kind,'')!='failed_turn'")
+            if "tool_calls" in msg_cols:
+                where.append("coalesce(tool_calls,'')=''")
+            sql = f"select content from messages where {' and '.join(where)} limit 20"
             for sid in sids:
-                answered = c.execute(
-                    "select 1 from messages where session_id=? and role='assistant' "
-                    "and trim(coalesce(content,''))!='' limit 1", (sid,)).fetchone()
-                if answered:
-                    return True
+                for (content,) in c.execute(sql, (sid,)):
+                    if not is_harness_envelope(content):
+                        return True
             return False
         except sqlite3.OperationalError:
             return True
@@ -1632,6 +2076,85 @@ def _revert_unacked(seen, state_db):
               f"agent turn — {dropped} cooldown(s) and {len(reask)} md question(s) reopened",
               file=sys.stderr)
     return reask
+
+
+def load_pending_writes(home=None):
+    """Memory writes staged for human approval, newest first.
+
+    With `memory.write_approval: true` a cron write answers `success: true,
+    staged: true` and MEMORY.md stays as it was. The dream has to read the
+    queue to tell "saved" from "waiting", or it offers the same candidate every
+    night and the queue grows (87 unattended items on the install the external
+    review measured). Fail-soft: no directory, unreadable or foreign JSON — an
+    empty list, never an exception."""
+    base = os.path.join(home or HOME, PENDING_DIR)
+    out = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(base, name), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+        content = payload.get("content") or payload.get("new_content") or ""
+        out.append({
+            "id": str(data.get("id") or name[:-5]),
+            "action": str(payload.get("action") or data.get("action") or ""),
+            "target": str(payload.get("target") or ""),
+            "content": content if isinstance(content, str) else "",
+            "old_text": payload.get("old_text") if isinstance(payload.get("old_text"), str) else "",
+            "created_at": data.get("created_at") if isinstance(data.get("created_at"), (int, float)) else None,
+        })
+    out.sort(key=lambda p: p.get("created_at") or 0, reverse=True)
+    return out
+
+
+def _staged_text(pending):
+    """One blob of everything the queue would write — `already_in_memory` then
+    answers "is this candidate already waiting?" with the same machinery that
+    answers "is it already in memory?"."""
+    return MEMORY_ENTRY_DELIMITER.join(
+        p["content"] for p in pending
+        if p.get("content") and p.get("action") in ("add", "replace", ""))
+
+
+def _staged_removals(pending):
+    """Texts the queue would REMOVE (or replace away): an entry whose removal is
+    waiting must not be asked about, nor counted as confirmed by its cooldown."""
+    return [p.get("old_text") or p.get("content") or ""
+            for p in pending if p.get("action") in ("remove", "replace")]
+
+
+def pending_alert(pending, seen, now):
+    """An alert when the queue is both big and old — once per cooldown.
+
+    The queue is the human's job, not the agent's, so this is a reminder, not
+    work: it fires only when `alert_min` items have been waiting longer than
+    `alert_days`, and then rests for the usual cooldown."""
+    if not pending or len(pending) < PENDING_ALERT_MIN:
+        return None
+    oldest = min((p["created_at"] for p in pending if p.get("created_at")), default=None)
+    if not oldest:
+        return None
+    age_days = (now.timestamp() - oldest) / 86400
+    if age_days < PENDING_ALERT_DAYS:
+        return None
+    last = _parse_iso((seen.get("_pending_alert") or {}).get("at"))
+    if last and (now - last) < timedelta(days=SEEN_COOLDOWN_DAYS):
+        return None
+    seen["_pending_alert"] = {"at": now.isoformat(timespec="seconds"), "count": len(pending)}
+    return {"kind": "pending_writes", "count": len(pending), "oldest_days": round(age_days),
+            "message": (f"{len(pending)} memory write(s) are waiting for approval, the oldest for "
+                        f"{round(age_days)} days — nothing from them is in memory yet. "
+                        f"Review them (`/memory` in Hermes) or turn the gate off.")}
 
 
 def _load_asked_state(path):
@@ -1693,7 +2216,8 @@ def _md_cooldown_end(rec):
     return at + timedelta(days=MD_ASK_COOLDOWN_DAYS) if at else None
 
 
-def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=()):
+def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=(),
+              staged_removals=()):
     """§-entries of MEMORY.md that have not surfaced in conversations for long
     → soft flag "still relevant?".
 
@@ -1741,6 +2265,11 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
             changed = True
         if is_pinned(entry):
             continue
+        if any(t and t in entry for t in staged_removals):
+            # Its removal (or rewrite) is already waiting for approval: asking
+            # again is noise, and "still here, so it is confirmed" would be a
+            # lie — the answer was given, it is the queue that is stuck.
+            continue
         toks = sig_tokens(entry)
         mentions, ref_days, last_ts = corroborate(toks, messages)
         days_since = (now_ts - last_ts) / 86400 if last_ts else None
@@ -1759,7 +2288,7 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
             break
         asked[key] = {"at": stamp, "stems": sorted(stems)}
         changed = True
-        out.append({"index": i, "entry": entry[:160], "key": key,
+        out.append({"index": i, "entry": _safe_preview(entry, 160), "key": key,
                     "last_mention_days": round(days_since, 1) if days_since is not None else None,
                     "reason": "never surfaced within the window" if mentions == 0
                               else f"not surfaced for ~{round(days_since)} d"})
@@ -1825,6 +2354,14 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     seen_new_facts = seen.setdefault("new_facts", {})
     seen_fact_decays = seen.setdefault("fact_decays", {})
     seen_conflicts = seen.setdefault("conflicts", {})
+    seen_promotions = seen.setdefault("promotions", {})
+    # A write waiting for approval is not in memory yet, but it IS the answer to
+    # the candidate that produced it: offering it again every night only grows
+    # the queue. The staged texts are treated as a second memory file — the same
+    # dedupe decides "already covered".
+    pending_writes = load_pending_writes()
+    staged_text = _staged_text(pending_writes)
+    staged_removals = _staged_removals(pending_writes)
 
     scored = []
     for f in facts:
@@ -1832,6 +2369,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         scored.append({**f, "score": score, "signals": sig, "meta": meta,
                        "unsafe": classify_unsafe(f["content"]),
                        "in_memory": already_in_memory(f["content"], memory_text),
+                       "staged": bool(staged_text)
+                       and already_in_memory(f["content"], staged_text),
                        "rejected": is_rejected(f["content"], rejected)})
 
     # Rejected by a human leaves through no section — not as a candidate, not
@@ -1847,8 +2386,13 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     quarantined = [s for s in active if s["unsafe"]]
     safe = [s for s in active if not s["unsafe"]]
 
-    # An event with a past date is shown by NO section: no work is possible.
-    expired_ids = {s["fact_id"] for s in safe if is_expired_event(s["content"])}
+    # A dated event whose date has passed cannot be worked on — but dropping it
+    # without a trace meant a durable fact that merely CONTAINED a trigger word
+    # («страница», «тест», "example") vanished from every section silently
+    # (external review, 2026-10-07). It is now listed in its own read-only
+    # section and in the diary; it still wakes nobody.
+    expired = [s for s in safe if is_expired_event(s["content"])]
+    expired_ids = {s["fact_id"] for s in expired}
     safe = [s for s in safe if s["fact_id"] not in expired_ids]
 
     # Every fact created or reinforced during the window is surfaced for a
@@ -1857,15 +2401,25 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # durable memory, minus what was shown within the cooldown (before the cap,
     # so suppressed candidates do not take slots from unseen ones).
     new_facts_window = [s for s in safe if s["meta"]["days_old"] <= window_days]
-    new_facts_pending = [s for s in new_facts_window if not s["in_memory"]]
+    new_facts_pending = [s for s in new_facts_window
+                         if not s["in_memory"] and not s["staged"]]
     new_facts = unseen(new_facts_pending, seen_new_facts, now)
     new_facts_suppressed = len(new_facts_pending) - len(new_facts)
     new_facts.sort(key=lambda s: (s["meta"]["days_old"], -s["score"]))
 
     promotion_candidates = [
         s for s in safe
-        if s["score"] >= MIN_SCORE and promotion_ready(s) and not s["in_memory"]
+        if s["score"] >= MIN_SCORE and promotion_ready(s)
+        and not s["in_memory"] and not s["staged"]
     ]
+    # Short rest after a promotion was actually shown (and the night acked): a
+    # candidate the agent could not write — approval gate, budget, a refusal —
+    # used to come back every single night.
+    promotions_before_cooldown = len(promotion_candidates)
+    promotion_candidates = unseen(promotion_candidates, seen_promotions, now,
+                                  cooldown_days=PROMOTION_COOLDOWN_DAYS)
+    promotions_suppressed = promotions_before_cooldown - len(promotion_candidates)
+    staged_suppressed = sum(1 for s in safe if s.get("staged"))
     ephemeral_events = [s for s in promotion_candidates if is_ephemeral_fact(s["content"])]
     promotions = [s for s in promotion_candidates if not is_ephemeral_fact(s["content"])]
     promotions.sort(key=lambda s: -s["score"])
@@ -1923,24 +2477,29 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
             t["sample"] = "[hidden: suspicious content]"
 
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
+                       staged_removals=staged_removals,
                        reask=reask_md)
 
     # Only published slices count as shown.
+    published_promotions = promotions[:PUBLISH_CAP]
     published_decays = decays[:PUBLISH_CAP]
     published_conflicts = conflicts[:PUBLISH_CAP]
     if seen_state_path:
         mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
+        mark_seen(published_promotions, seen_promotions, now)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
             prune_seen(bucket, now)
+        prune_seen(seen_promotions, now, cooldown_days=PROMOTION_COOLDOWN_DAYS)
         # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
         fp = _fact_fingerprint
         seen["_pending"] = {
             "generated_at": generated_at,
             "seen": {"new_facts": [fp(s["content"]) for s in new_facts + new_facts_dups],
                      "fact_decays": [fp(s["content"]) for s in published_decays],
-                     "conflicts": [fp(s["content"]) for s in published_conflicts]},
+                     "conflicts": [fp(s["content"]) for s in published_conflicts],
+                     "promotions": [fp(s["content"]) for s in published_promotions]},
             "asked": [d["key"] for d in md_dec if d.get("key")],
         }
         try:
@@ -1950,6 +2509,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
 
     usage = memory_usage(mem_md)
     alerts = check_memory_loss(mem_md, snapshot_state_path)
+    queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
+    if queue_alert:
+        alerts.append(queue_alert)
     diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
                         ephemeral_events, quarantined, len(suppressed), conflicts=published_conflicts,
                         alerts=alerts)
@@ -1984,6 +2546,11 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   # Not work — never in the precheck's actionable keys.
                   "rejected_suppressed": len(suppressed),
                   "new_facts_suppressed": new_facts_suppressed,
+                  "promotions_suppressed": promotions_suppressed,
+                  # Informational, never actionable: a staged write is the
+                  # human's queue, not the agent's work.
+                  "staged_suppressed": staged_suppressed,
+                  "pending_writes": len(pending_writes),
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
@@ -1991,9 +2558,11 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "alerts": len(alerts)},
         "memory_usage": usage,
         "alerts": alerts,
-        "promotions": [_pub_near(s) for s in promotions[:PUBLISH_CAP]],
+        "promotions": [_pub_near(s) for s in published_promotions],
         "new_facts": [_pub_near(s) for s in new_facts],
         "ephemeral_events": [_pub(s) for s in ephemeral_events[:PUBLISH_CAP]],
+        # Read-only: never in `precheck.actionable_keys`, so it opens no gate.
+        "expired_events": [_pub(s) for s in expired[:PUBLISH_CAP]],
         "fact_decays": [_pub(s) for s in decays[:PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,
@@ -2046,6 +2615,21 @@ def _pub_fields(s):
 # Diary
 # ---------------------------------------------------------------------------
 
+REDACTED = "[redacted: the entry holds a secret — look it up in the file by index]"
+
+
+def _safe_preview(text, n):
+    """Preview of durable text for the prompt and the diary.
+
+    A MEMORY.md entry can itself hold a credential (a human wrote it there).
+    The pass screens facts and evidence, but "still relevant?" questions and the
+    diary carried the entry verbatim — the one place where a secret from memory
+    reached the prompt and then a file on disk (external review, 2026-10-07)."""
+    if classify_unsafe(text):
+        return REDACTED
+    return (text or "")[:n]
+
+
 def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephemeral_events=None,
                 quarantined=None, suppressed=0, conflicts=None, alerts=None):
     ephemeral_events = ephemeral_events or []
@@ -2090,11 +2674,39 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
     return "\n".join(lines)
 
 
+def _owner_of(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_uid, st.st_gid)
+
+
+def _preserve_owner(path, owner):
+    """Keep a state file owned by whoever owned it (or owns its directory).
+
+    A Docker install runs the gateway under its own uid, while a hand run comes
+    through `docker exec` as root: the file is then root-owned 0600 and the
+    gateway's own pass reads it as missing — silently (the same trap the core
+    guards against in cron/jobs.py:_preserve_file_ownership). POSIX only, and
+    only when we really are root."""
+    if os.name != "posix" or owner is None:
+        return
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0 or owner == (0, 0):
+        return
+    try:
+        os.chown(path, owner[0], owner[1])
+    except OSError as exc:
+        print(f"[dream] warn: owner of {path} not restored: {exc}", file=sys.stderr)
+
+
 def _write_private(path, text, append=False):
     """Dream files contain private facts — create with mode 0600.
 
     `os.open(..., 0o600)` applies the mode only on CREATION, so a diary created
     earlier kept 0644 (live case). chmod is enforced explicitly."""
+    owner = _owner_of(path) or _owner_of(os.path.dirname(path) or ".")
     flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
     fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "a" if append else "w", encoding="utf-8") as f:
@@ -2103,6 +2715,7 @@ def _write_private(path, text, append=False):
         os.chmod(path, 0o600)
     except OSError:
         pass
+    _preserve_owner(path, owner)
 
 
 def rotate_diary(path, keep=None):

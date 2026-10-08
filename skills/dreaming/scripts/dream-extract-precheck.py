@@ -172,7 +172,7 @@ def build_payload(dream, cfg, state, now_ts):
     if len(messages) < int(ext["min_messages"]):
         return None, cursor, len(messages)
 
-    chunk, chars = [], 0
+    chunk, chars, skipped_unsafe = [], 0, 0
     for m in messages:
         text = _clean(m["content"], int(ext["message_chars"]))
         if not text:
@@ -180,6 +180,15 @@ def build_payload(dream, cfg, state, now_ts):
         if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
             break
         stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
+        if dream.classify_unsafe(text):
+            # The nightly pass screens facts and evidence; extraction handed raw
+            # messages to the model, so a password or an injection reached the
+            # prompt through the one door that was not watched (external review,
+            # 2026-10-07). Such a message is skipped, not truncated: the point of
+            # the chunk is what people said, and this one is not storable anyway.
+            skipped_unsafe += 1
+            cursor = (m["ts"], m.get("id") or 0)
+            continue
         chunk.append({"t": stamp.strftime("%Y-%m-%d %H:%M"), "text": text})
         chars += len(text)
         cursor = (m["ts"], m.get("id") or 0)
@@ -194,6 +203,7 @@ def build_payload(dream, cfg, state, now_ts):
         "task": "extract candidate facts into the fact store (fact_store add); the nightly dream "
                 "will corroborate and promote them. Do NOT write MEMORY.md/USER.md here.",
         "window": {"from": chunk[0]["t"], "to": chunk[-1]["t"], "messages": len(chunk),
+                   "skipped_unsafe": skipped_unsafe,
                    "remaining_after_this_chunk": len(messages) - len(chunk)},
         "existing_facts": existing,
         "messages": chunk,
@@ -212,6 +222,17 @@ def main():
             # any other source is filled by its own provider or export.
             print(f"[dream-extract] fact_source={source}: extraction feeds only the holographic "
                   "store — nothing to do", file=sys.stderr)
+            print(json.dumps({"wakeAgent": False}))
+            return 0
+        # …and `fact_source: holographic` is only an intention: without the
+        # PROVIDER enabled in Hermes there is no `fact_store` tool in the
+        # session, so the model would be handed up to 200 messages it cannot
+        # store — and the cursor would move past them for good (external
+        # review, 2026-10-07).
+        provider = dream.hermes_memory_settings().get("provider")
+        if provider is not None and str(provider).strip() != "holographic":
+            print(f"[dream-extract] memory.provider={provider or 'not set'}: no fact_store tool in "
+                  "the session — extraction skipped, the cursor stays where it is", file=sys.stderr)
             print(json.dumps({"wakeAgent": False}))
             return 0
         loaded = load_state(STATE)

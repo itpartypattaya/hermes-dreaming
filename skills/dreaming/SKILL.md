@@ -84,11 +84,36 @@ It does not extract facts by itself (an optional extraction job does) and never 
 3. **Write budget.** Per night at most **6 memory changes**, at most **3 new entries**. A night with
    zero writes is a success. Absolute dates only (2026-08-15), never "yesterday". Never write
    schedules, one-off events, secrets, raw medical data or unverified guesses.
-4. **`add` is the default; `replace` only with an anchor.** `nearest_entry` gives `target`
-   (`memory` or `user`), `entry` (a truncated preview — never `old_text`) and, when unambiguous,
-   `old_text` — a verbatim anchor ready to copy. Use `replace` only when `nearest_entry` is the same
-   subject and carries `old_text`. If a `replace` fails, copy an exact substring from the error's
-   `current_entries`, retry **once**, then stop and report.
+4. **`add` is the default; `replace` only with an anchor — and it rewrites the WHOLE entry.**
+   `old_text` only *locates* the entry; the core then replaces that entire §-entry with your
+   `new_content` (an entry is everything between `§` delimiters, including its heading and every
+   paragraph). So `nearest_entry` hands over, besides `target` (`memory` or `user`) and `entry`
+   (a truncated preview — never use the preview as `old_text`):
+   - `old_text` — a verbatim anchor, copy it exactly, whitespace included;
+   - `full_entry` — the entry as it is on disk right now. **This is what you are about to
+     overwrite**: carry over everything worth keeping into `new_content`;
+   - `multi_section: true` and a `note` when the entry has more than one line — then `new_content`
+     must contain the merged entry, not just your new sentence;
+   - `replace_unsafe: true` when the entry is too long to show in full — do not replace it blind:
+     `add` a separate entry or raise the question instead.
+
+   Pass `full_entry` as **`matched_entry`** whenever the tool accepts it: the core then pins the
+   edit to that exact entry (and, with an approval gate, applies it to that entry only, however
+   long the review takes) instead of re-matching the anchor against a file that may have moved on.
+
+   Use `replace` only when `nearest_entry` is the same subject and carries `old_text`. If a
+   `replace` fails, copy an exact substring from the error's `current_entries`, retry **once**,
+   then stop and report.
+4a. **More than one change — one atomic call.** `memory` takes `operations[]`: all of them apply or
+   none do, and the char limit is checked against the FINAL state. So "remove a stale entry and
+   add a new one" fits in a single call even when memory is already full, instead of an `add` that
+   fails on the limit and a cleanup that happens afterwards. Prefer it whenever you plan two or
+   more changes; keep single writes simple.
+4b. **`staged: true` is not saved.** With `memory.write_approval` on, the tool answers `success`
+   *and* `staged: true`: the write is in `pending/memory/`, waiting for a human, and the file on
+   disk has not changed. Say exactly that in the report ("N entries sent for approval", in the user's language),
+   never "saved". A `pending_writes` alert means the queue itself is stuck — report the number and
+   let the human deal with it; do not re-write those entries.
 5. **New facts and profile.** Review every `new_facts` item, even with `user_profile_hint=false`.
    Preferences, relations, habits, goals and important life context of the user or a household
    member go to `memory` with `target=user`. Check duplicates and contradictions before writing.

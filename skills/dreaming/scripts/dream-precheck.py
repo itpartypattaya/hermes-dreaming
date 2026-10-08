@@ -58,8 +58,23 @@ def find_dream(home):
 
 HOME = _hermes_home()
 DREAM = find_dream(HOME)
+def _diary_rel_path():
+    """`diary.path` of dreaming.json, or the historical default."""
+    path = os.environ.get("DREAM_CONFIG") or str(HOME / "dreaming.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        value = ((data or {}).get("diary") or {}).get("path")
+        return str(value) if value else "memories/DREAMS.md"
+    except Exception:  # noqa: BLE001 — a broken config is reported in main()
+        return "memories/DREAMS.md"
+
+
 OUT = HOME / "cache/dream.json"
-DIARY = HOME / "memories/DREAMS.md"
+# The diary path comes from the config (`diary.path`), with the historical
+# default: an install that keeps memories elsewhere used to get a second
+# DREAMS.md (external review, 2026-10-07).
+DIARY = HOME / _diary_rel_path()
 
 # Everything except scoring internals; `why` is the short explanation.
 FACT_FIELDS = (
@@ -200,25 +215,55 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
 
 
 def main():
-    actionable, max_content, full_pct, timeout = _precheck_config()
+    # Both of these used to sit outside the try: a dreaming.json of the wrong
+    # SHAPE (precheck not an object, root a list, actionable_keys a number) gave
+    # a traceback and exit 1, so Hermes woke the agent with "Script Error"
+    # instead of a one-line reason (external review, 2026-10-07).
+    try:
+        actionable, max_content, full_pct, timeout = _precheck_config()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[dream-precheck] bad config: {exc!r}", file=sys.stderr)
+        actionable, max_content = DEFAULT_ACTIONABLE_KEYS, DEFAULT_MAX_CONTENT
+        full_pct, timeout = DEFAULT_MEMORY_FULL_PCT, DEFAULT_TIMEOUT_SEC
     try:
         OUT.parent.mkdir(parents=True, exist_ok=True)
         # --hermes-home: this gate may have found its home without HERMES_HOME
         # (installed into <home>/scripts); dream.py on its own would read ~/.hermes.
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, str(DREAM), "--hermes-home", str(HOME),
              "--out", str(OUT), "--diary", str(DIARY)],
             check=True,
             timeout=timeout,
+            capture_output=True,
+            text=True,
         )
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr, end="")
         data = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 — any error = short signal, not a traceback
         print(f"[dream-precheck] fail: {exc!r}", file=sys.stderr)
-        message = f"{type(exc).__name__}: {exc}"[:300]
+        message = f"{type(exc).__name__}: {exc}"[:200]
+        # repr(CalledProcessError) alone says only "exit status 1". The reason is
+        # in the pass's stderr, so the last lines of it travel with the error.
+        detail = ""
+        for stream in (getattr(exc, "stderr", None), getattr(exc, "output", None)):
+            if isinstance(stream, bytes):
+                stream = stream.decode("utf-8", "replace")
+            if isinstance(stream, str) and stream.strip():
+                detail = " | ".join(stream.strip().splitlines()[-3:])
+                break
+        if detail:
+            message = f"{message}: {detail}"[:400]
         print(json.dumps({"dream_error": message}, ensure_ascii=False))
         return 0
 
-    compact = compact_payload(data, actionable, max_content, full_pct)
+    try:
+        compact = compact_payload(data, actionable, max_content, full_pct)
+    except Exception as exc:  # noqa: BLE001 — a broken payload is a reason, not a traceback
+        print(f"[dream-precheck] payload: {exc!r}", file=sys.stderr)
+        print(json.dumps({"dream_error": f"payload {type(exc).__name__}: {exc}"[:300]},
+                         ensure_ascii=False))
+        return 0
     if compact is None:
         print(json.dumps({"wakeAgent": False}, ensure_ascii=False))
     else:
