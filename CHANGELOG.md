@@ -67,6 +67,14 @@ changed meaning, and old state files are still read.
   the store-duplicate check: «ест острое» and «не ест острое» are opposite facts
   that used to collapse into one.
 
+### Fixed — numbers and dates
+
+- `25 000`, `25\u00a0000`, `25,000` and `25000` are one number: every retelling
+  of a price used to look like a conflict.
+- A month said in words is compared like a number, so moving «15 марта» to
+  «15 апреля» becomes a possible update instead of being swallowed by the fuzzy
+  dedupe as "already in memory".
+
 ### Fixed — screening
 
 - More key shapes: `gsk_` (Groq), `ntn_`/`secret_` (Notion), `sk_`+hex,
@@ -125,7 +133,7 @@ The review also reported that a CRLF memory file parses as a single entry. It
 does not: the core reads memory through `read_text`, i.e. with universal
 newlines (verified against 0.21.5). A test now pins that.
 
-**Tests:** 299 (was 255).
+**Tests:** 304 (was 255).
 
 ## 2.1.1 — 2026-10-03
 

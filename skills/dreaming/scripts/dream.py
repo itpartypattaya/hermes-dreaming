@@ -1287,9 +1287,42 @@ NUMBER_RE = re.compile(r"(?<![\w.])\d[\d.,:/-]*\d(?![\w])|(?<!\w)\d(?!\w)")
 LEADING_DATE_STAMP_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}(?:[ ,:—-]+|$)")
 
 
+# Thousands separators: "25 000", "25\u00a0000", "25,000" and "25000" are one
+# number, and seeing them as four made every retelling of a price a conflict.
+THOUSANDS_RE = re.compile(r"(?<=\d)[\s\u00a0\u202f,](?=\d{3}(?!\d))")
+# A month said in words is as much a "number" as 15.04 — otherwise moving
+# «15 марта» to «15 апреля» changed nothing comparable, and the fuzzy dedupe
+# swallowed it as "already in memory" (external review, 2026-10-07).
+MONTH_WORD_TO_NUM = {
+    "январ": "01", "феврал": "02", "март": "03", "апрел": "04", "ма": "05",
+    "июн": "06", "июл": "07", "август": "08", "сентябр": "09", "октябр": "10",
+    "ноябр": "11", "декабр": "12",
+    "january": "01", "february": "02", "march": "03", "april": "04", "may": "05",
+    "june": "06", "july": "07", "august": "08", "september": "09", "october": "10",
+    "november": "11", "december": "12",
+    "jan": "01", "feb": "02", "mar": "03", "apr": "04", "jun": "06", "jul": "07",
+    "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+}
+MONTH_WORD_RE = re.compile(
+    r"(?<!\w)(" + "|".join(sorted(MONTH_WORD_TO_NUM, key=len, reverse=True)) + r")\w*", re.I)
+
+
+def _month_markers(text):
+    """`month:MM` for every month named in words."""
+    out = set()
+    for m in MONTH_WORD_RE.finditer(text or ""):
+        key = m.group(1).lower()
+        num = MONTH_WORD_TO_NUM.get(key)
+        if num:
+            out.add(f"month:{num}")
+    return out
+
+
 def _numbers(text):
     body = LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
-    return {n.strip(".,:") for n in NUMBER_RE.findall(_norm(body))}
+    normalized = THOUSANDS_RE.sub("", _norm(body))
+    nums = {n.strip(".,:") for n in NUMBER_RE.findall(normalized)}
+    return {n for n in nums if n} | _month_markers(normalized)
 
 
 def find_conflicts(content, memory_text):

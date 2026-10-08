@@ -1258,5 +1258,34 @@ class PrecheckRobustnessTests(unittest.TestCase):
                 self.assertTrue("wakeAgent" in payload or "dream_error" in payload, payload)
 
 
+class NumbersAndMonthsTests(unittest.TestCase):
+    """Numbers and months in conflicts (review, finding 8)."""
+
+    def test_thousands_separators_are_one_number(self):
+        for text in ("аренда 25 000 батов", "аренда 25\u00a0000 батов",
+                     "аренда 25,000 батов", "аренда 25000 батов"):
+            self.assertEqual(dream._numbers(text), {"25000"}, text)
+
+    def test_month_in_words_is_comparable(self):
+        self.assertEqual(dream._numbers("встреча 15 марта"), {"15", "month:03"})
+        self.assertEqual(dream._numbers("встреча 15 апреля"), {"15", "month:04"})
+
+    def test_moved_date_is_a_conflict_not_a_duplicate(self):
+        mem = "§\nОтчёт по проекту сдаём 15 марта, черновик за неделю до срока.\n"
+        fact = "Отчёт по проекту сдаём 15 апреля, черновик за неделю до срока"
+        # Stem-based dedupe still sees "the same entry", and that is fine:
+        # `conflicts` are computed independently of `in_memory`, or a changed
+        # number would be swallowed as a duplicate.
+        hits = dream.find_conflicts(fact, mem)
+        self.assertTrue(hits, "a moved deadline must become a possible update")
+        self.assertIn("month:04", hits[0]["fact_numbers"])
+
+    def test_same_price_written_differently_is_a_duplicate(self):
+        mem = "§\nАренда дома в этом сезоне стоит 25 000 батов в месяц.\n"
+        fact = "Аренда дома в этом сезоне стоит 25000 батов в месяц"
+        self.assertTrue(dream.already_in_memory(fact, mem))
+        self.assertEqual(dream.find_conflicts(fact, mem), [])
+
+
 if __name__ == "__main__":
     unittest.main()

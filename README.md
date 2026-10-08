@@ -140,6 +140,16 @@ hermes plugins install hermes-dreaming      # the reviewed, pinned catalog entry
 source, and the next `plugins update` does a `git pull` past the pinned SHA. Same code today,
 different trust tomorrow.
 
+### Docker
+
+In a container install the paths differ: the plugin lands under `/opt/hermes`
+(or wherever `HERMES_HOME` points) and Hermes' own interpreter is
+`/opt/hermes/.venv/bin/python`. Run the installers with that interpreter and as
+the uid the gateway runs under — a `docker exec` as root would leave
+`cache/*.json` owned by root, and the gateway's own pass then reads them as
+missing. The scripts restore the previous owner when they can, but starting as
+the right user is cleaner.
+
 ### Upgrading from 2.0
 
 2.0 bound the jobs to a regular `dreaming` skill. After installing the plugin, re-run step 2 (the
