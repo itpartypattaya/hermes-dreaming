@@ -136,6 +136,14 @@ changed meaning, and old state files are still read.
   fit together.
 - `stats.pending_writes`, `staged_suppressed`, `promotions_suppressed`.
 
+### Documented
+
+- The holographic provider **leaves the Hermes core on 2026-10-15** (its
+  standalone copy is currently unmaintained). `fact_source: holographic` is
+  still the default and still works — it just has to be installed as a plugin
+  after that date. Both READMEs and `install.py --check` say so, and
+  `fact_source: none` remains the zero-dependency option.
+
 ### Not confirmed
 
 The review also reported that a CRLF memory file parses as a single entry. It

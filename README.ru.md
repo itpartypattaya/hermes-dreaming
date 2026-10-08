@@ -166,7 +166,7 @@ $EDITOR ~/.hermes/dreaming.json    # timezone, trusted_chat_ids, agent_names, fa
 
 | `fact_source` | где лежат факты | джоба извлечения | примечания |
 |---|---|---|---|
-| `holographic` (по умолчанию) | SQLite-хранилище провайдера holographic (`memory_store.db` или `plugins.hermes-memory-store.db_path`) | ✅ через `fact_store` | идёт в составе Hermes; включается `memory.provider: holographic` |
+| `holographic` (по умолчанию) | SQLite-хранилище провайдера holographic (`memory_store.db` или `plugins.hermes-memory-store.db_path`) | ✅ через `fact_store` | включается `memory.provider: holographic`. ⚠️ **15.10.2026 провайдер уходит из ядра Hermes** — после этого его нужно ставить плагином (запись каталога или отдельная копия [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic), сейчас без мейнтейнера). На остальное в скилле это не влияет |
 | `sqlite` | любая таблица SQLite: `fact_store_path`, `fact_table`, `fact_columns` | — | для своей выгрузки; открывается только на чтение |
 | `jsonl` | по одному JSON-объекту на строку: `fact_store_path`, `fact_columns` | — | самый простой формат экспорта |
 | `none` | хранилища фактов нет | — | только файлы памяти: «ещё актуально?», заполненность, сторож потери |

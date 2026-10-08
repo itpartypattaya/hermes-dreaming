@@ -188,7 +188,7 @@ The dream consolidates *candidate* facts; where they come from is `fact_source` 
 
 | `fact_source` | where the facts are | extraction job | notes |
 |---|---|---|---|
-| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | ships with Hermes; enable with `memory.provider: holographic` |
+| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | enable with `memory.provider: holographic`. ⚠️ It **leaves the Hermes core on 2026-10-15** — after that install it as a plugin (the catalog entry, or the standalone [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic) copy, currently unmaintained). Nothing else about this skill changes |
 | `sqlite` | any SQLite table: `fact_store_path`, `fact_table`, `fact_columns` | — | for your own export; opened read-only |
 | `jsonl` | one JSON object per line: `fact_store_path`, `fact_columns` | — | the simplest export format |
 | `none` | no fact store | — | the memory files alone: "still relevant?", fill level, loss guard |
