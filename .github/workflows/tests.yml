@@ -16,10 +16,16 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.11", "3.13"]
+        # stdlib only, as the skill promises; and with PyYAML, as inside the Hermes venv
+        pyyaml: [false, true]
+    name: unittest (${{ matrix.python-version }}, pyyaml=${{ matrix.pyyaml }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install PyYAML
+        if: matrix.pyyaml
+        run: python -m pip install pyyaml
       - name: Run tests (stdlib unittest, no network)
         run: python -m unittest discover -s tests -v

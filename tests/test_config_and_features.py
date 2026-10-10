@@ -1235,7 +1235,13 @@ class HermesConfigTests(unittest.TestCase):
 
     def test_timezone_falls_back_to_hermes(self):
         """No timezone of our own → take Hermes'. On Windows without the tzdata
-        package zoneinfo knows no IANA names, so there only the read is checked."""
+        package zoneinfo knows no IANA names, so there only the read is checked.
+        Hermes config.yaml is parsed only with PyYAML (it ships in the Hermes venv);
+        without it the pass keeps UTC by design, so there is nothing to check."""
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML not installed")
         self.assertEqual((dream._hermes_config() or {}).get("timezone"), "Europe/Lisbon")
         try:
             from zoneinfo import ZoneInfo
