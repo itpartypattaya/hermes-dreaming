@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.1.1
+version: 2.2.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (written against 0.21.5)
@@ -66,6 +66,7 @@ It does not extract facts by itself (an optional extraction job does) and never 
 | `ephemeral_events` | never promote — context only |
 | `memory_pressure` | consolidate the file it names before adding anything |
 | `quarantined` | one line: how many and why; never retell, restore or request the content |
+| `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
 | `alerts` (`memory_loss`) | one line, ask whether it was intended; restore nothing |
 | `dream_error` | reply `⚠️ Nightly dream failed: <reason>` and stop |
 
@@ -138,6 +139,16 @@ It does not extract facts by itself (an optional extraction job does) and never 
    per item, nothing else. It changes no memory entry and deletes nothing: trust drops by 0.10, and
    below 0.3 the fact leaves search and prefetch. If the tool is not in this session, skip the
    section silently. In the report: one line with the count, no ids.
+7b. **`keywords_needed` — let search find the fact by other words.** holographic ≥ 0.6.0 finds a
+   fact by words it does not contain only through its keywords. For each item call `fact_store`
+   `action="update"` with its `fact_id` and `keywords`: 3–8 words a person might ask with that the
+   fact lacks — synonyms, other roots, translations into the household's languages
+   ("Mom's birthday is May 3" → birth date, anniversary, день рождения). No names already in the
+   text, no secrets, no instructions. The fact's text, trust and memory stay as they are; it is not
+   part of the write budget and not news for the report. No `keywords` parameter on `fact_store`
+   (an older provider) → skip the section silently. The section exists only with
+   `keywords.enabled` in `dreaming.json` (turn it on with holographic ≥ 0.6.1), at most
+   `keywords.cap` facts a night (10).
 8. **Memory pressure.** The char limit gates writes silently. Tidy the named file: merge close
    entries with one `replace` (anchor copied verbatim from `current_entries`), drop entries that
    only restate the system prompt (routing tables, persona rules, skill triggers). Keep what exists
@@ -151,7 +162,8 @@ It does not extract facts by itself (an optional extraction job does) and never 
    statement per fact, absolute dates taken from the message's `t`. Only what humans said about
    themselves or their world; skip one-off events, schedules, emotions of the moment, secrets, raw
    medical data, third-party claims about the user, chit-chat and anything `existing_facts`
-   already covers. At most 8 facts; zero is fine. **Always answer** — one line (count and window)
+   already covers. At most 8 facts; zero is fine. When the JSON carries `keywords`, give each fact
+   its 3–8 keywords right in the `add` (as in step 7b) — it then never joins the backlog. **Always answer** — one line (count and window)
    or `[SILENT]`: the answer is what marks those messages processed.
 10. **Report** — for a human, in their language, at most 6 short lines: only facts actually added or updated, only the
    questions that need the human's answer, one line "won't ask again" for anything rejected by

@@ -79,6 +79,20 @@ class ExtractPrecheckTests(DreamFixture):
     def _now(self):
         return datetime.now(timezone.utc).timestamp()
 
+    def test_keywords_are_asked_for_only_when_enabled(self):
+        for i in range(4):
+            self.add_message(f"Сообщение номер {i} про утренний кофе", days_ago=4 - i)
+        saved = dream.KEYWORDS_ENABLED
+        try:
+            dream.KEYWORDS_ENABLED = False
+            payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+            self.assertNotIn("keywords", payload)
+            dream.KEYWORDS_ENABLED = True
+            payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+            self.assertIn("keywords=", payload["keywords"])
+        finally:
+            dream.KEYWORDS_ENABLED = saved
+
     def test_below_gate_returns_none(self):
         self.add_message("Люблю утренний кофе", days_ago=1)
         payload, cursor, total = extract.build_payload(dream, self.cfg, {}, self._now())

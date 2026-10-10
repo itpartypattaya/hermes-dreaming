@@ -208,6 +208,12 @@ def build_payload(dream, cfg, state, now_ts):
         "existing_facts": existing,
         "messages": chunk,
     }
+    if getattr(dream, "KEYWORDS_ENABLED", False) and dream.fact_source() == "holographic":
+        # holographic >= 0.6.0 finds a fact by words it does not contain only
+        # through these; given at `add`, the fact never joins the nightly backlog.
+        payload["keywords"] = ("give each fact 3-8 keywords (fact_store add keywords=[...]): words a "
+                               "person might ask with that the fact does not contain — synonyms, "
+                               "other roots, translations into the household's languages")
     return payload, cursor, len(messages)
 
 

@@ -153,6 +153,16 @@ DEFAULT_CONFIG = {
     # MEMORY.md, so without this the same candidate woke the agent every night
     # and piled up new pending files (external review, 2026-10-07).
     "pending": {"dir": "pending/memory", "alert_min": 5, "alert_days": 7},
+    # Keywords for the fact store (holographic >= 0.6.0): words a person might
+    # ask with that a fact does not contain — synonyms, other roots,
+    # translations. The provider keeps them in `tags` after a "keywords: " line
+    # and searches them like text. With `enabled` the pass lists facts that have
+    # none (`keywords_needed`, at most `cap` a night) and the extraction run is
+    # asked to give them at `add`. Off by default: an older provider ignores the
+    # parameter, and the same facts would come back forever. Turn it on with
+    # holographic >= 0.6.1 — 0.6.0 stamped a fact "changed now" when it got
+    # keywords, and old facts came back as new ones.
+    "keywords": {"enabled": False, "cap": 10},
     "state": {"asked": "cache/dream-asked.json",
               "rejected": "cache/dream-rejected.json",
               "seen": "cache/dream-seen.json",
@@ -387,7 +397,7 @@ def configure(cfg):
     global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
     global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
-    global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP
+    global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, KEYWORDS_ENABLED, KEYWORDS_CAP
     CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
     # from Hermes' own config.yaml, so here it is simply used.
@@ -409,6 +419,12 @@ def configure(cfg):
         FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
     except (TypeError, ValueError):
         FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP = 0.3, 5
+    kw = cfg.get("keywords") if isinstance(cfg.get("keywords"), dict) else {}
+    KEYWORDS_ENABLED = kw.get("enabled") is True
+    try:
+        KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
+    except (TypeError, ValueError):
+        KEYWORDS_CAP = 10
     pend = cfg.get("pending") or {}
     PENDING_DIR = str(pend.get("dir") or "pending/memory")
     try:
@@ -706,10 +722,31 @@ def _load_holographic(db):
     c = _conn(db)
     try:
         for r in c.execute("select " + ",".join(FACT_FIELDS) + " from facts"):
-            rows.append(dict(zip(FACT_FIELDS, r)))
+            row = dict(zip(FACT_FIELDS, r))
+            row["tags"], row["keywords"] = split_keywords(row.get("tags"))
+            rows.append(row)
     finally:
         c.close()  # the sqlite3 context manager commits but does NOT close
     return rows
+
+
+KEYWORDS_MARK = "keywords: "
+
+
+def split_keywords(tags):
+    """(the human's tags, the keywords) of a holographic `tags` value.
+
+    holographic >= 0.6.0 appends the agent's keywords after a "keywords: "
+    line. They are search aids, not tags: left in, a fact with eight synonyms
+    scored as "conceptually rich" and climbed towards promotion."""
+    text = tags or ""
+    if text.startswith(KEYWORDS_MARK):
+        head, tail = "", text[len(KEYWORDS_MARK):]
+    else:
+        head, mark, tail = text.rpartition("\n" + KEYWORDS_MARK)
+        if not mark:
+            return text, []
+    return head, [w.strip() for w in tail.split(",") if w.strip()]
 
 
 _SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1467,6 +1504,29 @@ def trust_feedback_items(suppressed, rejected, fact_source_name):
             "call": {"tool": "fact_feedback", "action": "unhelpful", "fact_id": s["fact_id"]},
         })
     out.sort(key=lambda i: -i["trust"])
+    return out
+
+
+def keywords_needed_items(safe, fact_source_name):
+    """Facts the store keeps without keywords, the most recalled first.
+
+    Only for the holographic source with `keywords.enabled`: the call writes
+    the provider's own column, and a provider older than 0.6.0 accepts the
+    parameter and drops it. The pass itself never writes the store."""
+    if not KEYWORDS_ENABLED or fact_source_name != "holographic":
+        return []
+    out = []
+    for s in safe:
+        if s.get("keywords"):
+            continue
+        out.append({
+            "fact_id": s["fact_id"],
+            "content": s["content"][:300],
+            "retrieval_count": s["meta"]["rc"],
+            "call": {"tool": "fact_store", "action": "update", "fact_id": s["fact_id"],
+                     "keywords": ["3-8 words a person might ask with that the fact lacks"]},
+        })
+    out.sort(key=lambda i: (-i["retrieval_count"], str(i["fact_id"])))
     return out
 
 
@@ -2475,6 +2535,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     seen_conflicts = seen.setdefault("conflicts", {})
     seen_promotions = seen.setdefault("promotions", {})
     seen_feedback = seen.setdefault("trust_feedback", {})
+    seen_keywords = seen.setdefault("keywords_needed", {})
     # A write waiting for approval is not in memory yet, but it IS the answer to
     # the candidate that produced it: offering it again every night only grows
     # the queue. The staged texts are treated as a second memory file — the same
@@ -2606,6 +2667,15 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     feedback = feedback_fresh[:FEEDBACK_CAP]
     feedback_suppressed = len(feedback_pending) - len(feedback_fresh)
 
+    # Facts without keywords (holographic >= 0.6.0 searches them like text):
+    # rides along when the agent is awake anyway. Quarantined, rejected and
+    # expired facts are not offered — `safe` already left them out. A fact the
+    # agent found nothing for rests like any shown item instead of coming back
+    # every night; one that got keywords simply leaves the list.
+    keywords_pending = keywords_needed_items(safe, fact_source())
+    keywords_fresh = unseen(keywords_pending, seen_keywords, now)
+    keywords_needed = keywords_fresh[:KEYWORDS_CAP]
+
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
                        staged_removals=staged_removals,
                        reask=reask_md)
@@ -2618,12 +2688,14 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
         mark_seen(published_promotions, seen_promotions, now)
         mark_seen(feedback, seen_feedback, now)
+        mark_seen(keywords_needed, seen_keywords, now)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
             prune_seen(bucket, now)
         prune_seen(seen_promotions, now, cooldown_days=PROMOTION_COOLDOWN_DAYS)
         prune_seen(seen_feedback, now)
+        prune_seen(seen_keywords, now)
         # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
         fp = _fact_fingerprint
         seen["_pending"] = {
@@ -2685,6 +2757,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "pending_writes": len(pending_writes),
                   "trust_feedback": len(feedback),
                   "trust_feedback_suppressed": feedback_suppressed,
+                  # Tonight's slice and the whole backlog of facts without keywords.
+                  "keywords_needed": len(keywords_needed),
+                  "keywords_missing": len(keywords_pending),
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
@@ -2700,6 +2775,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         # Not in `precheck.actionable_keys` by default: a trust nudge is worth
         # doing when the agent is already awake, not worth waking it for.
         "trust_feedback": feedback,
+        # Not actionable either: keywords are worth adding while awake.
+        "keywords_needed": keywords_needed,
         "fact_decays": [_pub(s) for s in decays[:PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,

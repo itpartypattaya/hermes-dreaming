@@ -15,7 +15,7 @@ constants.
 | query_diversity | 0.15 | `min(ref_days/3, 1)` — real number of distinct days with a mention |
 | recency | 0.15 | `exp(-eff_recent/30)`, `eff_recent = min(age of updated_at, age of last mention)` |
 | consolidation | 0.10 | `min(max(span_days/14, (ref_days-1)/3), 1)` — multi-day by edits **or** by mentions |
-| conceptual_richness | 0.06 | `min(tags/3, 1)` |
+| conceptual_richness | 0.06 | `min(tags/3, 1)` — the human's tags only; holographic keywords (after the `keywords: ` line) are not counted |
 
 `score = Σ weight × signal` (0..1). `dream.py --explain <fact_id>` prints the breakdown.
 

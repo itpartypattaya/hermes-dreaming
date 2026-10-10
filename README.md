@@ -35,6 +35,10 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 - **Feedback to retrieval.** A fact you rejected keeps its trust in the fact store, so the
   provider's prefetch goes on offering it. Such facts are listed with a ready
   `fact_feedback(unhelpful)` call, so a rejection teaches retrieval too.
+- **Keywords for search** (opt-in, holographic ≥ 0.6.1). The fact store finds a fact by words it
+  does not contain only through its keywords — synonyms, other roots, translations. Facts without
+  them are listed a few a night (`keywords_needed`) with a ready `fact_store update` call, and the
+  extraction run gives keywords right when it adds a fact. Housekeeping: it never wakes the model.
 - **A diary** (`memories/DREAMS.md`) with provenance for every candidate.
 
 ## Every item gets an outcome
@@ -252,6 +256,7 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 | `diary.heading`, `diary.keep_sections`, `diary.path` | diary header, rotation and where it lives (`memories/DREAMS.md`) |
 | `memory_loss_alert_fraction` | loss-guard threshold (0.25) — applied to the share of lost entries **and** of lost characters |
 | `gates.promotion_cooldown_days` | rest for a promotion already shown (3 days); without it a candidate the agent could not write came back every night |
+| `keywords.enabled`, `keywords.cap` | list facts without keywords for the agent (`keywords_needed`, at most `cap` a night, default 10) and ask the extraction run for keywords. Off by default; turn it on with holographic ≥ 0.6.1 — an older provider ignores the parameter, and 0.6.0 re-dated a fact when it got keywords |
 
 ## Safety and privacy
 

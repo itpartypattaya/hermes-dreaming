@@ -3,6 +3,29 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.3.0 — 2026-10-11
+
+### Added
+
+- **Keywords for the fact store** (`keywords.enabled`, off by default). holographic ≥ 0.6.0 finds a
+  fact by words it does not contain — synonyms, other roots, translations — only through keywords
+  kept with the fact. Facts that have none are now listed in `keywords_needed`, the most recalled
+  first, at most `keywords.cap` (10) a night, each with a ready `fact_store update` call; one the
+  agent found nothing for rests like any shown item. The section rides along when the agent is
+  awake and never wakes it. With the flag on, the extraction payload carries `keywords`, and new
+  facts get theirs at `add`. Turn it on with holographic ≥ 0.6.1: an older provider accepts the
+  parameter and drops it, and 0.6.0 stamped a fact "changed now" when it got keywords, which would
+  have brought old facts back as new ones. Checked end to end on a copy of a live store with the
+  real provider: the fact got its keywords, search found it by them, it left the list and its
+  `updated_at` stayed.
+
+### Fixed
+
+- **Keywords no longer score as tags.** holographic keeps keywords in the `tags` column after a
+  `keywords: ` line, and the pass split tags on commas: a fact with eight synonyms counted as
+  "conceptually rich" and climbed towards promotion. The keywords are split off when the store is
+  read; the score and the published `tags` carry the human's tags only.
+
 ## 2.2.1 — 2026-10-08
 
 Checked against Hermes **v0.21.6** (tag `818c13be`), released the same day. The

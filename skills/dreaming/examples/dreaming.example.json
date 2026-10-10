@@ -37,6 +37,8 @@
   "pinned_markers": ["📌", "[pinned]"],
   "memory_loss_alert_fraction": 0.25,
 
+  "keywords": {"enabled": false, "cap": 10},
+
   "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
   "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
             "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
