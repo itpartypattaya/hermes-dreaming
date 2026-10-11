@@ -58,13 +58,14 @@ Requirements: Hermes Agent ≥ 0.21, Python ≥ 3.9 (standard library only).
 **1. The plugin** — a portable Agent Plugins v1 package (`plugin.json` + `skills/dreaming/`):
 
 ```bash
-hermes plugins install itpartypattaya/hermes-dreaming
+hermes plugins install hermes-dreaming      # the reviewed, pinned catalog entry
 hermes plugins enable hermes-dreaming
 ```
 
-The cron jobs below are bound to this plugin's own skill, so they run exactly the copy you installed
-(and the catalog reviewed). Plugin skills are namespaced and kept out of the system prompt's skill
-index; the agent finds them with `skills_list` and loads them with `skill_view`.
+Install **from the catalog, not from a URL** (see below). The cron jobs below are bound to this
+plugin's own skill, so they run exactly the copy you installed (and the catalog reviewed). Plugin
+skills are namespaced and kept out of the system prompt's skill index; the agent finds them with
+`skills_list` and loads them with `skill_view`.
 
 <details><summary>Alternative: a regular skill</summary>
 

@@ -1,10 +1,10 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.2.0
+version: 2.3.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
-compatibility: Hermes Agent >= 0.21 (written against 0.21.5)
+compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
 allowed-tools: memory terminal read_file
 tags: [memory, consolidation, dreaming, cron, fact-store]
 ---
