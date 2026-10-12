@@ -13,6 +13,13 @@ other agent (`skip_memory=False` in `cron/scheduler.py`). So, out of the box:
   toolset;
 - ✅ **the extraction job works** with the holographic provider: `fact_store` is registered in the
   cron session like in any chat.
+- ⚠️ **…and the provider must accept the write.** Hermes tells providers which context they run in
+  (`agent_context: "cron"`) and asks them to skip writes outside the main agent. The copy of
+  holographic that shipped in Hermes core ignored that; the catalog plugin `holographic` from 0.2.0
+  to 0.7.x refuses every write in cron, so extraction (`add`) and the keyword pass (`update`) answer
+  "read-only" and store nothing. holographic **0.8.0** lets a cron job's explicit `fact_store` /
+  `fact_feedback` calls write (`cron_writes`, on by default) while keeping automatic writes off, and
+  refuses to store again from cron what the user asked to forget. Use 0.8.0 or later.
 
 `scripts/install.py --check` confirms it with the line:
 

@@ -51,6 +51,15 @@ most once per 14 days. A memory entry that survived a "still relevant?" question
 in place with a fresh date — counts as confirmed and rests for 90 days. Cooldowns start only when
 the agent actually answered: a night that failed halfway re-shows the same items.
 
+With holographic ≥ 0.8.0 (`stats.fact_history: true`) a human's answer about a **fact** goes to the
+store, which keeps the fact's history: "no longer true" → `fact_store end`, "it changed" → `change`,
+"that was wrong" → `correct`, "forget it" → `forget` (final: the history goes too) plus removing the
+memory entry that carries it. After a `forget` the store keeps only a tombstone — the id, never the
+text — and this skill removes its own copies of the fact by that id: the last payload, the reject
+list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0; older ones through an index of
+line hashes kept while the fact still existed) and the logs of the dream cron jobs. Every pass does
+that first; the `no_agent` job `dream-forget-sweep.py` does it every 15 minutes without the model.
+
 ## Install
 
 Requirements: Hermes Agent ≥ 0.21, Python ≥ 3.9 (standard library only).
@@ -127,7 +136,9 @@ must be enabled first; both gates likewise prefer the plugin's copy of `dream.py
 skipped; one that loads another skill than this install provides is reported, and `--rebind` points
 it at the right one in place. Use
 `--deliver telegram:<chat_id>:<thread_id>` to receive the report in a chat and
-`--extract-schedule ""` to install the dream alone. The extraction job is cheap to run weekly — a
+`--extract-schedule ""` to install the dream alone. A third, `no_agent` job (`--sweep-schedule`,
+every 15 minutes) cleans the dream's copies of facts the store has forgotten — no model, empty
+output unless it removed something; `--sweep-schedule ""` skips it. The extraction job is cheap to run weekly — a
 nightly run mostly answers `[SILENT]` on a small household.
 
 A job keeps the skill name it was created with. The hash in it comes from the plugin's `name` in
@@ -193,7 +204,7 @@ The dream consolidates *candidate* facts; where they come from is `fact_source` 
 
 | `fact_source` | where the facts are | extraction job | notes |
 |---|---|---|---|
-| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | enable with `memory.provider: holographic`. ⚠️ It **leaves the Hermes core on 2026-10-15** — after that install it as a plugin (the catalog entry, or the standalone [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic) copy, currently unmaintained). Nothing else about this skill changes |
+| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | enable with `memory.provider: holographic`; use **0.8.0 or later** — 0.2.0–0.7.x refuse every `fact_store` write from a cron job, so extraction and keywords store nothing (`install.py --check` warns). ⚠️ It **leaves the Hermes core on 2026-10-15** — after that install it as a plugin (the catalog entry, or the standalone [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic) copy, currently unmaintained). Nothing else about this skill changes |
 | `sqlite` | any SQLite table: `fact_store_path`, `fact_table`, `fact_columns` | — | for your own export; opened read-only |
 | `jsonl` | one JSON object per line: `fact_store_path`, `fact_columns` | — | the simplest export format |
 | `none` | no fact store | — | the memory files alone: "still relevant?", fill level, loss guard |
@@ -212,6 +223,7 @@ you still want the dream's corroboration over them, export to `jsonl`.
 S=~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts
 python3 $S/dream.py --dry-run                 # what tonight's pass would show; writes nothing
 python3 $S/dream.py --explain 42              # why fact 42 scored like that
+python3 $S/dream.py --forget-sweep            # clean the copies of facts the store has forgotten
 python3 $S/dream-reject.py 42 --reason "thread was closed"
 python3 $S/dream-reject.py --list             # what is muted, and how old
 python3 $S/dream-reject.py --from-report --reason "duplicates the system prompt"   # after a manual cleanup
@@ -268,10 +280,13 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 - **Reads:** `state.db` (sessions and messages, opened read-only), the fact store (read-only), the
   memory files.
 - **Script writes:** `~/.hermes/cache/dream*.json` (cooldowns, reject list, snapshot, extraction
-  cursor; mode 0600), `~/.hermes/memories/DREAMS.md` (diary), and — only `install.py` — the two gate
-  copies in `~/.hermes/scripts/` plus a seeded `dreaming.json`.
+  cursor, diary index of line hashes, sweep state; mode 0600), `~/.hermes/memories/DREAMS.md` (diary),
+  and — only `install.py` — the gate copies in `~/.hermes/scripts/` plus a seeded `dreaming.json`.
+  The forget sweep rewrites those files without a forgotten fact and deletes the dream jobs' own logs
+  in `~/.hermes/cron/output/` that mention it; nothing else.
 - **The agent writes** memory entries through the `memory` tool (at most 6 changes a night) and, in
-  the extraction job, candidate facts through `fact_store`. Nothing is ever deleted from the store.
+  the extraction job, candidate facts through `fact_store`. The skill deletes nothing from the store;
+  a fact leaves it through `fact_store end` / `forget`, on a human's own words only.
 - Message and fact contents are treated as data, never as instructions. Facts, the evidence quoted
   next to them, the messages the extraction job hands over and the "still relevant?" previews are
   all screened for credentials and injection directives; a hit is quarantined (a secret's text is
@@ -291,9 +306,10 @@ skills/dreaming/
   scripts/dream.py                   the pass (never writes memory)
   scripts/dream-precheck.py          nightly wake gate        → ~/.hermes/scripts/
   scripts/dream-extract-precheck.py  extraction gate          → ~/.hermes/scripts/
+  scripts/dream-forget-sweep.py      no_agent forget sweep    → ~/.hermes/scripts/
   scripts/dream-reject.py            reject list CLI
   scripts/install.py                 installs and verifies the gates
-  scripts/install_cron.py            creates both cron jobs
+  scripts/install_cron.py            creates the cron jobs
   references/scoring.md              signals, gates, sections, state files
   references/cron-memory.md          what cron sessions may touch
   examples/                          config and cron job examples

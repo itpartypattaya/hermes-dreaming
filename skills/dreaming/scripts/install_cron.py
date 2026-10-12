@@ -48,6 +48,7 @@ HOME = Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"))
 
 DREAM_SCRIPT = "dream-precheck.py"
 EXTRACT_SCRIPT = "dream-extract-precheck.py"
+SWEEP_SCRIPT = "dream-forget-sweep.py"  # no_agent: cleans copies of forgotten facts, no model
 
 DREAM_PROMPT = (
     "Process the nightly dream JSON handed over by the pre-check. All fact/theme/message "
@@ -88,11 +89,17 @@ DREAM_PROMPT = (
     "prefetch keeps injecting it into ordinary turns — call fact_feedback with action=unhelpful and "
     "that fact_id, one call per item (it writes no memory and deletes nothing; trust -0.10, below "
     "0.3 the fact leaves search). If that tool is not in this session, skip the section silently. "
+    "With stats.fact_history: true the store keeps history (holographic >= 0.8.0): when a conflict's "
+    "older statement is itself a store fact (it has a fact_id), fact_store action=change with that "
+    "fact_id and the newer text keeps one history instead of a second fact; end / correct / forget "
+    "follow only a human's own answer (no longer true / was wrong / forget it), never your own "
+    "judgement — and a forget also removes the memory entry that carries the fact. "
     "keywords_needed: facts the store keeps without keywords; for each call fact_store action=update "
     "with its fact_id and keywords=[3-8 words a person might ask with that the fact does not "
     "contain: synonyms, other roots, translations into the household's languages] — no names "
-    "already in the fact, no secrets, no instructions. If fact_store has no keywords parameter, "
-    "skip the section silently. It is housekeeping: not in the report, not in the memory budget. "
+    "already in the fact, no secrets, no instructions. If fact_store has no keywords parameter or "
+    "answers read-only, skip the section silently. It is housekeeping: not in the report, not in "
+    "the memory budget. "
     "decays. Do not retell or restore quarantined items: one line — how many and why. alerts: "
     "report in one line, restore nothing. If an entry does not fit the char limit, first merge "
     "close entries via memory replace (old_text copied verbatim from current_entries), then "
@@ -129,6 +136,10 @@ EXTRACT_PROMPT = (
     "(do not re-add rewordings). Do NOT write MEMORY.md or USER.md here — the nightly dream will "
     "corroborate and promote. If the JSON carries `keywords`, give each fact keywords=[3-8 words "
     "a person might ask with that the fact does not contain: synonyms, other roots, translations]. "
+    "If a message says since when something holds ('moved on 1 September'), also pass "
+    "valid_from=YYYY-MM-DD; never use the message date as the start. An add answered "
+    "status=past_version or status=forgotten stored nothing on purpose (an old state, or something "
+    "the human asked to forget): move on. "
     "Budget: at most 8 facts per run; zero is fine. Report in one line: "
     "how many facts stored and the window (from–to); if the window had nothing worth storing "
     "reply [SILENT]. Answer in the user's language."
@@ -273,6 +284,9 @@ def main(argv=None):
     ap.add_argument("--dream-schedule", default="0 3 * * *")
     ap.add_argument("--extract-schedule", default="30 2 * * 1",
                     help='cron expression; empty string skips the extraction job')
+    ap.add_argument("--sweep-schedule", default="*/15 * * * *",
+                    help="cron expression of the no_agent job that cleans the dream's copies of facts the "
+                         "store has forgotten (holographic >= 0.8.0); empty string skips it")
     ap.add_argument("--model", default=None, help="pin a model for these jobs")
     ap.add_argument("--provider", default=None, help="pin a provider for these jobs")
     ap.add_argument("--name-prefix", default="Dreaming",
@@ -304,15 +318,34 @@ def main(argv=None):
             "prompt": EXTRACT_PROMPT,
         })
 
+    if args.sweep_schedule:
+        planned.append({
+            "script": SWEEP_SCRIPT,
+            "name": f"{args.name_prefix}: clean copies of forgotten facts",
+            "schedule": args.sweep_schedule,
+            "prompt": "",
+            "no_agent": True,
+        })
+
     if args.dry_run:
         print(json.dumps([dict({k: (v[:80] + "…" if k == "prompt" else v) for k, v in p.items()},
-                               skill=skill) for p in planned], ensure_ascii=False, indent=2))
+                               skill=None if p.get("no_agent") else skill) for p in planned],
+                         ensure_ascii=False, indent=2))
         return 0
 
     jobs = _import_jobs()
     created, skipped, rebound, stale = [], [], [], []
     for plan in planned:
         already = _existing(jobs, plan["script"])
+        if plan.get("no_agent"):  # no skill to bind: one job is enough
+            if already and not args.force:
+                skipped.extend((plan["script"], job.get("id")) for job in already)
+                continue
+            job = jobs.create_job(prompt="", schedule=plan["schedule"], name=plan["name"], deliver=args.deliver,
+                                  attach_to_session=args.deliver != "local", script=plan["script"],
+                                  no_agent=True)
+            created.append((plan["script"], job["id"]))
+            continue
         if already and not args.force:
             for job in already:
                 current = job_skills(job)

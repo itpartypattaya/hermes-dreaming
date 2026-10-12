@@ -28,7 +28,9 @@ import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
-GATES = ("dream-precheck.py", "dream-extract-precheck.py")
+GATES = ("dream-precheck.py", "dream-extract-precheck.py", "dream-forget-sweep.py")
+# Gates of jobs that load the skill (the forget sweep is a no_agent job: no skill, no model).
+SKILL_GATES = ("dream-precheck.py", "dream-extract-precheck.py")
 EXAMPLE = SKILL_DIR / "examples" / "dreaming.example.json"
 
 
@@ -138,6 +140,26 @@ def _write_approval(home):
     return bool(found) and found.group(1).strip().strip("\"'").lower() in ("true", "yes", "1")
 
 
+def _check_holographic_version(home, r):
+    """The catalog plugin 0.2.0–0.7.x refuses every fact_store write in a cron session: the extraction job
+    and the keyword pass would answer "read-only" and store nothing, silently. 0.8.0 accepts a cron job's
+    explicit calls. Read from the installed plugin's manifest; nothing said when there is none."""
+    manifest = home / "plugins" / "holographic" / "plugin.yaml"
+    try:
+        found = re.search(r"(?m)^version:\s*['\"]?(\d+)\.(\d+)", manifest.read_text(encoding="utf-8"))
+    except OSError:
+        return
+    if not found:
+        return
+    version = (int(found.group(1)), int(found.group(2)))
+    if (0, 2) <= version < (0, 8):
+        r.warn(f"holographic {found.group(1)}.{found.group(2)} refuses fact_store writes from cron jobs — the "
+               "extraction job and keywords_needed store nothing; update it: hermes plugins update holographic "
+               "(0.8.0 or later)")
+    elif version >= (0, 8):
+        r.ok(f"holographic {found.group(1)}.{found.group(2)}: cron jobs may write facts; forgotten facts are swept")
+
+
 def check_fact_source(home, dream, r):
     try:
         source = dream.fact_source()
@@ -182,6 +204,7 @@ def check_fact_source(home, dream, r):
                f"promotions stay empty. {advice}")
     elif os.path.exists(path):
         r.ok(f"memory provider 'holographic', fact store present ({path})")
+        _check_holographic_version(home, r)
     else:
         r.warn(f"memory provider 'holographic', but no {path} yet — the pass treats it as empty; "
                "the file appears with the first stored fact")
@@ -210,7 +233,7 @@ def check_jobs(home, check_only, r):
         r.warn(f"cannot read {path}: {exc}")
         return
     listed = data.get("jobs", []) if isinstance(data, dict) else data
-    ours = [j for j in listed if isinstance(j, dict) and j.get("script") in GATES]
+    ours = [j for j in listed if isinstance(j, dict) and j.get("script") in SKILL_GATES]
     if not ours:
         if check_only:
             r.warn("no dreaming cron jobs yet — create them with install_cron.py")

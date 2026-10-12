@@ -236,7 +236,7 @@ class InstallCronTests(unittest.TestCase):
     def test_job_bound_to_another_skill_is_reported_not_kept_quietly(self):
         self._complete_install()
         fake = FakeJobs([self._old_job(enabled=False)])   # paused counts too
-        rc, out = self._run_main(fake)
+        rc, out = self._run_main(fake, "--sweep-schedule", "")
         self.assertEqual(rc, 1)
         self.assertIn("--rebind", out)
         self.assertEqual(fake.updated, [])
@@ -247,7 +247,7 @@ class InstallCronTests(unittest.TestCase):
     def test_rebind_updates_the_skill_in_place(self):
         self._complete_install()
         fake = FakeJobs([self._old_job()])
-        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "")
+        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "", "--sweep-schedule", "")
         self.assertEqual(rc, 0, out)
         self.assertEqual(fake.updated, [("old1", {"skill": PLUGIN_SKILL, "skills": [PLUGIN_SKILL]})])
         self.assertEqual(fake.created, [])
@@ -255,10 +255,29 @@ class InstallCronTests(unittest.TestCase):
     def test_job_already_bound_is_left_alone(self):
         self._complete_install()
         fake = FakeJobs([self._old_job(skill=PLUGIN_SKILL, skills=[PLUGIN_SKILL])])
-        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "")
+        rc, out = self._run_main(fake, "--rebind", "--extract-schedule", "", "--sweep-schedule", "")
         self.assertEqual(rc, 0, out)
         self.assertEqual((fake.updated, fake.created), ([], []))
         self.assertIn("left alone", out)
+
+    def test_forget_sweep_job_is_no_agent_and_created_once(self):
+        """Regression 2.4.0: cleaning copies of forgotten facts is a no_agent job, no skill, no model."""
+        self._complete_install()
+        fake = FakeJobs([])
+        rc, out = self._run_main(fake, "--extract-schedule", "")
+        self.assertEqual(rc, 0, out)
+        sweep = [c for c in fake.created if c["script"] == install_cron.SWEEP_SCRIPT]
+        self.assertEqual(len(sweep), 1)
+        self.assertTrue(sweep[0]["no_agent"])
+        self.assertNotIn("skill", sweep[0])
+
+    def test_existing_forget_sweep_job_is_left_alone(self):
+        self._complete_install()
+        fake = FakeJobs([{"id": "sw1", "script": install_cron.SWEEP_SCRIPT, "no_agent": True}])
+        rc, out = self._run_main(fake, "--extract-schedule", "")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(install_cron.SWEEP_SCRIPT, [c["script"] for c in fake.created])
+        self.assertIn("sw1", out)
 
     def test_rebind_keeps_skills_attached_by_hand(self):
         job = {"skills": ["dreaming", "house-rules"]}
@@ -327,6 +346,33 @@ class InstallCronTests(unittest.TestCase):
         # A user who installs via the script must get the documented prompt.
         example = json.loads((ROOT / "examples" / "cron-job.example.json").read_text(encoding="utf-8"))
         self.assertEqual(install_cron.DREAM_PROMPT.strip(), example["prompt"].strip())
+
+
+class HolographicVersionTests(unittest.TestCase):
+    """2.4.0: holographic 0.2.0-0.7.x silently refuses fact writes from cron; the install check says so."""
+
+    def _check(self, version):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            if version:
+                (home / "plugins" / "holographic").mkdir(parents=True)
+                (home / "plugins" / "holographic" / "plugin.yaml").write_text(
+                    "name: holographic\nversion: " + version + "\n", encoding="utf-8")
+            r = install.Report()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                install._check_holographic_version(home, r)
+            return r, out.getvalue()
+
+    def test_versions(self):
+        r, out = self._check("0.7.0")
+        self.assertEqual(r.warn_n, 1)
+        self.assertIn("hermes plugins update holographic", out)
+        r, out = self._check("0.8.0")
+        self.assertEqual((r.ok_n, r.warn_n), (1, 0))
+        r, out = self._check("0.1.1")  # the copy bundled in core never refused cron
+        self.assertEqual((r.ok_n, r.warn_n), (0, 0))
+        r, out = self._check(None)
+        self.assertEqual(out, "")
 
 
 class InstallScriptTests(unittest.TestCase):

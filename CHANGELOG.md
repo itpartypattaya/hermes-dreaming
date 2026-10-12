@@ -3,6 +3,43 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.4.0 — 2026-10-12
+
+Works with holographic 0.8.0, which keeps the history of every fact and makes "forget" final.
+
+### Added
+
+- **Forgotten facts are cleaned from the skill's own copies.** holographic 0.8.0 deletes a fact for
+  good on `fact_store forget` and keeps a tombstone (the id, never the text). Every pass now starts
+  with a sweep that removes that id from `cache/dream.json`, the reject list, the cooldowns, the
+  diary and its archive (and the diary text inside the payload), and deletes the dream cron jobs'
+  logs that mention it. Every run looks for every tombstone again — a copy written back by a pass
+  that loaded the fact before the forget, or a log that could not be removed, is caught next time —
+  and changes nothing when nothing is left; what could not be cleaned is reported and makes the
+  gate fail. The pass sweeps again after it wrote its output, and on POSIX one lock keeps the pass
+  and the gate from rewriting the state at the same time. Diary items are written on one line with
+  "; " only between items, and carry `[#<fact_id>]` from now on; older lines are found
+  through `cache/dream-diary-index.json`, hashes of every fact's diary previews kept while the fact
+  exists (after the forget the text is gone, so the index is built ahead of time). `dream.py
+  --forget-sweep` runs the sweep alone, and the new `no_agent` gate `dream-forget-sweep.py` (created
+  by `install_cron.py`, every 15 minutes; `--sweep-schedule ""` skips it) does it between nights
+  without the model. The hashes move to the sweep state afterwards, so the owner of another copy of
+  the diary (a git backup) can clean it with `forgotten_diary_index()` + `scrub_diary_text()`.
+- Limits, said plainly: diary lines written before 2.4.0 carry no id and are matched by the hashes of
+  what the diary wrote; a fact whose own text held a newline was split over lines then, and only
+  the lines after it that do not look like diary structure go with it. Hermes's session log, backups
+  and other tools' copies are their owners' to clean.
+- **`stats.fact_history`**: the store keeps history. SKILL.md and the nightly prompt map a human's
+  answer to the store: "no longer true" → `end`, "it changed" → `change`, "that was wrong" →
+  `correct`, "forget it" → `forget` plus `memory remove` of the entry carrying it; a conflict whose
+  older statement is a store fact → `change` (one history instead of a second fact). Without the
+  flag the reject list works as before.
+- Extraction passes `valid_from` when a message says since when something holds, and treats an
+  `add` answered `past_version` / `forgotten` as stored-nothing-on-purpose.
+- `install.py --check` warns about holographic 0.2.0–0.7.x: they refuse every `fact_store` write
+  from a cron job, so extraction and the keyword pass stored nothing (the copy bundled in Hermes core
+  never refused). Fixed in holographic 0.8.0 (`cron_writes`).
+
 ## 2.3.0 — 2026-10-11
 
 ### Added

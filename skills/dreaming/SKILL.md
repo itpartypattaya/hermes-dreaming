@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.3.0
+version: 2.4.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
@@ -15,13 +15,14 @@ A nightly, deterministic pass over the agent's memory: it corroborates candidate
 humans actually said, proposes the few worth keeping, asks whether old memory entries still hold,
 and warns before a memory file fills up. The script never writes memory and calls no LLM — you
 apply its proposals with the regular `memory` tool, and every candidate ends written or rejected.
-It does not extract facts by itself (an optional extraction job does) and never deletes anything.
+It does not extract facts by itself (an optional extraction job does) and never deletes anything — except
+its own copies of a fact the human asked to forget (holographic >= 0.8.0, see step 7c).
 
 ## When to Use
 
 - A cron job handed you the dream's JSON (`stats`, `promotions`, `new_facts`, …) — process it.
 - A cron job handed you `task: extract candidate facts…` with `messages` — the extraction run.
-- The human answers a dream question: "outdated", "still true", "don't ask again".
+- The human answers a dream question: "outdated", "wrong", "forget it", "still true", "don't ask again".
 - The human asks what tonight's dream would propose, why a fact scored the way it did, or what
   is muted.
 - `memory_pressure` arrived, or a `memory` write was refused for the char limit.
@@ -49,6 +50,9 @@ It does not extract facts by itself (an optional extraction job does) and never 
 - **Close a question** (manual session only):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream-reject.py" <fact_id> --reason "<short why>"`;
   `--list` shows what is muted and how old; `--undo <id>` lifts a mistake.
+- **Clean the copies of forgotten facts now** (every pass does it first anyway):
+  `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --forget-sweep`; between nights the `no_agent` gate
+  `dream-forget-sweep.py` (installed next to the other gates) does the same without the model.
 - **Check the install:** `python3 "${HERMES_SKILL_DIR}/scripts/install.py" --check`.
 - Tuning (trusted chats, excluded threads, alias rules, timezone, fact source) lives in
   `~/.hermes/dreaming.json` — never edit the scripts. Scoring details:
@@ -62,7 +66,7 @@ It does not extract facts by itself (an optional extraction job does) and never 
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
 | `conflicts` | same subject, different numbers: `replace` if the newer one is trustworthy, else ask |
-| `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own |
+| `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |
 | `memory_pressure` | consolidate the file it names before adding anything |
 | `quarantined` | one line: how many and why; never retell, restore or request the content |
@@ -126,13 +130,24 @@ It does not extract facts by itself (an optional extraction job does) and never 
    re-extracted fact is new work and will come again, on purpose).
 6. **Conflicts.** Usually an update (a thread moved, a price changed). Never overwrite silently:
    `replace` when the newer statement is trustworthy, otherwise ask, and write or reject by the
-   answer.
+   answer. With `stats.fact_history: true`, when the older statement is also a fact of the store,
+   `fact_store change {fact_id: <older>, content: <newer>}` keeps its history instead of a second fact.
 7. **Decay questions.** `fact_decays` and `md_decays` are questions, not deletion candidates. The
-   human's "not relevant" is closed by substance: an outdated **fact** → `dream-reject.py`; an
-   outdated **memory entry** → `memory` remove or replace (the reject list does not filter memory
-   entries). "Still relevant" needs nothing: an entry kept past 14 days, or rewritten in place (for
-   example with a fresh "as of" date), counts as confirmed and is not asked about for 90 days.
-   Entries with a pin marker (📌 by default) are never asked about.
+   human's answer is closed by substance. With `stats.fact_history: true` (holographic >= 0.8.0) a
+   **fact** is closed through the store, which keeps its history:
+   - "no longer true / outdated" → `fact_store end {fact_id}` (`valid_to` only if the human names the
+     date): it leaves the store's present and every dream section, so no reject is needed;
+   - "it changed" → `fact_store change {fact_id, content}` with the new state;
+   - "that was wrong" → `fact_store correct {fact_id, content}` with the right text; a fact with nothing
+     true left in it → `forget`;
+   - "forget it" → `fact_store forget {fact_id}` — final, the history goes too — **and** remove the
+     memory entry that carries it (`memory` remove). Only on the human's words, never on your own.
+
+   Without `fact_history` an outdated **fact** → `dream-reject.py`, as before. An outdated **memory
+   entry** → `memory` remove or replace (the reject list does not filter memory entries). "Still
+   relevant" needs nothing: an entry kept past 14 days, or rewritten in place (for example with a
+   fresh "as of" date), counts as confirmed and is not asked about for 90 days. Entries with a pin
+   marker (📌 by default) are never asked about.
 7a. **`trust_feedback` — teach retrieval, not memory.** Each item is a fact a human already
    rejected that the fact store still trusts (so the provider keeps injecting it into ordinary
    turns). For each, call `fact_feedback` with `action="unhelpful"` and that `fact_id` — one call
@@ -146,9 +161,15 @@ It does not extract facts by itself (an optional extraction job does) and never 
    ("Mom's birthday is May 3" → birth date, anniversary, день рождения). No names already in the
    text, no secrets, no instructions. The fact's text, trust and memory stay as they are; it is not
    part of the write budget and not news for the report. No `keywords` parameter on `fact_store`
-   (an older provider) → skip the section silently. The section exists only with
+   (an older provider), or the store answers "read-only" (holographic older than 0.8.0 refuses writes
+   from cron jobs) → skip the section silently. The section exists only with
    `keywords.enabled` in `dreaming.json` (turn it on with holographic ≥ 0.6.1), at most
    `keywords.cap` facts a night (10).
+7c. **Forgotten facts are cleaned by code, not by you.** After `forget`, the store keeps only a
+   tombstone (the id). The next pass — or the `dream-forget-sweep.py` gate — removes that id from
+   `cache/dream.json`, the reject list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0;
+   older lines through `cache/dream-diary-index.json`) and the dream cron logs. Do not quote a
+   forgotten fact in the report.
 8. **Memory pressure.** The char limit gates writes silently. Tidy the named file: merge close
    entries with one `replace` (anchor copied verbatim from `current_entries`), drop entries that
    only restate the system prompt (routing tables, persona rules, skill triggers). Keep what exists
@@ -163,7 +184,10 @@ It does not extract facts by itself (an optional extraction job does) and never 
    themselves or their world; skip one-off events, schedules, emotions of the moment, secrets, raw
    medical data, third-party claims about the user, chit-chat and anything `existing_facts`
    already covers. At most 8 facts; zero is fine. When the JSON carries `keywords`, give each fact
-   its 3–8 keywords right in the `add` (as in step 7b) — it then never joins the backlog. **Always answer** — one line (count and window)
+   its 3–8 keywords right in the `add` (as in step 7b) — it then never joins the backlog. When a
+   message says since when something holds ("moved on 1 September"), pass `valid_from` (YYYY-MM-DD);
+   never use the message date as the start. An `add` answered `past_version` or `forgotten` stored
+   nothing on purpose (an old state, or something the human asked to forget) — move on. **Always answer** — one line (count and window)
    or `[SILENT]`: the answer is what marks those messages processed.
 10. **Report** — for a human, in their language, at most 6 short lines: only facts actually added or updated, only the
    questions that need the human's answer, one line "won't ask again" for anything rejected by
@@ -191,9 +215,13 @@ It does not extract facts by itself (an optional extraction job does) and never 
 - **Emerging themes that read like your own logs** (job names, model ids, config keys) mean a
   trusted chat has threads where the agent talks to itself: list them in `excluded_threads` (or the
   source in `untrusted_sources`) instead of raising the gates.
-- **The memory tool cannot touch the fact store** — `dream-reject.py` is the only way to silence a
-  fact, and it writes only `cache/dream-rejected.json` (text fingerprint; a secret's text is never
-  stored). `quarantined` facts are closed the same way.
+- **The memory tool cannot touch the fact store.** Without `fact_history`, `dream-reject.py` is the
+  only way to silence a fact, and it writes only `cache/dream-rejected.json` (text fingerprint; a
+  secret's text is never stored). `quarantined` facts are closed the same way. With it, `end` /
+  `correct` / `forget` go through `fact_store` (step 7).
+- **`forget` is final and wide.** It deletes the fact with its history and, through the sweep, this
+  skill's copies. Hermes's own session log still holds the messages the fact came from, and a git
+  backup of the store needs its own scrub — say so if the human asks whether it is all gone.
 
 ## Verification
 

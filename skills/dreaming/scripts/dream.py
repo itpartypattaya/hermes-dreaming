@@ -24,6 +24,7 @@ timezone, diary heading, …) lives in a JSON config — see `load_config()` and
 """
 from __future__ import annotations
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -166,7 +167,11 @@ DEFAULT_CONFIG = {
     "state": {"asked": "cache/dream-asked.json",
               "rejected": "cache/dream-rejected.json",
               "seen": "cache/dream-seen.json",
-              "snapshot": "cache/dream-snapshot.json"},
+              "snapshot": "cache/dream-snapshot.json",
+              # holographic >= 0.8.0 `forget`: which tombstones were swept, and
+              # hashes of the diary previews of every fact (old lines carry no id).
+              "forget_sweep": "cache/dream-forget-sweep.json",
+              "diary_index": "cache/dream-diary-index.json"},
     "precheck": {"max_content": 300,
                  "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
                                      "md_decays", "conflicts", "quarantined", "alerts"]},
@@ -2739,6 +2744,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "gates": {"min_score": MIN_SCORE, "min_mentions": MIN_MENTIONS,
                   "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful"},
         "stats": {"facts": len(facts), "new_facts_reviewed": len(new_facts),
+                  # holographic >= 0.8.0: the store takes change / end / correct / forget (SKILL.md, step 7).
+                  "fact_history": fact_history_supported(),
                   "new_facts_window": len(new_facts_window),
                   "messages_window": len(messages),
                   "promotions": len(promotions), "ephemeral_events": len(ephemeral_events),
@@ -2857,8 +2864,8 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
     def _line(p):
         if "meta" in p:
             return (f"- ({p['score']}, mentions {p['meta']['mentions']}/{p['meta']['ref_days']}d) "
-                    f"{p['content'][:85]}")
-        return f"- {p['content'][:85]}"
+                    f"{_diary_text(p['content'], 85)}{_diary_tag(p)}")
+        return f"- {_diary_text(p['content'], 85)}{_diary_tag(p)}"
 
     if promotions:
         lines.append("**Strong signals (candidates to promote):**")
@@ -2870,7 +2877,7 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
         lines.extend(_line(p) for p in ephemeral_events[:5])
     if conflicts:
         lines.append(f"\n**Possible updates of existing entries ({len(conflicts)}):** "
-                     + "; ".join(c["content"][:45] for c in conflicts[:3]))
+                     + "; ".join(_diary_text(c["content"], 45) + _diary_tag(c) for c in conflicts[:3]))
     if themes:
         lines.append("\n**Emerging themes:** " + ", ".join(f"{t['theme']}×{t['mentions']}" for t in themes[:8]))
     if md_dec:
@@ -2878,7 +2885,7 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
                      + "; ".join(d["entry"][:45] for d in md_dec[:3]))
     if decays:
         lines.append(f"\n**Facts never used ({len(decays)}):** "
-                     + "; ".join(d["content"][:45] for d in decays[:3]))
+                     + "; ".join(_diary_text(d["content"], 45) + _diary_tag(d) for d in decays[:3]))
     if quarantined:
         reasons = ", ".join(sorted({q["unsafe"] for q in quarantined}))
         lines.append(f"\n**Quarantined (not promoted): {len(quarantined)}** — {reasons}.")
@@ -2979,6 +2986,368 @@ def append_diary(path, diary):
     _write_private(path, diary + "\n", append=True)
     rotate_diary(path)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Forgotten facts (holographic >= 0.8.0)
+# ---------------------------------------------------------------------------
+# `fact_store forget` deletes a fact from the store for good and leaves a
+# tombstone in its `forgotten` table: the id, never the text. The copies this
+# skill made are this skill's to clean, by that id: the last payload
+# (cache/dream.json), the reject list, the "already shown" state, the diary and
+# its archive, and the logs of the dream cron jobs (they hold the payload).
+# Diary lines written since 2.4.0 end with "[#<fact_id>]"; older ones carry no
+# id and are found through the diary index — hashes of the previews the diary
+# writes, kept for every fact while it still exists (the text is gone after the
+# forget, so the index is built ahead of time, on every pass and every sweep).
+
+DIARY_TAG_RE = re.compile(r"\s*\[#(\d+)\]")
+DREAM_JOB_SCRIPTS = ("dream-precheck.py", "dream-extract-precheck.py")
+
+
+def _diary_tag(item):
+    fact_id = item.get("fact_id")
+    return f" [#{fact_id}]" if isinstance(fact_id, int) or str(fact_id or "").isdigit() else ""
+
+
+def _diary_text(text, n):
+    """What the diary writes for a fact since 2.4.0: one line, and "; " only ever between list items (a fact's own
+    "; " would make the item boundary ambiguous for the sweep)."""
+    return " ".join((text or "")[:n].split()).replace("; ", ", ")
+
+
+def _preview_hash(text):
+    return hashlib.sha256(_fold(text or "").strip().encode("utf-8")).hexdigest()[:20]
+
+
+def _preview_hashes(content):
+    """Hashes of every form the diary has written a fact in: an 85-character line, a 45-character list item, as
+    is (before 2.4.0, where a newline in the text broke the line: also its first line) and as `_diary_text`."""
+    forms = set()
+    for n in (85, 45):
+        raw = (content or "")[:n]
+        forms |= {raw, raw.split("\n", 1)[0], _diary_text(content, n)}
+    return sorted({_preview_hash(f) for f in forms if f.strip()})
+
+
+def _json_file(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
+def load_forgotten(db=None):
+    """{fact_id: forgotten_at} from the store's tombstones; {} when the source is not holographic, the store
+    is missing, or the provider is older than 0.8.0 (no `forgotten` table)."""
+    if fact_source() != "holographic" and not db:
+        return {}
+    path = db or fact_store_path()
+    if not path or not os.path.exists(path):
+        return {}
+    c = _conn(path)
+    try:
+        if not c.execute("select 1 from sqlite_master where type='table' and name='forgotten'").fetchone():
+            return {}
+        return {int(r[0]): str(r[1]) for r in c.execute("select fact_id, forgotten_at from forgotten")}
+    except sqlite3.Error:
+        return {}
+    finally:
+        c.close()
+
+
+def fact_history_supported(db=None):
+    """True when the store keeps fact history (holographic >= 0.8.0: change / end / correct / forget)."""
+    path = db or (fact_store_path() if fact_source() == "holographic" else None)
+    if not path or not os.path.exists(path):
+        return False
+    c = _conn(path)
+    try:
+        if not c.execute("select 1 from sqlite_master where type='table' and name='meta'").fetchone():
+            return False
+        # The marker is written in the same transaction that versions every fact; the tables exist a moment earlier.
+        return bool(c.execute("select 1 from meta where key = 'history_schema'").fetchone())
+    except sqlite3.Error:
+        return False
+    finally:
+        c.close()
+
+
+def update_diary_index(path, facts):
+    """Add the preview hashes of every current fact (and the fingerprint the reject list and the cooldowns
+    key on). Hashes accumulate per id: a fact that changed keeps the hashes of its older texts, whose lines
+    are still in the diary. Returns True when the file changed."""
+    if not path:
+        return False
+    index = _json_file(path, {})
+    changed = False
+    for f in facts:
+        fid = str(f.get("fact_id"))
+        if not fid.isdigit() or not f.get("content"):
+            continue
+        entry = index.setdefault(fid, {"previews": [], "fingerprints": []})
+        previews = sorted(set(entry.get("previews") or []) | set(_preview_hashes(f["content"])))
+        fingerprints = sorted(set(entry.get("fingerprints") or []) | {_fact_fingerprint(f["content"])})
+        if previews != entry.get("previews") or fingerprints != entry.get("fingerprints"):
+            entry["previews"], entry["fingerprints"] = previews, fingerprints
+            changed = True
+    if changed:
+        _write_private(path, json.dumps(index, ensure_ascii=False))
+    return changed
+
+
+def _strip_tags(text):
+    return DIARY_TAG_RE.sub("", text).strip()
+
+
+_DIARY_ITEM_RE = re.compile(r"^- (?:\([^)]*mentions [^)]*\) )?(.*)$")
+# A line the diary writes itself; anything else right after a removed item is the rest of a fact text that
+# contained a newline (before 2.4.0) and goes with it.
+_DIARY_OWN_LINE_RE = re.compile(r"^(?:- |\*\*|#|⚠️|Theme window|No strong|\s*$)")
+
+
+def scrub_diary_text(text, fact_ids, index):
+    """The diary without the lines (or list items) of *fact_ids*: by the "[#id]" tag, or by the preview
+    hashes of the index for lines written before the tags. Returns (text, removed)."""
+    ids = {str(i) for i in fact_ids}
+    hashes = {h for i in ids for h in (index.get(i) or {}).get("previews", [])}
+
+    def gone(item):
+        tags = set(DIARY_TAG_RE.findall(item))
+        return bool(tags & ids) or (not tags and _preview_hash(_strip_tags(item)) in hashes)
+
+    out, removed, continuation = [], 0, False
+    for line in text.split("\n"):
+        if continuation and not _DIARY_OWN_LINE_RE.match(line):
+            continue
+        continuation = False
+        item = _DIARY_ITEM_RE.match(line)
+        if item and gone(item.group(1)):
+            removed += 1
+            continuation = not DIARY_TAG_RE.search(line)  # tagged lines (2.4.0+) are always one line
+            continue
+        if line.startswith("**") and ":** " in line:
+            head, rest = line.split(":** ", 1)
+            parts = rest.split("; ")
+            drop = {i for i, p in enumerate(parts) if gone(p)}
+            for i in range(len(parts)):  # untagged legacy items whose own text contained "; "
+                for j in range(i + 2, len(parts) + 1):
+                    joined = "; ".join(parts[i:j])
+                    if not DIARY_TAG_RE.search(joined) and _preview_hash(joined) in hashes:
+                        drop.update(range(i, j))
+            if drop:
+                removed += len(drop)
+                kept = [p for i, p in enumerate(parts) if i not in drop]
+                if not kept:
+                    continue
+                line = f"{head}:** " + "; ".join(kept)
+        out.append(line)
+    return "\n".join(out), removed
+
+
+def _drop_fact_items(node, ids):
+    """Remove every dict carrying one of *ids* as `fact_id` from the lists of a JSON payload."""
+    removed = 0
+    if isinstance(node, dict):
+        for value in node.values():
+            removed += _drop_fact_items(value, ids)
+    elif isinstance(node, list):
+        keep = []
+        for item in node:
+            if isinstance(item, dict) and str(item.get("fact_id")) in ids:
+                removed += 1
+                continue
+            removed += _drop_fact_items(item, ids)
+            keep.append(item)
+        node[:] = keep
+    return removed
+
+
+def _scrub_strings(node, ids, index):
+    """The diary text a payload carries (`diary`): the same line rules as the diary file. Other strings are not
+    diary text (a kept fact's own words may look like a diary line) and are left alone; facts leave a payload
+    with their item (`_drop_fact_items`)."""
+    if not isinstance(node, dict) or not isinstance(node.get("diary"), str):
+        return 0
+    cleaned, removed = scrub_diary_text(node["diary"], ids, index)
+    if removed:
+        node["diary"] = cleaned
+    return removed
+
+
+def scrub_result(result):
+    """A pass's result without facts forgotten while it ran (it loaded them before the forget): before it is
+    published, not after."""
+    ids = {str(i) for i in load_forgotten()}
+    if not ids:
+        return 0
+    index = forgotten_diary_index(ids)
+    return _drop_fact_items(result, ids) + _scrub_strings(result, ids, index)
+
+
+def _dream_job_dirs(home):
+    """Output folders of the cron jobs that run the dream gates (their logs hold the payload)."""
+    data = _json_file(os.path.join(home, "cron", "jobs.json"), {})
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    out = []
+    for job in jobs or []:
+        script = os.path.basename(str((job or {}).get("script") or ""))
+        if script in DREAM_JOB_SCRIPTS and job.get("id"):
+            out.append(os.path.join(home, "cron", "output", str(job["id"])))
+    return out
+
+
+@contextlib.contextmanager
+def _sweep_lock(home):
+    """One writer of the dream's state at a time: the nightly pass and the forget gate both rewrite it. POSIX
+    advisory lock on cache/dream-state.lock; a no-op where fcntl does not exist."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    path = os.path.join(home, "cache", "dream-state.lock")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def forget_sweep(db=None, home=None):
+    """Clean this skill's copies of facts the store has forgotten (see the section comment). Every run looks for
+    every tombstone again, so a copy written back by a pass that loaded the fact before it was forgotten, or a
+    file that could not be removed last time, is caught on the next run; with nothing left the run changes
+    nothing. Also refreshes the diary index from the current facts, so a fact forgotten later can still be found
+    in old lines. `errors` lists what could not be cleaned (the gate then fails and is retried)."""
+    home = home or HOME
+    tombstones = load_forgotten(db)
+    index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
+    state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    store = db or (fact_store_path() if fact_source() == "holographic" else None)
+    if store and os.path.exists(store):
+        try:
+            update_diary_index(index_path, _load_holographic(store))
+        except (sqlite3.Error, OSError) as exc:
+            print(f"[dream] warn: diary index not updated: {exc}", file=sys.stderr)
+    state = _json_file(state_path, {}) if state_path else {}
+    state_before = json.dumps(state, sort_keys=True)
+    done = state.setdefault("swept", {})
+    new = sorted(str(i) for i in tombstones if str(i) not in done)
+    summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
+               "diary_lines": 0, "cron_logs": 0, "errors": []}
+    if not tombstones:
+        return summary
+    ids = {str(i) for i in tombstones}
+    live = _json_file(index_path, {}) if index_path else {}
+    index = {i: {"previews": sorted(set((done.get(i) or {}).get("previews") or [])
+                                    | set((live.get(i) or {}).get("previews") or []))} for i in ids}
+    fingerprints = {fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])} \
+        | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
+
+    payload_path = os.path.join(home, "cache", "dream.json")
+    payload = _json_file(payload_path, {})
+    if payload:
+        summary["payload"] = _drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
+        if summary["payload"]:
+            _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+    rejected_path = _state_default("DREAM_REJECTED_STATE", "rejected")
+    rejected = _json_file(rejected_path, {}) if rejected_path else {}
+    gone = [k for k, rec in rejected.items()
+            if k in fingerprints or (isinstance(rec, dict) and str(rec.get("fact_id")) in ids)]
+    for key in gone:
+        rejected.pop(key)
+    if gone:
+        summary["rejected"] = len(gone)
+        _write_private(rejected_path, json.dumps(rejected, ensure_ascii=False, indent=1) + "\n")
+
+    seen_path = _state_default("DREAM_SEEN_STATE", "seen")
+    seen = _json_file(seen_path, {}) if seen_path else {}
+    for name, bucket in seen.items():
+        if name == "_pending" and isinstance(bucket, dict):
+            for key, values in (bucket.get("seen") or {}).items():
+                if isinstance(values, list):
+                    kept = [v for v in values if v not in fingerprints]
+                    summary["seen"] += len(values) - len(kept)
+                    bucket["seen"][key] = kept
+        elif isinstance(bucket, dict):
+            for key in [k for k, v in bucket.items()
+                        if k in fingerprints or (isinstance(v, dict) and str(v.get("fact_id")) in ids)]:
+                bucket.pop(key)
+                summary["seen"] += 1
+    if summary["seen"]:
+        _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
+
+    diary = os.path.join(home, DIARY_PATH)
+    for path in (diary, diary + ".archive.md"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            summary["errors"].append(f"{path}: {exc}")
+            continue
+        cleaned, removed = scrub_diary_text(text, ids, index)
+        if removed:
+            summary["diary_lines"] += removed
+            _write_private(path, cleaned)
+
+    pattern = re.compile(r'"fact_id"\s*:\s*"?(\d+)\b')
+    for folder in _dream_job_dirs(home):
+        try:
+            names = os.listdir(folder)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            summary["errors"].append(f"{folder}: {exc}")
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    mentioned = set(pattern.findall(f.read()))
+                if mentioned & ids:
+                    os.remove(path)
+                    summary["cron_logs"] += 1
+            except OSError as exc:
+                summary["errors"].append(f"{path}: {exc}")
+
+    # The hashes move from the index to the sweep state: they keep finding copies written back later, and the
+    # owner of another copy of the diary (a git backup) cleans it by them (forgotten_diary_index); not text.
+    stamp = _now().isoformat(timespec="seconds")
+    for i in ids:
+        record = done.setdefault(i, {"at": stamp})
+        record["previews"] = index[i]["previews"]
+        record["fingerprints"] = sorted(set(record.get("fingerprints") or [])
+                                        | set((live.get(i) or {}).get("fingerprints") or []))
+    if index_path and any(i in live for i in ids):
+        for i in ids:
+            live.pop(i, None)
+        _write_private(index_path, json.dumps(live, ensure_ascii=False))
+    if state_path and json.dumps(state, sort_keys=True) != state_before:
+        _write_private(state_path, json.dumps(state, ensure_ascii=False))
+    return summary
+
+
+def forgotten_diary_index(ids):
+    """{fact_id: {"previews": [...]}} for *ids*: from the sweep state once swept, else from the diary index —
+    what scrub_diary_text needs to clean another copy of the diary (a backup) of those facts."""
+    index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
+    state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    index = _json_file(index_path, {}) if index_path else {}
+    swept = (_json_file(state_path, {}) if state_path else {}).get("swept") or {}
+    out = {}
+    for i in (str(x) for x in ids):
+        previews = set(((swept.get(i) if isinstance(swept.get(i), dict) else None) or {}).get("previews") or [])
+        previews |= set((index.get(i) or {}).get("previews") or [])
+        out[i] = {"previews": sorted(previews)}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3099,6 +3468,9 @@ def main(argv=None):
                          "short plain-text report; writes nothing (no state, no diary)")
     ap.add_argument("--explain", default=None, metavar="FACT_ID",
                     help="print the score breakdown of one fact and exit")
+    ap.add_argument("--forget-sweep", action="store_true",
+                    help="only clean the copies of facts the store has forgotten (holographic >= 0.8.0) "
+                         "and print what was removed; every pass does this first")
     args = ap.parse_args(argv)
 
     if args.hermes_home:
@@ -3139,23 +3511,45 @@ def main(argv=None):
         print(dry_run_summary(result, fact_source()))
         return 0
 
-    result = run(window, corr, md_days, mem_md,
-                 asked_state_path=asked or None,
-                 rejected_state_path=rejected or None,
-                 seen_state_path=seen or None,
-                 snapshot_state_path=snapshot or None)
-
-    text = json.dumps(result, ensure_ascii=False, indent=2)
-    if args.out in ("-", "", None):
-        print(text)
-    else:
-        _write_private(args.out, text)
-    if args.diary:
+    # Forgotten facts first: the pass must not re-read a cooldown or a reject record of a fact that is gone,
+    # and the diary index must hold every fact before today's lines are written.
+    def sweep(when):
         try:
-            append_diary(args.diary, result["diary"])
-        except OSError as e:
-            # The JSON is already out; a diary hiccup must not turn into dream_error.
-            print(f"[dream] warn: diary not written: {e}", file=sys.stderr)
+            swept = forget_sweep()
+        except Exception as e:  # noqa: BLE001 — a sweep hiccup must not cost the night's pass
+            swept = {"errors": [f"{type(e).__name__}: {e}"]}
+        if not args.forget_sweep and (swept.get("errors") or any(
+                swept.get(k) for k in ("payload", "rejected", "seen", "diary_lines", "cron_logs"))):
+            print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
+        return swept
+
+    with _sweep_lock(HOME):
+        swept = sweep("before the pass")
+        if args.forget_sweep:
+            print(json.dumps(swept, ensure_ascii=False))
+            return 1 if swept.get("errors") else 0
+
+        result = run(window, corr, md_days, mem_md,
+                     asked_state_path=asked or None,
+                     rejected_state_path=rejected or None,
+                     seen_state_path=seen or None,
+                     snapshot_state_path=snapshot or None)
+
+        scrub_result(result)  # a fact forgotten while the pass ran never reaches its output
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.out in ("-", "", None):
+            print(text)
+        else:
+            _write_private(args.out, text)
+        if args.diary:
+            try:
+                append_diary(args.diary, result["diary"])
+            except OSError as e:
+                # The JSON is already out; a diary hiccup must not turn into dream_error.
+                print(f"[dream] warn: diary not written: {e}", file=sys.stderr)
+        # A fact forgotten in the instant between the check above and the writes: the next sweep (this one,
+        # or the gate's) finds it.
+        sweep("after the pass")
 
     st = result["stats"]
     print(f"[dream] facts:{st['facts']} messages:{st['messages_window']} promote:{st['promotions']} "
