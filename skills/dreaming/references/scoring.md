@@ -188,6 +188,31 @@ and a few misses trip the core's per-turn consolidation guard, which silently
 costs the whole night's writes. So the anchor is handed over ready to copy, and
 `SKILL.md` makes `add` the default and `replace` conditional on having one.
 
+## Per-chat fact stores (`chat_stores`, 2.6.0)
+
+With holographic `scope: user / chat / thread` every chat (topic, user) has its own database next to
+`db_path` (`holographic-chats/<platform>-<chat id>[-t<thread>].db`, `holographic-users/…`; the file name is the
+plugin's own `_safe_part`, reproduced in `store_key()`). Memory files are one for all chats, so reading those
+databases into the pass would carry one chat's facts into every chat — hence two separate switches:
+
+- `chat_stores.read: true` — an overview of every database: facts and new ones in the theme window, promoted or
+  not. Counted by SQL — no text is read, none is shown, nor any id. `chat_stores` in the JSON, one line in the
+  diary.
+- `chat_stores.promote_from: ["telegram:-100123", "telegram:-100123:42", "telegram:12345"]` — the chats
+  (thread scope: topics; user scope: users) whose facts join the pass like the shared store's. Each such fact
+  is corroborated **only by messages of its own chat** (topic; with user scope — sessions of that user, the
+  session owner standing for the author in a group), and a listed chat's messages that the trust rules leave
+  out (`trusted_chat_ids`) count for its own facts and nothing else — not shared facts, memory entries or
+  themes. Ids become `"<store>#<id>"`, items carry `store`; no `keywords_needed` / `trust_feedback` for them
+  (a cron session cannot write a chat's database). Their tombstones are swept like the shared store's — also
+  after the chat leaves the list (the sweep remembers every store it was given), and one unreadable chat database
+  is reported as an error without stopping the others.
+
+Extraction stays with the shared store. A listed chat that has no database yet is reported as `missing`. The trust
+rules are untouched: a chat in `trusted_chat_ids`, and with `trust_private_chats` every private chat, still
+corroborates shared facts and memory entries and shows up as evidence in the report — on a bot that serves many
+unrelated people, list only the owner's chats there and set `trust_private_chats: false`.
+
 ## Feeding the store (`dream-extract-precheck.py`)
 
 **When the store cannot fill up.** holographic with `scope: user`, `chat` or `thread` keeps facts in a

@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.5.3
+version: 2.6.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
@@ -73,6 +73,8 @@ in each of them (`references/scoring.md`, "Every language").
 | `memory_pressure` | consolidate the file it names before adding anything |
 | `quarantined` | one line: how many and why; never retell, restore or request the content |
 | `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
+| `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
+| `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
 | `alerts` (`memory_loss`) | one line, ask whether it was intended; restore nothing |
 | `dream_error` | reply `⚠️ Nightly dream failed: <reason>` and stop |
 

@@ -102,8 +102,11 @@ def fetch_content(fact_id):
     d = _dream()
     try:
         # holographic: resolve the store against this script's HERMES_HOME.
-        facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"
-                 else d.load_facts())
+        if "#" in str(fact_id):  # "<chat store>#<id>" of a promoted chat store (chat_stores, 2.6.0)
+            facts = d.load_chat_facts(HOME)
+        else:
+            facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"
+                     else d.load_facts())
     except (OSError, ValueError, sqlite3.Error):
         return None
     for f in facts:

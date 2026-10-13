@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.6.0 — 2026-10-13
+
+### Added
+
+- **Per-chat fact stores** (`chat_stores`). holographic with `scope: user / chat / thread` keeps a database per
+  user / chat / topic, which the dream did not read. Two separate switches now: `read` lists every database in
+  the report and the diary as counts (facts, new in the window; counted by SQL) — no text, no ids; `promote_from`
+  (`"telegram:-100123"`, `"telegram:-100123:42"` for a topic, `"telegram:12345"` for a user, or the file name) makes
+  the facts of those chats candidates like the shared store's. Each such fact is corroborated only by messages of
+  its own chat (topic; for a user, sessions of that user), and a listed chat's messages that the trust rules leave
+  out count for nothing else. Their ids are `"<store>#<id>"` and items carry `store`: the agent writes them only
+  through `memory` (a cron session cannot reach a chat's database), they get no `keywords_needed` or
+  `trust_feedback`, and their tombstones are swept like the shared store's (`--explain` and `dream-reject.py` take
+  the composite id). Off by default: nothing changes for a single shared store (the output gains no keys, and
+  `fact_store_note` from 2.5.3 now appears only when there is a note). Reviewed by Codex before release: the sweep
+  remembers every store it was given (a chat leaving the list is still swept), one unreadable chat database no
+  longer stops the others, message keys strip ids as the plugin does, a forgotten fact leaves `duplicates` too,
+  chat facts are indexed without a shared store, `dream-reject.py` resolves a chat id without reading the shared
+  store, and the overview counts by SQL instead of reading every text. Trust rules are unchanged — a trusted chat
+  (or, with `trust_private_chats`, a private one) still corroborates shared facts; the README says how to set a
+  multi-tenant bot.
+
+### Changed
+
+- Test fixtures no longer use the maintainer's family names.
+
 ## 2.5.3 — 2026-10-13
 
 ### Added

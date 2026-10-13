@@ -164,6 +164,13 @@ DEFAULT_CONFIG = {
     # holographic >= 0.6.1 — 0.6.0 stamped a fact "changed now" when it got
     # keywords, and old facts came back as new ones.
     "keywords": {"enabled": False, "cap": 10},
+    # holographic `scope: user / chat / thread` keeps facts in one database per user / chat / topic, which the
+    # dream does not read by default: one chat's facts would reach memory every chat sees. `read` lists every
+    # such database in the report (counts only — no text, no ids); `promote_from` names the chats whose facts
+    # join the pass like the shared store's — "<platform>:<chat id>", "<platform>:<chat id>:<thread id>" with
+    # scope thread, "<platform>:<user id>" with scope user, or the database's file name. Their facts are
+    # corroborated only by messages of their own chat (or user), and their messages corroborate nothing else.
+    "chat_stores": {"read": False, "promote_from": []},
     "state": {"asked": "cache/dream-asked.json",
               "rejected": "cache/dream-rejected.json",
               "seen": "cache/dream-seen.json",
@@ -331,8 +338,13 @@ def fact_store_note(home=None):
     know — not because nothing was said (external review, 2026-10-13)."""
     if fact_source() != "holographic":
         return None
-    scope = (_hermes_plugin_setting("scope", home) or "profile").strip().lower()
+    scope = holographic_scope(home)
     if scope in SPLIT_SCOPES:
+        read, keys = chat_stores_settings()
+        if read or keys:
+            return (f"holographic runs with scope: {scope} — the dream reads the databases per {SPLIT_SCOPES[scope]} "
+                    f"through chat_stores ({'an overview of all, ' if read else ''}facts of {len(keys)} listed "
+                    "promoted); a cron job writes nothing, so the extraction job stays asleep")
         return (f"holographic runs with scope: {scope} — facts go to a separate database per {SPLIT_SCOPES[scope]}, "
                 "which the dream does not read (it would carry one chat's facts into memory every chat sees), and a "
                 "cron job writes nothing, so the shared store stays as it is; the memory-file review still works. "
@@ -342,6 +354,164 @@ def fact_store_note(home=None):
         return ("holographic cron_writes is false — the extraction job cannot store candidate facts, so only facts "
                 "the agent saves in ordinary turns reach the dream")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Per-chat / per-user fact stores (holographic scope: user / chat / thread)
+# ---------------------------------------------------------------------------
+# The databases sit next to `db_path`: holographic-users/<key>.db (scope user) or holographic-chats/<key>.db
+# (chat, thread). Read-only, like the shared store. Only `promote_from` stores give facts to the pass; their ids
+# become "<key>#<id>" — never mistaken for a shared-store id, and a fact_store call with one fails instead of
+# touching another fact (a cron session cannot reach a chat's database anyway).
+CHAT_STORE_DIRS = {"user": "holographic-users", "chat": "holographic-chats", "thread": "holographic-chats"}
+FACT_ID_RE = re.compile(r"(?:[A-Za-z0-9_.-]+#)?\d+")
+
+
+def holographic_scope(home=None):
+    """`plugins.hermes-memory-store.scope` of Hermes config.yaml, lower case; "profile" when unset."""
+    return (_hermes_plugin_setting("scope", home) or "profile").strip().lower()
+
+
+def store_key(platform, ident, thread=None):
+    """The file stem holographic gives the store of a chat / thread / user — its `_safe_part`, verbatim."""
+    value = f"{platform or 'unknown'}-{ident}" + (f"-t{thread}" if thread else "")
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", value)[:60]
+    return safe if safe == value else f"{safe}-{hashlib.sha256(value.encode()).hexdigest()[:10]}"
+
+
+def _promote_key(raw):
+    """"telegram:-100123" / "telegram:-100123:42" → the store key; a file name or key passes as it is."""
+    raw = str(raw or "").strip()
+    if raw.endswith(".db"):
+        raw = raw[:-3]
+    parts = raw.split(":")
+    if len(parts) in (2, 3) and parts[0] and parts[1]:
+        return store_key(parts[0], parts[1], parts[2] if len(parts) == 3 and parts[2] else None)
+    return raw
+
+
+def chat_stores_settings():
+    """(read, {promoted store keys}) of the `chat_stores` config."""
+    cfg = CONFIG.get("chat_stores") or {}
+    if not isinstance(cfg, dict):
+        return False, set()
+    keys = {_promote_key(r) for r in (cfg.get("promote_from") or []) if str(r or "").strip()}
+    return cfg.get("read") is True, keys
+
+
+def chat_store_dir(home=None):
+    """(folder of the per-chat / per-user databases, scope), or (None, scope) when there is none to read."""
+    scope = holographic_scope(home)
+    if fact_source() != "holographic" or scope not in CHAT_STORE_DIRS:
+        return None, scope
+    base = fact_store_path(home)
+    return (os.path.join(os.path.dirname(base), CHAT_STORE_DIRS[scope]) if base else None), scope
+
+
+def list_chat_stores(home=None):
+    """{store key: path} of the per-chat / per-user databases, sorted by key."""
+    folder, _scope = chat_store_dir(home)
+    if not folder or not os.path.isdir(folder):
+        return {}
+    return {n[:-3]: os.path.join(folder, n) for n in sorted(os.listdir(folder)) if n.endswith(".db")}
+
+
+def load_chat_facts(home=None):
+    """Facts of the `promote_from` stores: ids "<key>#<id>", each with `store`. A store that cannot be read is
+    skipped with a warning — the rest of the pass goes on."""
+    _read, keys = chat_stores_settings()
+    if not keys:
+        return []
+    stores = list_chat_stores(home)
+    out = []
+    for key in sorted(keys & set(stores)):
+        try:
+            rows = _load_holographic(stores[key])
+        except sqlite3.Error as exc:
+            print(f"[dream] warn: chat store {key} unreadable: {exc}", file=sys.stderr)
+            continue
+        for row in rows:
+            row["fact_id"] = f"{key}#{row['fact_id']}"
+            row["store"] = key
+            out.append(row)
+    return out
+
+
+def load_all_facts(home=None):
+    """The shared store's facts and those of the promoted chat stores."""
+    return load_facts() + load_chat_facts(home)
+
+
+def chat_stores_overview(window_days, home=None):
+    """What every per-chat / per-user database holds — counts only, never text or ids: `read` shows all of them,
+    otherwise only the promoted ones. None when `chat_stores` is off."""
+    read, keys = chat_stores_settings()
+    if not read and not keys:
+        return None
+    folder, scope = chat_store_dir(home)
+    if not folder:
+        return {"scope": scope, "stores": [], "missing": sorted(keys),
+                "note": "holographic scope is not user / chat / thread — there are no per-chat databases"}
+    stores = list_chat_stores(home)
+    # Counted by SQL: a farm may hold thousands of databases, and the overview must not read their texts.
+    cutoff = (_now() - timedelta(days=window_days)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for key, path in stores.items():
+        if not read and key not in keys:
+            continue
+        try:
+            c = _conn(path)
+            try:
+                total, new = c.execute("select count(*), coalesce(sum(created_at > ?), 0) from facts",
+                                       (cutoff,)).fetchone()
+            finally:
+                c.close()
+        except sqlite3.Error:
+            rows.append({"store": key, "error": "unreadable", "promote": key in keys})
+            continue
+        rows.append({"store": key, "facts": total, "new": new, "promote": key in keys})
+    return {"scope": scope, "stores": rows, "missing": sorted(keys - set(stores))}
+
+
+def _message_store(source, chat_id, thread_id, user_id, scope):
+    """The store key the turn of a message wrote to, under *scope*; None without a chat (or user)."""
+    # The plugin strips the ids before they become a file name (`_user_key`, `_chat_key`); so must this.
+    if scope == "user":
+        user = str(user_id or "").strip()
+        return store_key(source, user) if user else None
+    chat = str(chat_id or "").strip()
+    if not chat:
+        return None
+    thread = str(thread_id or "").strip() if scope == "thread" else ""
+    return store_key(source, chat, thread or None)
+
+
+def _own_store_message(source, chat_id, thread_id):
+    """A message of a promoted chat that the trust rules leave out still corroborates its own chat's facts —
+    unless it is machine speech or from an excluded thread."""
+    if (source or "") in UNTRUSTED_SOURCES:
+        return False
+    tid, cid = str(thread_id or ""), str(chat_id or "")
+    return not (tid and tid in EXCLUDED_THREADS.get(cid, ()))
+
+
+def messages_for(fact, messages, by_store=None):
+    """The messages that may corroborate *fact*: its own store's for a chat-store fact, the trusted ones else."""
+    store = fact.get("store")
+    if by_store is not None:
+        return by_store.get(store, []) if store else by_store.get(None, [])
+    if store:
+        return [m for m in messages if m.get("store") == store]
+    return [m for m in messages if not m.get("own_only")]
+
+
+def messages_by_store(messages):
+    """{store key: its messages, None: the trusted messages} for messages_for()."""
+    out = {None: [m for m in messages if not m.get("own_only")]}
+    for m in messages:
+        if m.get("store"):
+            out.setdefault(m["store"], []).append(m)
+    return out
 
 
 FACT_SOURCES = ("holographic", "none", "sqlite", "jsonl")
@@ -793,7 +963,7 @@ def sig_tokens(text):
 
     Reply quotes and voice transcripts are unwrapped BEFORE bracket blocks are
     cut: a family reply to a message about an entry is a mention of the entry
-    (otherwise a short "yes, still Honda" gives 0 tokens and the dream asks the
+    (otherwise a short "yes, still Vespa" gives 0 tokens and the dream asks the
     same thing every night). Other [..] blocks (sender tags, [id=N], image
     descriptions) are still cut as metadata."""
     raw = text or ""
@@ -801,7 +971,7 @@ def sig_tokens(text):
     # "ок" under a quoted cron report used to corroborate everything the report
     # mentioned — including the entries it proposed to drop (external review,
     # 2026-10-07). The live case that put the unwrapping here ("Да, всё ещё
-    # Honda") keeps working: its tail has its own tokens.
+    # Vespa") keeps working: its tail has its own tokens.
     tail = VOICE_QUOTE_RE.sub(" ", REPLY_QUOTE_RE.sub(" ", raw))
     tail_tokens = _raw_tokens(tail)
     quoted = " ".join(m.group(1) for m in REPLY_QUOTE_RE.finditer(raw))
@@ -1049,7 +1219,8 @@ def load_messages(db, days):
                 "m.session_id"]
         if sess_cols:
             cols += ["s.source", "s.chat_type", "s.chat_id",
-                     "s.thread_id" if "thread_id" in sess_cols else "null"]
+                     "s.thread_id" if "thread_id" in sess_cols else "null",
+                     "s.user_id" if "user_id" in sess_cols else "null"]
             join = " left join sessions s on m.session_id = s.id"
         else:
             # No usable `sessions` table: the source of a message is unknown.
@@ -1060,7 +1231,7 @@ def load_messages(db, days):
             # same config switch as any other session lacking chat metadata.
             print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
                   "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
-            cols += ["null", "null", "null", "null"]
+            cols += ["null", "null", "null", "null", "null"]
             join = ""
         sql = (f"select {', '.join(cols)} from messages m{join} "
                f"where {' and '.join(where)}")
@@ -1073,15 +1244,24 @@ def load_messages(db, days):
     finally:
         c.close()
     seen_rows = set()
+    # Promoted chat stores: each message learns which store its turn wrote to, so a chat-store fact is
+    # corroborated by its own chat only; a promoted chat's message outside the trusted list counts for nothing else.
+    _read, promote = chat_stores_settings() if fact_source() == "holographic" else (False, set())
+    scope = holographic_scope() if promote else "profile"
     for row in rows:
         mid, role, content, ts, observed, sid = row[:6]
-        source, chat_type, chat_id, thread_id = row[6:10]
+        source, chat_type, chat_id, thread_id, user_id = row[6:11]
         if not sess_cols and str(sid or "").startswith("cron_"):
             source = "cron"
         if not content or not (role == "user" or observed == 1):
             continue
+        store = _message_store(source, chat_id, thread_id, user_id, scope) if promote else None
+        own_only = False
         if not _trusted_message(source, chat_type, chat_id, thread_id):
-            continue
+            if store in promote and _own_store_message(source, chat_id, thread_id):
+                own_only = True
+            else:
+                continue
         if is_harness_envelope(content):
             continue
         if any(p.search(content) for p in EXCLUDE_PATTERNS):
@@ -1095,7 +1275,8 @@ def load_messages(db, days):
             continue
         seen_rows.add(key)
         out.append({"id": mid, "content": content, "ts": ts, "day": _day_of(ts),
-                    "tokens": sig_tokens(content)})
+                    "tokens": sig_tokens(content), "store": store if store in promote else None,
+                    "own_only": own_only})
     return out
 
 
@@ -2926,8 +3107,10 @@ def memory_usage(mem_md):
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
     state_db = os.path.join(HOME, "state.db")
-    facts = load_facts()
-    messages = load_messages(state_db, corr_days)
+    facts = load_all_facts()
+    all_messages = load_messages(state_db, corr_days)
+    by_store = messages_by_store(all_messages)
+    messages = by_store[None]  # the trusted ones: shared facts, memory entries, themes
     memory_text = load_durable_memory_text(mem_md)
     rejected = load_rejected(rejected_state_path)
     now = _now()
@@ -2950,7 +3133,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
 
     scored = []
     for f in facts:
-        score, sig, meta = signals_for_fact(f, messages)
+        score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store))
         scored.append({**f, "score": score, "signals": sig, "meta": meta,
                        "unsafe": classify_unsafe(f["content"]),
                        "in_memory": already_in_memory(f["content"], memory_text),
@@ -3064,7 +3247,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # Rejected facts the store still trusts: offer the one call that teaches
     # retrieval. Shown at most once per cooldown, and never on a source without
     # the tool.
-    feedback_pending = trust_feedback_items(suppressed, rejected, fact_source())
+    # Chat-store facts get neither call: a cron session cannot reach a chat's database.
+    feedback_pending = trust_feedback_items([s for s in suppressed if not s.get("store")], rejected, fact_source())
     feedback_fresh = unseen(feedback_pending, seen_feedback, now)
     # Only the shown slice is marked, so what the cap cuts off is not suppressed
     # — it simply comes tomorrow. The counter means "resting", nothing else.
@@ -3076,7 +3260,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # expired facts are not offered — `safe` already left them out. A fact the
     # agent found nothing for rests like any shown item instead of coming back
     # every night; one that got keywords simply leaves the list.
-    keywords_pending = keywords_needed_items(safe, fact_source())
+    keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], fact_source())
     keywords_fresh = unseen(keywords_pending, seen_keywords, now)
     keywords_needed = keywords_fresh[:KEYWORDS_CAP]
 
@@ -3121,9 +3305,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     if queue_alert:
         alerts.append(queue_alert)
     store_note = fact_store_note()
+    chat_stores = chat_stores_overview(window_days)
     diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
                         ephemeral_events, quarantined, len(suppressed), conflicts=published_conflicts,
-                        alerts=alerts, note=store_note)
+                        alerts=alerts, note=store_note, chat_stores=chat_stores)
 
     memory_sources = load_durable_memory_sources(mem_md)
 
@@ -3137,7 +3322,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     for d in md_dec:
         d.pop("key", None)  # internal handle, not for the agent
 
-    return {
+    result = {
         "generated_at": generated_at,
         "window_days": window_days, "corr_window_days": corr_days, "md_decay_days": md_decay_days,
         "weights": WEIGHTS,
@@ -3174,7 +3359,6 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "alerts": len(alerts)},
         "memory_usage": usage,
         # Why the fact store cannot fill up (holographic scope / cron_writes), or None. Not work: never opens the gate.
-        "fact_store_note": store_note,
         "alerts": alerts,
         "promotions": [_pub_near(s) for s in published_promotions],
         "new_facts": [_pub_near(s) for s in new_facts],
@@ -3193,6 +3377,12 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "quarantined": [_pub_quarantined(s) for s in quarantined[:PUBLISH_CAP]],
         "diary": diary,
     }
+    # Present only when there is something to say: a single shared store keeps the output it always had.
+    if store_note:
+        result["fact_store_note"] = store_note  # why the fact store cannot fill up; not work
+    if chat_stores:
+        result["chat_stores"] = chat_stores  # per-chat databases: counts, which are promoted, which are missing
+    return result
 
 
 def _pub_quarantined(s):
@@ -3223,6 +3413,13 @@ def _pub(s):
 
 
 def _pub_fields(s):
+    out = _pub_base(s)
+    if s.get("store"):
+        out["store"] = s["store"]  # a chat's own database: memory tool only, never fact_store / fact_feedback
+    return out
+
+
+def _pub_base(s):
     return {"fact_id": s["fact_id"], "content": s["content"], "category": s["category"],
             "tags": s["tags"], "score": s["score"], "signals": s["signals"],
             "days_old": s["meta"]["days_old"], "retrieval_count": s["meta"]["rc"],
@@ -3253,8 +3450,23 @@ def _safe_preview(text, n):
     return (text or "")[:n]
 
 
+def chat_stores_line(cs):
+    """One line on the per-chat databases: how many, how many facts, which are promoted, which are missing."""
+    rows = cs.get("stores") or []
+    total = sum(r.get("facts", 0) for r in rows)
+    new = sum(r.get("new", 0) for r in rows)
+    promoted = [r["store"] for r in rows if r.get("promote")]
+    line = (f"Chat stores ({cs.get('scope')}): {len(rows)} database(s), {total} fact(s), {new} new in the window"
+            + (f"; promoted: {', '.join(promoted)}" if promoted else "; none promoted"))
+    if cs.get("missing"):
+        line += f"; listed but not found: {', '.join(cs['missing'])}"
+    if cs.get("note"):
+        line += f" — {cs['note']}"
+    return line + "."
+
+
 def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephemeral_events=None,
-                quarantined=None, suppressed=0, conflicts=None, alerts=None, note=None):
+                quarantined=None, suppressed=0, conflicts=None, alerts=None, note=None, chat_stores=None):
     ephemeral_events = ephemeral_events or []
     quarantined = quarantined or []
     conflicts = conflicts or []
@@ -3264,6 +3476,8 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
         lines.append(f"⚠️ {a.get('message')}")
     if note:
         lines.append(f"ℹ️ {note}.")
+    if chat_stores and chat_stores.get("stores") is not None:
+        lines.append(chat_stores_line(chat_stores))
 
     def _line(p):
         if "meta" in p:
@@ -3405,13 +3619,13 @@ def append_diary(path, diary):
 # writes, kept for every fact while it still exists (the text is gone after the
 # forget, so the index is built ahead of time, on every pass and every sweep).
 
-DIARY_TAG_RE = re.compile(r"\s*\[#(\d+)\]")
+DIARY_TAG_RE = re.compile(r"\s*\[#((?:[A-Za-z0-9_.-]+#)?\d+)\]")
 DREAM_JOB_SCRIPTS = ("dream-precheck.py", "dream-extract-precheck.py")
 
 
 def _diary_tag(item):
     fact_id = item.get("fact_id")
-    return f" [#{fact_id}]" if isinstance(fact_id, int) or str(fact_id or "").isdigit() else ""
+    return f" [#{fact_id}]" if isinstance(fact_id, int) or FACT_ID_RE.fullmatch(str(fact_id or "")) else ""
 
 
 def _diary_text(text, n):
@@ -3443,12 +3657,42 @@ def _json_file(path, default):
     return data if isinstance(data, type(default)) else default
 
 
-def load_forgotten(db=None):
+def load_forgotten(db=None, errors=None):
     """{fact_id: forgotten_at} from the store's tombstones; {} when the source is not holographic, the store
     is missing, or the provider is older than 0.8.0 (no `forgotten` table)."""
     if fact_source() != "holographic" and not db:
         return {}
     path = db or fact_store_path()
+    try:
+        out = _tombstones(path)
+    except sqlite3.Error:  # the shared store, as before 2.6.0: unreadable = nothing to sweep this time
+        out = {}
+    if not db:  # and those of the chat stores promoted now or before, as "<key>#<id>"
+        stores = list_chat_stores()
+        for key in sorted(sweep_stores() & set(stores)):
+            try:
+                out.update({f"{key}#{i}": at for i, at in _tombstones(stores[key]).items()})
+            except sqlite3.Error as exc:  # one chat's database must not stop the others' sweep
+                if errors is not None:
+                    errors.append(f"{stores[key]}: {exc}")
+                else:
+                    print(f"[dream] warn: tombstones of chat store {key} unreadable: {exc}", file=sys.stderr)
+    return out
+
+
+def sweep_stores():
+    """Chat stores whose tombstones are read: the ones promoted now and every one promoted before — a fact copied
+    while its chat was listed must still be swept after the chat leaves the list (review 2026-10-13)."""
+    keys = set(chat_stores_settings()[1])
+    path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    if path:
+        keys |= set(_json_file(path, {}).get("stores") or [])
+    return keys
+
+
+def _tombstones(path):
+    """{fact_id: forgotten_at} of one holographic database ({} without one or without the table). An unreadable
+    database raises sqlite3.Error — the caller decides; a chat store's error is not "nothing was forgotten"."""
     if not path or not os.path.exists(path):
         return {}
     c = _conn(path)
@@ -3456,8 +3700,6 @@ def load_forgotten(db=None):
         if not c.execute("select 1 from sqlite_master where type='table' and name='forgotten'").fetchone():
             return {}
         return {int(r[0]): str(r[1]) for r in c.execute("select fact_id, forgotten_at from forgotten")}
-    except sqlite3.Error:
-        return {}
     finally:
         c.close()
 
@@ -3489,7 +3731,7 @@ def update_diary_index(path, facts):
     changed = False
     for f in facts:
         fid = str(f.get("fact_id"))
-        if not fid.isdigit() or not f.get("content"):
+        if not FACT_ID_RE.fullmatch(fid) or not f.get("content"):
             continue
         entry = index.setdefault(fid, {"previews": [], "fingerprints": []})
         previews = sorted(set(entry.get("previews") or []) | set(_preview_hashes(f["content"])))
@@ -3563,6 +3805,10 @@ def _drop_fact_items(node, ids):
             if isinstance(item, dict) and str(item.get("fact_id")) in ids:
                 removed += 1
                 continue
+            if isinstance(item, dict) and isinstance(item.get("duplicates"), list):
+                twins = [d for d in item["duplicates"] if str(d) not in ids]
+                removed += len(item["duplicates"]) - len(twins)
+                item["duplicates"] = twins
             removed += _drop_fact_items(item, ids)
             keep.append(item)
         node[:] = keep
@@ -3629,21 +3875,37 @@ def forget_sweep(db=None, home=None):
     nothing. Also refreshes the diary index from the current facts, so a fact forgotten later can still be found
     in old lines. `errors` lists what could not be cleaned (the gate then fails and is retried)."""
     home = home or HOME
-    tombstones = load_forgotten(db)
     index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    state = _json_file(state_path, {}) if state_path else {}
+    # Chat stores promoted now join the remembered ones before anything else, and the record is saved at once:
+    # their facts may already be in the payload, and the run may end early below.
+    promoted = sorted(set(state.get("stores") or []) | chat_stores_settings()[1])
+    if state_path and promoted != sorted(state.get("stores") or []):
+        state["stores"] = promoted
+        os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+        _write_private(state_path, json.dumps(state, ensure_ascii=False))
+    state_before = json.dumps(state, sort_keys=True)
+    store_errors = []
+    tombstones = load_forgotten(db, errors=store_errors)
+    facts = []
     store = db or (fact_store_path() if fact_source() == "holographic" else None)
     if store and os.path.exists(store):
         try:
-            update_diary_index(index_path, _load_holographic(store))
+            facts += _load_holographic(store)
         except (sqlite3.Error, OSError) as exc:
+            print(f"[dream] warn: diary index not updated for the shared store: {exc}", file=sys.stderr)
+    if not db:
+        facts += load_chat_facts(home)  # indexed even without a shared store (scope chat may have none)
+    if facts:
+        try:
+            update_diary_index(index_path, facts)
+        except OSError as exc:
             print(f"[dream] warn: diary index not updated: {exc}", file=sys.stderr)
-    state = _json_file(state_path, {}) if state_path else {}
-    state_before = json.dumps(state, sort_keys=True)
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
-               "diary_lines": 0, "cron_logs": 0, "errors": []}
+               "diary_lines": 0, "cron_logs": 0, "errors": store_errors}
     if not tombstones:
         return summary
     ids = {str(i) for i in tombstones}
@@ -3702,7 +3964,7 @@ def forget_sweep(db=None, home=None):
             summary["diary_lines"] += removed
             _write_private(path, cleaned)
 
-    pattern = re.compile(r'"fact_id"\s*:\s*"?(\d+)\b')
+    pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
     for folder in _dream_job_dirs(home):
         try:
             names = os.listdir(folder)
@@ -3760,12 +4022,12 @@ def forgotten_diary_index(ids):
 
 def explain(fact_id, mem_md, corr_days):
     """`--explain ID`: per-signal breakdown of one fact (OpenClaw promote-explain)."""
-    facts = [f for f in load_facts() if str(f["fact_id"]) == str(fact_id)]
+    facts = [f for f in load_all_facts() if str(f["fact_id"]) == str(fact_id)]
     if not facts:
         print(f"fact {fact_id} not found", file=sys.stderr)
         return 1
     f = facts[0]
-    messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
+    messages = messages_for(f, load_messages(os.path.join(HOME, "state.db"), corr_days))
     memory_text = load_durable_memory_text(mem_md)
     score, sig, meta = signals_for_fact(f, messages)
     print(f"fact {fact_id}: {f['content'][:200]}")
@@ -3806,6 +4068,8 @@ def dry_run_summary(result, source):
         lines.append(f"memory: {usage}")
     if result.get("fact_store_note"):
         lines.append(f"note: {result['fact_store_note']}")
+    if result.get("chat_stores"):
+        lines.append(chat_stores_line(result["chat_stores"]))
 
     def facts(title, items, why=False):
         lines.append(f"{title}: {len(items)}")

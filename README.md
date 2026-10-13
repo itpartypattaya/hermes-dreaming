@@ -205,7 +205,7 @@ The dream consolidates *candidate* facts; where they come from is `fact_source` 
 
 | `fact_source` | where the facts are | extraction job | notes |
 |---|---|---|---|
-| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | enable with `memory.provider: holographic`; use **0.8.0 or later** — 0.2.0–0.7.x refuse every `fact_store` write from a cron job, so extraction and keywords store nothing (`install.py --check` warns). ⚠️ It **leaves the Hermes core on 2026-10-15** — after that install it as a plugin (the catalog entry, or the standalone [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic) copy, currently unmaintained). With holographic `scope: user / chat / thread` the facts live in per-user / per-chat files the dream does not read and a cron job stores nothing — the report says so; use `fact_source: none` there. Nothing else about this skill changes |
+| `holographic` (default) | the Hermes holographic provider's SQLite store (`memory_store.db`, or `plugins.hermes-memory-store.db_path`) | ✅ via `fact_store` | enable with `memory.provider: holographic`; use **0.8.0 or later** — 0.2.0–0.7.x refuse every `fact_store` write from a cron job, so extraction and keywords store nothing (`install.py --check` warns). ⚠️ It **leaves the Hermes core on 2026-10-15** — after that install it as a plugin (the catalog entry, or the standalone [NousResearch/hermes-plugin-holographic](https://github.com/NousResearch/hermes-plugin-holographic) copy, currently unmaintained). With holographic `scope: user / chat / thread` the facts live in per-user / per-chat files the dream does not read by default and a cron job stores nothing — the report says so; see [One database per chat](#one-database-per-chat). Nothing else about this skill changes |
 | `sqlite` | any SQLite table: `fact_store_path`, `fact_table`, `fact_columns` | — | for your own export; opened read-only |
 | `jsonl` | one JSON object per line: `fact_store_path`, `fact_columns` | — | the simplest export format |
 | `none` | no fact store | — | the memory files alone: "still relevant?", fill level, loss guard |
@@ -217,6 +217,27 @@ The dream consolidates *candidate* facts; where they come from is `fact_source` 
 Hosted providers (mem0, Honcho, Supermemory, RetainDB) extract and deduplicate facts on their own
 servers; reading them would need API keys in a cron job for little gain, so there is no adapter. If
 you still want the dream's corroboration over them, export to `jsonl`.
+
+### One database per chat
+
+holographic with `scope: chat`, `thread` or `user` keeps one database per chat (topic, user) — a bot that serves
+many unrelated groups keeps them apart. Memory files are one for all chats, so the dream does not read those
+databases unless told to, and then only in two steps:
+
+```json
+"chat_stores": {"read": true, "promote_from": ["telegram:-1001234567890", "telegram:-1001234567890:42"]}
+```
+
+- `read` — every database appears in the report as counts (facts, new ones): no text is read or shown, no ids.
+- `promote_from` — the chats (topics with `scope: thread`, users with `scope: user`) whose facts join the pass. Each
+  is corroborated **only by its own chat**, and that chat's messages corroborate nothing else. Once a promoted
+  fact is written to memory, every chat sees it — list only chats where that is what you want.
+
+Such items carry `store` and ids like `telegram--1001234567890#17`; the agent writes them only through `memory`
+(a cron session cannot reach a chat's database), and "forget it" is said in that chat. Extraction stays with the
+shared store. The trust rules do not change: chats in `trusted_chat_ids` (and private chats, unless
+`trust_private_chats: false`) still corroborate shared facts and memory entries — on a bot serving many unrelated
+people, trust only the owner's chats.
 
 ## Using it by hand
 
@@ -271,6 +292,7 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 | `memory_loss_alert_fraction` | loss-guard threshold (0.25) — applied to the share of lost entries **and** of lost characters |
 | `gates.promotion_cooldown_days` | rest for a promotion already shown (3 days); without it a candidate the agent could not write came back every night |
 | `keywords.enabled`, `keywords.cap` | list facts without keywords for the agent (`keywords_needed`, at most `cap` a night, default 10) and ask the extraction run for keywords. Off by default; turn it on with holographic ≥ 0.6.1 — an older provider ignores the parameter, and 0.6.0 re-dated a fact when it got keywords |
+| `chat_stores.read`, `chat_stores.promote_from` | holographic `scope: user / chat / thread` only: list every per-chat database (counts), promote the facts of the listed chats — see [One database per chat](#one-database-per-chat) |
 
 ## Safety and privacy
 
