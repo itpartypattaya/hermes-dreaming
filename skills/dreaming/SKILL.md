@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.4.0
+version: 2.5.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
@@ -16,7 +16,9 @@ humans actually said, proposes the few worth keeping, asks whether old memory en
 and warns before a memory file fills up. The script never writes memory and calls no LLM — you
 apply its proposals with the regular `memory` tool, and every candidate ends written or rejected.
 It does not extract facts by itself (an optional extraction job does) and never deletes anything — except
-its own copies of a fact the human asked to forget (holographic >= 0.8.0, see step 7c).
+its own copies of a fact the human asked to forget (holographic >= 0.8.0, see step 7c). It reads chats in the
+languages the holographic store reads — Chinese, Japanese, Korean and Thai by character n-grams — and dated events
+in each of them (`references/scoring.md`, "Every language").
 
 ## When to Use
 

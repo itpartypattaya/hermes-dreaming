@@ -461,7 +461,7 @@ def configure(cfg):
             EXCLUDE_PATTERNS.append(re.compile(str(pat), re.IGNORECASE))
         except re.error as exc:
             print(f"[dream] warn: exclude_patterns {pat!r} ignored: {exc}", file=sys.stderr)
-    STOPWORDS = set(RU_STOP) | set(EN_STOP)
+    STOPWORDS = set(RU_STOP) | set(EN_STOP) | OTHER_STOP | OTHER_TEMPORAL_STOP | OTHER_POLARITY_STOP
     STOPWORDS |= {_norm(w) for w in (cfg.get("agent_names") or []) if w}
     STOPWORDS |= {_norm(w) for w in (cfg.get("extra_stopwords") or []) if w}
     tml = cfg.get("token_min_len") or {}
@@ -531,6 +531,67 @@ some more very much been does were about into over only also which would could s
 here please today okay yes
 telegram thread threads topic topics chat chats group groups message messages channel
 https http www""".split())
+
+# The other languages the holographic store reads (German, Spanish, French, Portuguese, Italian, Dutch, Turkish,
+# Polish, Indonesian): function words of four letters and more — shorter ones never become tokens. Without them two
+# unrelated Polish lines met on «dobra» + «wieczorem», two Dutch ones on «gaat» + «naar» (2026-10-13). Words that
+# are also English content words («door», «data») are left out.
+OTHER_STOP = set("""aber alle allem allen aller alles also andere anderen auch beim bereits bitte bist bisschen dabei
+dafür daher damit dann darauf darum dass dein deine deinem deinen deiner denn dessen dich dies diese diesem diesen
+dieser dieses doch dort durch eine einem einen einer eines etwas euch euer eure für gegen gibt habe haben hast hatte
+hätte hier hinter ihm ihn ihnen ihre ihrem ihren ihrer immer jede jedem jeden jeder jedes jetzt kann kannst können
+könnte machen macht mein meine meinem meinen meiner mich muss müssen nach noch oder schon sehr sein seine seinem
+seinen seiner seit sich sind soll sollen sollte über unser unsere unter viel vielleicht warum weil welche welchen
+welcher wenn werden wieder wird wirklich wurde würde zwischen danke genau gerade
+algo algunos ahora antes aquí aquel así bien cada casi como contra cual cuál cuando cuándo cuánto desde después donde
+dónde durante ella ellas ellos entonces entre eran eres esta está están estar estas este esto estos fuera gracias
+hace hacer hasta hola mismo mucho nosotros nuestra nuestro otra otro para pero poco porque puede pueden quien quién
+sido sobre solo sólo somos también tanto tener tengo tiene tienen todo todos usted vamos vale será siempre esos esas
+bueno
+alors après aussi autre avant avec avoir beaucoup bonjour cela celle celui cette chez comme comment dans depuis donc
+elle elles encore être fait faire faut leur leurs mais merci même notre nous parce pendant peut pour pourquoi quand
+quel quelle quelque sera serait sont sous suis tout toute toutes tous très vous votre vers voilà ceci ceux
+agora ainda algum alguma aqui assim até então essa esse está estão estou isso isto mesmo muito nossa nosso obrigado
+obrigada onde outra outro pela pelo pode porquê qual quem também têm tenho tudo você vocês sempre
+anche ancora avere bene cosa così dalla dalle dallo degli della delle dello dove dopo ecco essere fare grazie hanno
+loro mentre molto nella nelle nello nostro nostra ogni allora perché però poco quale quanto quello quella questo
+questa sono stato stata tanto tutti tutto vostro ciao fino
+alle alles altijd ander andere omdat beetje bijna daar daarom deze doen dus eens hebben heeft iets jouw kunnen maar
+moet moeten naar onze waar wanneer waarom welke willen worden wordt zijn zich zou zullen alsjeblieft bedankt gaan gaat
+ancak artık bana beni benim bile biraz bize bizim bunu bunun böyle diye için kadar nasıl neden nerede niye olan
+olarak oldu olur onun senin sizin şimdi sonra önce lütfen teşekkürler teşekkür tamam evet gibi
+albo bardzo będzie było była były cały coś czemu dlaczego dlatego gdzie jaki jaka jakie jego jest jestem jeszcze
+każdy kiedy która które który mamy może można mnie nasz nasza nawet przez również siebie sobie także tego tutaj
+tylko wszystko wtedy więc zawsze żeby dziękuję proszę dobra dobrze teraz
+adalah akan anda apakah atau bagaimana bahwa banyak bisa boleh dalam dari dengan jadi juga kalau kami kamu karena
+kenapa kita mana masih mereka nanti oleh pada para saja sama sangat saya sedang sekali sudah tapi untuk terima kasih
+""".split())
+# Months and today / tomorrow / yesterday in those languages and in English: not a topic for corroboration (two
+# texts dated "November" are not about one thing — a German November dentist visit corroborated a remark about the
+# November rain), but significant for the store-duplicate check, like RU_TEMPORAL_STOP.
+OTHER_TEMPORAL_STOP = set("""january february march april june july august september october november december
+januar februar märz juni juli oktober dezember heute morgen gestern
+enero febrero marzo abril mayo junio julio agosto septiembre setiembre octubre noviembre diciembre hoy mañana ayer
+janvier février mars avril juin juillet août septembre octobre novembre décembre aujourd demain hier
+janeiro fevereiro março maio junho julho setembro outubro novembro dezembro hoje amanhã ontem
+gennaio febbraio aprile maggio giugno luglio settembre ottobre dicembre oggi domani ieri
+januari februari maart augustus vandaag gisteren
+ocak şubat mart nisan mayıs haziran temmuz ağustos eylül ekim kasım aralık bugün yarın
+styczeń stycznia luty lutego marzec marca kwiecień kwietnia maja czerwiec czerwca lipiec lipca sierpień sierpnia
+wrzesień września październik października listopad listopada grudzień grudnia dzisiaj jutro wczoraj
+maret juni agustus desember besok kemarin""".split())
+# Negations and comparatives: stopwords for corroboration, significant for the store-duplicate check (RU_POLARITY_STOP).
+OTHER_POLARITY_STOP = set("""nicht kein keine keinen keiner niemals ohne mehr weniger
+nunca nada nadie ningún ninguna jamás menos más
+jamais rien personne sans moins plus
+nenhum nenhuma mais
+niente nessuno senza meno più
+niet geen nooit niets zonder meer minder
+değil asla
+nigdy żaden więcej mniej
+tidak bukan belum tanpa lebih kurang""".split())
+TEMPORAL_STOP = RU_TEMPORAL_STOP | OTHER_TEMPORAL_STOP
+POLARITY_STOP = RU_POLARITY_STOP | OTHER_POLARITY_STOP
 
 
 def _conn(path):
@@ -623,6 +684,58 @@ def strip_urls(text):
 
 TOKEN_RE = re.compile(r"[^\W\d_][\w\-]*", re.UNICODE)
 
+# Scripts written without spaces between words. A Chinese, Japanese or Thai sentence is one regex "word", so two
+# texts about the same thing shared no token and nothing in these languages was ever corroborated (0 of 30
+# questions found their fact, 2026-10-13). Such runs are compared by character n-grams instead, as the holographic
+# store compares them: pairs for Chinese/Japanese and Korean, triples for Thai, Lao, Khmer and Myanmar, whose
+# characters are letters. Korean is written with spaces, but its particles stick to the word (레나는 = Lena + topic).
+_HAN_KANA = "々぀-ヿㇰ-ㇿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ"
+_HANGUL = "가-힯"
+_SEA = "฀-໿က-႟ក-៿"
+UNSEGMENTED_RE = re.compile(f"[{_HAN_KANA}]+|[{_HANGUL}]+|[{_SEA}]+")
+_SEA_RE = re.compile(f"[{_SEA}]")
+_HIRAGANA_RE = re.compile("[぀-ゟ]+")
+_HAN_RE = re.compile("[々㐀-䶿一-鿿豈-﫿]")
+# Chinese function characters (particles, pronouns, question words, auxiliaries) and Japanese particles: a pair
+# made only of them (什么, 我们, には) carries no topic and is dropped; a pair with one of them counts half.
+CJK_FUNCTION = frozenset("的是了吗呢吧啊呀哦嗯么怎什哪谁几多少在有和与及或就都也还要会能可以把被给让对为从到这那你我他她它们个一不没很太"
+                         "該應些嘛們這個嗎麼還讓從對為會說說来來裡里"
+                         "はがをにのでともへやかねよなだ")
+# Thai function words: a triple inside one of them carries no topic.
+TH_FUNCTION = sorted(set("""ของ ที่ และ ใน กับ ไม่ ได้ จะ แล้ว ไหม อะไร ยังไง อย่างไร คือ เป็น มี ให้ ครับ ค่ะ คะ นะ เลย ด้วย
+    แบบ ไหน เท่าไหร่ กี่ ว่า ก็ หรือ แต่ จาก ถึง เรา ฉัน ผม คุณ เขา นี้ นั้น หน่อย ควร วันนี้ พรุ่งนี้ เมื่อวาน""".split()),
+                     key=len, reverse=True)
+# Whole runs that are chat fillers ("ok", "thanks", "yes"): no n-grams at all.
+FILLER_RUNS = frozenset("""はい うん ええ いいえ 了解 了解です りょうかい オーケー ありがとう ありがとうございます お願い
+    お願いします よろしく そう そうです わかった わかりました 好的 好 谢谢 謝謝 没问题 對 对 是的 嗯嗯 哈哈 哈哈哈
+    네 예 응 아니 아니요 좋아 좋아요 그래 그래요 알겠어 알겠어요 알겠습니다 오케이 고마워 고마워요 감사 감사합니다
+    ครับ ค่ะ คะ นะ จ้ะ จ้า โอเค ได้ ได้เลย ใช่ ขอบคุณ ขอบคุณครับ ขอบคุณค่ะ ขอบคุณมาก""".split())
+
+
+def is_gram(token):
+    """True for an n-gram of unsegmented script (see UNSEGMENTED_RE), False for a word."""
+    return bool(token) and UNSEGMENTED_RE.match(token[0]) is not None
+
+
+def gram_weight(gram):
+    """How much one shared n-gram is worth: 1, or ½ with a function character / all kana, 0 for no topic."""
+    if _SEA_RE.match(gram):
+        return 0.0 if any(gram in w for w in TH_FUNCTION) else 1.0
+    if _HIRAGANA_RE.fullmatch(gram):
+        return 0.5
+    hits = sum(c in CJK_FUNCTION for c in gram)
+    return 0.0 if hits == len(gram) else 0.5 if hits else 1.0
+
+
+def run_grams(run):
+    """Content n-grams of one unsegmented run; a run of one character (a lone 猫 between Latin words) gives none."""
+    if run in FILLER_RUNS:
+        return set()
+    n = 3 if _SEA_RE.match(run) else 2
+    if len(run) < n:
+        return set()
+    return {g for g in (run[i:i + n] for i in range(len(run) - n + 1)) if gram_weight(g) > 0}
+
 
 def _keep_token(tok):
     if tok in STOPWORDS:
@@ -633,9 +746,14 @@ def _keep_token(tok):
 
 
 def _raw_tokens(text):
-    """Significant tokens of an already unwrapped string (brackets are metadata)."""
+    """Significant tokens of an already unwrapped string (brackets are metadata): words, and the n-grams of the
+    runs of unsegmented script (cut out first, so "HR24的老板" gives the word "hr24" and the pair "老板")."""
     low = re.sub(r"\[[^\]]*\]", " ", strip_urls(_fold(text))).lower()
-    return {w for w in TOKEN_RE.findall(low) if _keep_token(w)}
+    grams = set()
+    for run in UNSEGMENTED_RE.findall(low):
+        grams |= run_grams(run)
+    words = {w for w in TOKEN_RE.findall(UNSEGMENTED_RE.sub(" ", low)) if _keep_token(w)}
+    return words | (grams - STOPWORDS)
 
 
 def sig_tokens(text):
@@ -960,6 +1078,87 @@ DISTINCTIVE_LATIN = 8
 DISTINCTIVE_OTHER = 10
 
 
+# Shared n-grams count by the stretches of text they cover, not one by one: the three pairs of アントン are one
+# name, as "Anton" is one word. Pairs that chain (アン → ント → トン) are one shared stretch; a mention needs two
+# stretches, or a stretch and a word — as it needs two shared words in spaced scripts. A stretch of a name alone
+# would otherwise corroborate every fact about that person. A stretch with only half-weight n-grams (a particle
+# glued to a name, ンは) counts half; a long stretch is rare enough to count alone, as a long word does.
+DISTINCTIVE_GRAMS = {"cjk": 5, "hangul": 4, "sea": 6}
+
+
+def _gram_script(gram):
+    return "sea" if _SEA_RE.match(gram) else "hangul" if "가" <= gram[0] <= "힯" else "cjk"
+
+
+def gram_stretches(grams):
+    """Groups of n-grams that chain into one stretch of text (each overlaps the next by all but one character)."""
+    grams = set(grams)
+    nxt = defaultdict(set)
+    for g in grams:
+        for h in grams:
+            if g != h and g[1:] == h[:-1]:
+                nxt[g].add(h)
+                nxt[h].add(g)
+    seen, out = set(), []
+    for g in sorted(grams):
+        if g in seen:
+            continue
+        group, todo = set(), [g]
+        while todo:
+            x = todo.pop()
+            if x not in group:
+                group.add(x)
+                todo.extend(nxt[x] - group)
+        seen |= group
+        out.append(group)
+    return out
+
+
+def _mentions(shared):
+    """Whether a shared set of stems is a mention: two words or stretches of n-grams, or one long stretch (a rare
+    shared word is checked by the caller, see DISTINCTIVE_PREFIX_LATIN)."""
+    score = sum(1 for s in shared if not is_gram(s))
+    for group in gram_stretches(s for s in shared if is_gram(s)):
+        if len(group) >= DISTINCTIVE_GRAMS[_gram_script(next(iter(group)))]:
+            return True
+        weight = max(gram_weight(g) for g in group)
+        # Chinese writes several words without a break (搬到清迈 = "move to Chiang Mai"): a stretch of Han
+        # characters weighs one word per two characters; kana, Hangul and Thai stretches are mostly one word.
+        if any(_HAN_RE.search(g) for g in group):
+            weight *= max(1.0, (len(group) + 1) / 2)
+        elif len(group) == 1 and _SEA_RE.match(next(iter(group))):
+            # Three Thai letters are a piece of a word as often as a word (น้ำ "water" sits in ห้องน้ำ
+            # "bathroom" and in ว่ายน้ำ "swim"): alone they weigh half (blind Thai set, 4.4 % false, 2026-10-13).
+            weight *= 0.5
+        score += weight
+    return score >= 2
+
+
+# One shared rare word is a mention only when the two words share more than the 5-letter stem: «commercial» is
+# rare, but its stem «comme» is also the stem of «comment» and «commence», «Schauinsland» shares «schau» with
+# «schaut», «gidiyoruz» shares «gidiy» with every "we go" (French 3,3 % false mentions, 2026-10-13). Six letters
+# keep «Lissabon»/«Lissabone», «transcription»/«transcribe». Cyrillic keeps its stem (endings are cut, not a prefix).
+DISTINCTIVE_PREFIX_LATIN = 6
+
+
+# Days of the week are long words in most languages (Dienstag, понедельник, niedziela) but never rare: a weekday
+# still counts as one shared word, never as a rare one that is a mention alone.
+WEEKDAY_PREFIXES = tuple("""понедельник вторник среда среду среды четверг пятниц суббот воскресен
+monday tuesday wednesday thursday friday saturday sunday
+montag dienstag mittwoch donnerstag freitag samstag sonnabend sonntag
+lunes martes miércoles jueves viernes sábado domingo lundi mardi mercredi jeudi vendredi samedi dimanche
+segunda-feira terça-feira quarta-feira quinta-feira sexta-feira lunedì martedì mercoledì giovedì venerdì sabato domenica
+maandag dinsdag woensdag donderdag vrijdag zaterdag zondag pazartesi çarşamba perşembe cumartesi
+poniedział wtorek wtorki środa środy środę czwart piąt sobot niedziel senin selasa kamis jumat sabtu""".split())
+
+
+def _distinctive_stem(token):
+    """(script, stem) — tagged, so a Latin prefix never meets the stem of a mixed token: «telegram_react» and
+    «telegram-юзернейм» share six letters, not a word (live data, 2026-10-13)."""
+    latin = latin_fold(token)
+    return ("latin", latin[:DISTINCTIVE_PREFIX_LATIN]) if latin.isascii() else ("other", _stem(token))
+
+
 def corroborate(item_tokens, messages, evidence=False):
     """How many different days / messages mention the token set.
 
@@ -976,12 +1175,15 @@ def corroborate(item_tokens, messages, evidence=False):
     if not item_tokens:
         return (0, 0, None, []) if evidence else (0, 0, None)
     item_stems = _stems(item_tokens)
-    distinctive = {_stem(t) for t in item_tokens
-                   if len(t) >= (DISTINCTIVE_LATIN if t.isascii() else DISTINCTIVE_OTHER)}
+    distinctive = {_distinctive_stem(t) for t in item_tokens if not is_gram(t)
+                   and len(t) >= (DISTINCTIVE_LATIN if latin_fold(t).isascii() else DISTINCTIVE_OTHER)
+                   and not t.startswith(WEEKDAY_PREFIXES)}
     days, mentions, last_ts, samples = set(), 0, None, []
     for m in messages:
         inter = item_stems & _stems(m["tokens"])
-        if len(inter) >= 2 or (inter & distinctive):
+        rare = bool(distinctive) and not distinctive.isdisjoint(
+            _distinctive_stem(t) for t in m["tokens"] if not is_gram(t))
+        if rare or _mentions(inter):
             mentions += 1
             # A message still counts as a mention, but its text travels to the
             # agent only when it is clean: the fact was screened by
@@ -1191,10 +1393,30 @@ STEM_CHARS_OTHER = 6
 STEM_MIN_ROOT = 4
 
 
-def _stem(token):
-    """One crude stem for fuzzy comparison. Latin keeps the old 5-char prefix."""
+# Latin letters that do not decompose into a base letter and a diacritic.
+_LATIN_FOLD = str.maketrans({"ł": "l", "ı": "i", "ß": "ss", "ø": "o", "æ": "ae", "œ": "oe", "đ": "d", "ħ": "h",
+                             "þ": "th", "ð": "d"})
+
+
+def latin_fold(token):
+    """The token without diacritics when it is written in Latin letters (szkoła → szkola, öğretmen → ogretmen,
+    Größe → grosse); any other token unchanged. One word must not get two stems because one of its forms happens
+    to be plain ASCII and another is not: «szkoła»/«szkole» were "szkoła"/"szkol" — never the same word."""
     if token.isascii():
-        return token[:STEM_CHARS_LATIN]
+        return token
+    plain = "".join(c for c in unicodedata.normalize("NFKD", token.translate(_LATIN_FOLD))
+                    if not unicodedata.combining(c))
+    return plain if plain.isascii() else token
+
+
+def _stem(token):
+    """One crude stem for fuzzy comparison. Latin (diacritics folded) keeps the old 5-char prefix; an n-gram of
+    unsegmented script is its own stem."""
+    if is_gram(token):
+        return token
+    latin = latin_fold(token)
+    if latin.isascii():
+        return latin[:STEM_CHARS_LATIN]
     t = token
     for suf in RU_SUFFIXES:
         if len(t) - len(suf) >= STEM_MIN_ROOT and t.endswith(suf):
@@ -1330,7 +1552,10 @@ def already_in_memory(content, memory_text, token_threshold=0.62):
 # agent decides, the entry is never rewritten by the script.
 CONFLICT_MIN_OVERLAP = 0.45
 CONFLICT_MIN_SHARED = 4
-NUMBER_RE = re.compile(r"(?<![\w.])\d[\d.,:/-]*\d(?![\w])|(?<!\w)\d(?!\w)")
+# A number's edge is a letter of a spaced alphabet: Chinese, Japanese, Korean and Thai write it right against
+# the words (每月500美元, ราคา800บาท), and with a bare \w edge those texts had no numbers at all — so no conflicts.
+_NUM_EDGE = f"(?![{_HAN_KANA}{_HANGUL}{_SEA}])"
+NUMBER_RE = re.compile(rf"(?<!{_NUM_EDGE}[\w.])\d[\d.,:/-]*\d(?!{_NUM_EDGE}\w)|(?<!{_NUM_EDGE}\w)\d(?!{_NUM_EDGE}\w)")
 
 
 # A fact that opens with its own date stamp ("2026-06-19 X said that …") is
@@ -1347,29 +1572,63 @@ THOUSANDS_RE = re.compile(r"(?<=\d)[\s\u00a0\u202f,](?=\d{3}(?!\d))")
 # A month said in words is as much a "number" as 15.04 — otherwise moving
 # «15 марта» to «15 апреля» changed nothing comparable, and the fuzzy dedupe
 # swallowed it as "already in memory" (external review, 2026-10-07).
-MONTH_WORD_TO_NUM = {
-    "январ": "01", "феврал": "02", "март": "03", "апрел": "04", "ма": "05",
-    "июн": "06", "июл": "07", "август": "08", "сентябр": "09", "октябр": "10",
-    "ноябр": "11", "декабр": "12",
-    "january": "01", "february": "02", "march": "03", "april": "04", "may": "05",
-    "june": "06", "july": "07", "august": "08", "september": "09", "october": "10",
-    "november": "11", "december": "12",
-    "jan": "01", "feb": "02", "mar": "03", "apr": "04", "jun": "06", "jul": "07",
-    "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
-}
-MONTH_WORD_RE = re.compile(
-    r"(?<!\w)(" + "|".join(sorted(MONTH_WORD_TO_NUM, key=len, reverse=True)) + r")\w*", re.I)
+# Month names of the other languages the holographic store reads, with the forms a date takes («14 listopada»,
+# «14 Kasım'da», «14 de noviembre»); English is here too for the day-first order («14 November»).
+OTHER_MONTHS = {}
+for _num, _names in enumerate((
+        "january jan januar enero janvier janeiro gennaio januari ocak styczeń stycznia",
+        "february feb februar febrero février fevereiro febbraio februari şubat luty lutego",
+        "march mar märz marzo mars março maart mart marzec marca maret",
+        "april apr abril avril aprile nisan kwiecień kwietnia",
+        "may mai mayo maio maggio mei mayıs maj maja",
+        "june jun juni junio juin junho giugno haziran czerwiec czerwca",
+        "july jul juli julio juillet julho luglio temmuz lipiec lipca",
+        "august aug agosto août augustus ağustos sierpień sierpnia agustus",
+        "september sep sept septiembre setiembre septembre setembro settembre eylül wrzesień września",
+        "october oct oktober octubre octobre outubro ottobre ekim październik października",
+        "november nov noviembre novembre novembro kasım listopad listopada",
+        "december dec dezember diciembre décembre dezembro dicembre aralık grudzień grudnia desember"), 1):
+    for _name in _names.split():
+        OTHER_MONTHS[_name] = _num
+OTHER_MONTHS_RE = "|".join(sorted(map(re.escape, OTHER_MONTHS), key=len, reverse=True))
+# A day before the month: «14 November», «14. November», «14th of November», «14 de noviembre (de 2026)».
+DAY_MONTH_RE = re.compile(
+    rf"\b(\d{{1,2}})(?:st|nd|rd|th|er|º|\.)?\s+(?:de\s+|of\s+)?({OTHER_MONTHS_RE})\b(?:\.?,?\s+(?:de\s+)?(\d{{4}}))?",
+    re.IGNORECASE)
+# Chinese / Japanese 11月14日 (2026年11月14日), Korean 11월 14일: no \b — the digits touch the characters.
+CJK_DATE_RE = re.compile(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号號]")
+KO_DATE_RE = re.compile(r"(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+# Month names as markers `month:MM`, so "the 12th of May" and "the 12th of June" differ. Whole words only: the
+# old prefixes made «мама», «машина», «Марина», "maybe" and "market" months too. Words that are also ordinary
+# ones ("may", Spanish "mar", the names Maja and Mei) count only next to a day number, i.e. inside a date.
+RU_MONTH_WORD_RE = re.compile(
+    r"(?<!\w)(январ|феврал|апрел|июн|июл|сентябр|октябр|ноябр|декабр)[ьяею]?(?!\w)"
+    r"|(?<!\w)(март|август)[ае]?(?!\w)|(?<!\w)(ма)[йяе](?!\w)", re.IGNORECASE)
+RU_MONTH_NUM = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5, "июн": 6, "июл": 7, "август": 8,
+                "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
+AMBIGUOUS_MONTHS = frozenset("may mar mai maj maja mart mei jan sep dec".split())
+OTHER_MONTH_WORD_RE = re.compile(rf"(?<!\w)({OTHER_MONTHS_RE})(?!\w)", re.IGNORECASE)
 
 
 def _month_markers(text):
-    """`month:MM` for every month named in words."""
-    out = set()
-    for m in MONTH_WORD_RE.finditer(text or ""):
-        key = m.group(1).lower()
-        num = MONTH_WORD_TO_NUM.get(key)
-        if num:
-            out.add(f"month:{num}")
-    return out
+    """`month:MM` for every month named in words (and for 11月 / 11월 in a date)."""
+    text = text or ""
+    nums = set()
+    for m in RU_MONTH_WORD_RE.finditer(text):
+        nums.add(RU_MONTH_NUM[next(g for g in m.groups() if g).lower()])
+    for m in OTHER_MONTH_WORD_RE.finditer(text):
+        word = m.group(1).lower()
+        if word not in AMBIGUOUS_MONTHS:
+            nums.add(OTHER_MONTHS[word])
+    for m in DAY_MONTH_RE.finditer(text):
+        nums.add(OTHER_MONTHS[m.group(2).lower()])
+    for m in EN_DATE_RE.finditer(text):
+        nums.add(EN_MONTHS[m.group(1).lower()[:3]])
+    for regex in (CJK_DATE_RE, KO_DATE_RE):
+        for m in regex.finditer(text):
+            if 1 <= int(m.group(2)) <= 12:
+                nums.add(int(m.group(2)))
+    return {f"month:{n:02d}" for n in nums}
 
 
 def _numbers(text):
@@ -1445,7 +1704,7 @@ def _store_duplicates(a, b):
     if len(wa & wb) < STORE_DUP_MIN_SHARED:
         return False
     stop = {s.replace("ё", "е")
-            for s in STOPWORDS - RU_TEMPORAL_STOP - RU_POLARITY_STOP}
+            for s in STOPWORDS - TEMPORAL_STOP - POLARITY_STOP}
     for mine, other in ((wa - wb, wb), (wb - wa, wa)):
         other_stems = {_stem(w) for w in other if len(w) >= 5}
         for w in mine:
@@ -1642,6 +1901,9 @@ THAI_MONTHS_RE = (r"มกราคม|กุมภาพันธ์|มีน�
 # Thai alternatives are deliberately outside `\b`: Thai has no spaces between
 # words and `\b` needs a \w/non-\w boundary, so `\bสอบ\b` never matched «สอบ»
 # inside «การสอบ» and Thai school messages were never seen as temporary events.
+# Words that make a dated fact a one-off event (an appointment, an exam, a meeting, a flight, a deadline, a thing to
+# bring). Latin and Cyrillic stems take any ending; Chinese, Japanese, Korean and Thai words are matched anywhere —
+# those scripts have no spaces (or glue particles to the word), so a \b never falls where it should.
 EPHEMERAL_HINTS_RE = re.compile(
     r"\b(?:тест\w*|контрольн\w*|экзамен\w*|экскурс\w*|дедлайн\w*|"
     r"встреч\w*|созвон\w*|звонок|совещани\w*|собеседовани\w*|"
@@ -1650,24 +1912,54 @@ EPHEMERAL_HINTS_RE = re.compile(
     r"meeting|call|flight|appointment|interview|"
     r"test|exam\w*|deadline\w*|field\s+trip|bring|submit|prepare|"
     r"sight\s+words?|страниц\w*|лист\w*\s+для\s+чтени\w*|"
-    r"завтра|сегодня|послезавтра|принести|сдать|подготовить)\b"
-    r"|(?:สอบ|กำหนดส่ง|ทัศนศึกษา|นำมา|ส่ง)",
+    r"завтра|сегодня|послезавтра|принести|сдать|подготовить|"
+    r"termin|termine|terminen|arzttermin\w*|prüfung\w*|klassenarbeit\w*|klausur\w*|besprechung\w*|abflug|flug|frist|"
+    r"abgabe\w*|mitbringen|abgeben|elternabend\w*|"
+    r"cita|citas|examen\w*|prueba\w*|reunión|reuniones|vuelo\w*|plazo\w*|entrega\w*|traer|entregar|excursión|"
+    r"rendez-vous|contrôle\w*|réunion\w*|vol|échéance\w*|apporter|rendre|sortie\s+scolaire|"
+    r"consulta\w*|prova\w*|exame\w*|reunião|reuniões|voo\w*|prazo\w*|levar|trazer|excursão|"
+    r"appuntament\w*|esam\w*|verifica\w*|riunion\w*|volo|voli|scadenz\w*|portare|consegna\w*|gita|"
+    r"afspra\w*|toets\w*|vergadering\w*|vlucht\w*|meenemen|inleveren|schoolreis\w*|"
+    r"randevu\w*|sınav\w*|toplantı\w*|uçuş\w*|teslim\w*|getir\w*|götür\w*|gezi\w*|"
+    r"wizyt\w*|sprawdzian\w*|egzamin\w*|kartkówk\w*|spotkani\w*|przynieś\w*|oddać|wycieczk\w*|"
+    r"janji|ujian|ulangan|rapat|pertemuan|penerbangan|tenggat|bawa|kumpulkan|karyawisata|"
+    r"dentist|doctor|trip|flies|fly|due|стоматолог\w*|врач\w*|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
+    r"llevar|dentista|médico|último\s+dia|colloqui\w*|uçağ\w*|uçak|son\s+ödeme|son\s+gün|dentyst\w*|"
+    r"wylot\w*|lot\s+do|zebrani\w*|\w*toets\w*|ouderavond\w*|tandarts\w*|jadwal|batas|dikumpulkan)\b"
+    # a deadline: "until / by / before" and a day («до 1 декабря», «bis 30. Nov», «30/11'e kadar»)
+    r"|\b(?:до|until|by|before|till|bis|bis\s+zum|antes\s+del?|hasta\s+el|avant\s+le|até|entro\s+il|entro|"
+    r"tot|uiterlijk|do|sebelum)\s+\d{1,2}(?!\d)|\d{1,2}(?:[./]\d{1,2})?\S*\s+(?:\w+\s+)?kadar\b"
+    r"|(?:สอบ|กำหนดส่ง|ทัศนศึกษา|นำมา|ส่ง|นัด|ประชุม|เที่ยวบิน|"
+    r"予約|テスト|試験|会議|打ち合わせ|フライト|締め切り|締切|持って|提出|遠足|"
+    r"预约|預約|约了|約了|考试|考試|测验|測驗|会议|會議|航班|截止|带上|帶上|提交|春游|秋游|"
+    r"예약|시험|회의|비행|마감|가져|제출|소풍|고사|상담|까지|"
+    r"参観|健康診断|検診|出張|の便|歯医者|までに|复查|復查|复诊|復診|体检|體檢|飞|飛|家长会|家長會|之前|以前|"
+    r"วัคซีน|บิน|ภายใน)",
     re.IGNORECASE,
 )
+# 14.11, 14/11, 14-11-2026, Korean 12. 31.; the digits may touch Chinese, Japanese or Thai (奶奶11/23上午).
+NUMERIC_DATE_RE = re.compile(
+    rf"(?<!{_NUM_EDGE}[\w.])(?<!-)(\d{{1,2}})(?:[./-]|\.\s)(\d{{1,2}})(?:[./-](\d{{2,4}}))?(?!{_NUM_EDGE}\w)(?!-\d)")
 DATED_RE = re.compile(
     rf"\b\d{{1,2}}\s+(?:{MONTHS_RE})(?:\s+\d{{4}})?\b|"
     r"\b\d{4}-\d{2}-\d{2}\b|"
-    r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|"
+    rf"{NUMERIC_DATE_RE.pattern}|"
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    r"\s+\d{1,2}(?:,?\s+\d{4})?\b|"
-    rf"\b\d{{1,2}}\s+(?:{THAI_MONTHS_RE})(?:\s+\d{{4}})?\b",
+    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b|"
+    rf"\b\d{{1,2}}\s+(?:{THAI_MONTHS_RE})|"
+    rf"{DAY_MONTH_RE.pattern}|{CJK_DATE_RE.pattern}|{KO_DATE_RE.pattern}",
     re.IGNORECASE,
 )
 RELATIVE_DATE_RE = re.compile(
     r"\b(?:сегодня|завтра|послезавтра|на этой неделе|на следующей неделе|"
-    r"today|tomorrow|this week|next week)\b"
-    r"|(?:วันนี้|พรุ่งนี้|มะรืน)",
+    r"today|tomorrow|this week|next week|"
+    r"heute|morgen|übermorgen|nächste\s+woche|hoy|mañana|pasado\s+mañana|la\s+semana\s+que\s+viene|"
+    r"aujourd'hui|demain|après-demain|la\s+semaine\s+prochaine|hoje|amanhã|depois\s+de\s+amanhã|"
+    r"oggi|domani|dopodomani|la\s+settimana\s+prossima|vandaag|overmorgen|volgende\s+week|"
+    r"bugün|yarın|öbür\s+gün|gelecek\s+hafta|dzisiaj|dziś|jutro|pojutrze|w\s+przyszłym\s+tygodniu|"
+    r"hari\s+ini|besok|lusa|minggu\s+depan)\b"
+    r"|(?:วันนี้|พรุ่งนี้|มะรืน|今天|明天|后天|後天|今日|明日|明後日|来週|下周|下週|오늘|내일|모레|다음\s*주)",
     re.IGNORECASE,
 )
 
@@ -1695,11 +1987,12 @@ THAI_MONTHS = {"มกราคม": 1, "กุมภาพันธ์": 2, "�
 
 ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 RU_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({MONTHS_RE})(?:\s+(\d{{4}}))?\b", re.IGNORECASE)
+# Month names whole ("Dec", "December"), not any word that starts like one: "mardi 10", "Marina 5" and "Mark 3"
+# used to be March dates. A day may carry its suffix ("Dec 17th").
 EN_DATE_RE = re.compile(
-    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})"
-    r"(?:,?\s+(\d{4}))?\b", re.IGNORECASE)
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:uary|ruary|ch|il|e|y|ust|t|tember|ober|ember)?\.?"
+    r"\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b", re.IGNORECASE)
 THAI_DATE_RE = re.compile(rf"(\d{{1,2}})\s+({THAI_MONTHS_RE})(?:\s+(\d{{4}}))?")
-NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b")
 
 
 def _resolve_year(year, month, day, today):
@@ -1746,6 +2039,16 @@ def extract_event_dates(text, today):
         got = _safe_date(year, month, int(day), today) if month else None
         if got:
             certain.append(got)
+    for day, month_word, year in DAY_MONTH_RE.findall(text):
+        month = OTHER_MONTHS.get(month_word.lower())
+        got = _safe_date(year, month, int(day), today) if month else None
+        if got:
+            certain.append(got)
+    for regex in (CJK_DATE_RE, KO_DATE_RE):
+        for year, month, day in regex.findall(text):
+            got = _safe_date(year, int(month), int(day), today)
+            if got:
+                certain.append(got)
     for day, month_word, year in THAI_DATE_RE.findall(text):
         month = THAI_MONTHS.get(month_word)
         got = _safe_date(year, month, int(day), today) if month else None
@@ -1879,6 +2182,12 @@ def user_profile_hint(fact):
     return bool(PROFILE_HINT_RE and PROFILE_HINT_RE.search(_norm(fact.get("content"))))
 
 
+def _theme_gram(gram):
+    """An n-gram that can stand for a theme: a pair of Han characters with no function character (学校, 牙医) —
+    usually a word. Kana, Hangul and Thai n-grams are pieces of words (アン, 나는, รีย) and are left out."""
+    return all(_HAN_RE.match(c) for c in gram) and gram_weight(gram) == 1.0
+
+
 def extract_themes(messages, window_days):
     cutoff = _now().timestamp() - window_days * 86400
     doc_freq = defaultdict(int)
@@ -1887,6 +2196,8 @@ def extract_themes(messages, window_days):
         if m["ts"] < cutoff:
             continue
         for w in m["tokens"]:
+            if is_gram(w) and not _theme_gram(w):
+                continue
             doc_freq[w] += 1
             samples.setdefault(w, m["content"][:120])
     themes = [{"theme": w, "mentions": n, "sample": samples[w]}

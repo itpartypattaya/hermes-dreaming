@@ -49,6 +49,34 @@ same statement said differently («переехали» / «переехал», 
 «Лиссабон»). `_stem()` strips the frequent endings and then cuts to 6 chars
 (5 for Latin) — a plain prefix cut collapsed «контент» and «контейнер».
 
+**Every language the holographic store reads (2.5.0).** Latin words are stemmed
+without diacritics («szkoła» / «szkole», «öğretmen» / «ogretmeni» — one form
+was ASCII and the other not, and they never met). A rare word is a mention alone
+only when the two words share **6 letters**, not the 5-letter stem («comment» is
+not «commercial», «schaut» is not «Schauinsland»), and only within one script
+(«telegram_react» is not «telegram-юзернейм»); a weekday is never rare. Function
+words of German, Spanish, French, Portuguese, Italian, Dutch, Turkish, Polish and
+Indonesian are stopwords, months and today / tomorrow of all of them (and English
+months) are temporal stopwords like the Russian ones. **Chinese, Japanese,
+Korean, Thai** (and Lao, Khmer, Myanmar) have no spaces between words — a
+sentence was one token and nothing was ever corroborated. Their runs are compared
+by character n-grams, as the holographic store compares them: pairs for
+Han/kana and Hangul, triples for the Southeast Asian scripts; pairs made only of
+function characters (什么, 我们, には) and filler runs (ありがとう, ขอบคุณ) are
+dropped, a pair with one function character or of hiragana counts half. Shared
+n-grams count by the **stretch** of text they cover: the pairs that chain
+(アン → ント → トン) are one shared word, so a name alone is not a mention; a Han
+stretch weighs one word per two characters (搬到清迈 is "move to Chiang Mai"),
+a stretch of 5 pairs (6 for Thai triples, 4 for Hangul) counts alone, like a rare
+word. Themes take only Han pairs without function characters — kana, Hangul and
+Thai n-grams are pieces of words. Known gaps: Traditional and Simplified Chinese
+are not folded into one another (the holographic store does that with its OpenCC
+table), and store duplicates in these scripts collapse only when identical.
+Measured on the holographic language benches (2026-10-13, tuned on them) — a
+message mentions its fact: zh 10 → 86 %, ja 15 → 90 %, ko 0 → 90 %, th 20 →
+80 %; fr false mentions 3.3 → 0.6 %; ru / en unchanged; on the live data of the
+author's household (ru/en) the only change was one fewer mention for two entries.
+
 **Tokenizer** — Unicode words (`[^\W\d_][\w\-]*`) over NFC-normalized text with
 ё→е, Latin ≥4 chars, others ≥5, minus built-in RU/EN stopwords, `agent_names`
 and `extra_stopwords`. Short words (`Илья`, `сын`, `дом`) do drop out — raise
@@ -204,8 +232,12 @@ the dream.
   memory. Never in the prompt (noise), only in the full JSON.
 - **ephemeral_events** — dated tests/deadlines that passed scoring but are
   filtered out of promotions. **Expired events are dropped before the split
-  into sections** (RU/EN/Thai dates, Buddhist years, ambiguous 5/10 counted as
-  past only under every reading, relative anchors never expire).
+  into sections** (dates in words in Russian, English, German, Spanish, French,
+  Portuguese, Italian, Dutch, Turkish, Polish, Indonesian and Thai, 11月14日 and
+  11월 14일, Buddhist years, ambiguous 5/10 counted as past only under every
+  reading, relative anchors — today / tomorrow in each of these languages — never
+  expire). A dated fact is an event only with a trigger word (appointment, exam,
+  meeting, flight, deadline, bring … in each language): a birthday is not one.
 - **alerts** — `memory_loss`: more than `memory_loss_alert_fraction` (25%) of
   the entries present at the previous pass are gone (snapshot in
   `cache/dream-snapshot.json`). Wakes the agent; nothing is restored.

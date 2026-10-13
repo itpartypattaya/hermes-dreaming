@@ -19,15 +19,16 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 
 - **Corroboration from real conversations.** A fact counts only if humans mention it on distinct
   days. Cron prompts, compaction banners, URLs, untrusted chats and the agent's own threads never
-  corroborate anything.
+  corroborate anything. Works in the languages the holographic store reads: Chinese, Japanese,
+  Korean and Thai are compared by character n-grams, Latin languages by stems without diacritics.
 - **Scoring** with the OpenClaw weights (relevance, frequency, diversity, recency, consolidation,
   richness) plus a corroboration gate.
 - **Matching against memory.** Exact, declarative alias rules and stemmed containment in three
   directions; a candidate that repeats an entry with *different numbers* is a possible update
   (`conflicts`), not a duplicate. Every candidate carries the nearest entry, which file it lives in
   and a verbatim `old_text` anchor for `memory replace`.
-- **Screening.** Secrets and prompt-injection are quarantined, dated events expire (RU/EN/Thai
-  dates), near-identical facts in the store reach the agent once.
+- **Screening.** Secrets and prompt-injection are quarantined, dated events expire (dates
+  and event words in 15 languages, from «14 de noviembre» to 11月14日), near-identical facts in the store reach the agent once.
 - **A wake gate.** On a quiet night the cron job prints `{"wakeAgent": false}` and the model never
   starts. A memory file close to its char limit counts as work (`memory_pressure`) — the limit gates
   writes silently, so otherwise nobody notices until facts stop being recorded.

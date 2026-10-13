@@ -3,6 +3,52 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.5.0 — 2026-10-13
+
+Every language the holographic store reads (0.11.0 reads 18). The dream compared words with its own
+code, written for Russian and English: a Chinese, Japanese or Thai sentence was one token, so nothing
+in these languages was ever corroborated, and a dated appointment was recognised as a one-off event
+only in Russian, English and Thai.
+
+### Changed
+
+- **Chinese, Japanese, Korean, Thai** (and Lao, Khmer, Myanmar) are compared by character n-grams,
+  as the holographic store compares them: pairs for Han/kana and Hangul, triples for the Southeast
+  Asian scripts. Pairs of function characters (什么, 我们, には) and filler runs (ありがとう, ขอบคุณ)
+  are dropped. Shared n-grams count by the stretch of text they cover — the three pairs of アントン
+  are one name, so a name alone is not a mention; a Han stretch weighs a word per two characters, a
+  lone Thai triple half a word. Themes take only Han pairs that are words.
+- **Latin languages**: stems without diacritics (szkoła / szkole, öğretmen / ogretmeni were two
+  words), function words of German, Spanish, French, Portuguese, Italian, Dutch, Turkish, Polish and
+  Indonesian are stopwords, months and today / tomorrow of all of them temporal stopwords. One shared
+  rare word is a mention only when six letters match (not «comment» / «commercial»), within one
+  script, and a weekday is never rare.
+- **Dated one-off events in 15 languages**: dates in words in each of them («14. November», «14 de
+  noviembre», «14 Kasım'da», «14 listopada»), 11月14日, 11월 14일, 12. 31., numbers against unspaced
+  script (奶奶11/23上午), event words (appointment, exam, meeting, flight, deadline, bring …) and
+  deadlines («до 1 декабря», «bis 30. Nov», «30/11'e kadar», 之前, 까지, ภายใน).
+- **Numbers** next to Chinese, Japanese, Korean or Thai characters are numbers (每月500美元): those
+  texts had none, so a changed price was never a conflict.
+
+### Fixed
+
+- Month markers in the conflict check matched word starts: «мама», «машина», «Марина», "maybe" and
+  "market" were May or March. English month dates matched any word starting like a month ("mardi 10",
+  "Marina 5" were March dates); "Dec 17th" was not a date.
+
+### Measured
+
+Blind sets written by agents that never saw the code (15 languages, 12 facts, 24 mentions, 12
+unrelated lines, 6 events, 4 dated durable facts each), first run: a message finds its fact 56 → 72 %
+(ja 0 → 46, zh 0 → 54, ko 0 → 50, th 0 → 88 %; Latin unchanged or better), false mentions down in
+every Latin language; a one-off event is recognised in 6 → 53 of 90 cases, its date in 37 → 83, it
+expires the day after in 4 → 45; dated durable facts stay durable 60/60. After fixes from that run
+(not blind): Thai false mentions 4.4 → 1.0 % (mentions 71 %), events 88/90, dates 90/90, expiry 78/90
+— the rest are 3/12-style dates, which expire only when both readings have passed. On the author's
+live household data (Russian / English) the pass decides exactly as before. Known gaps: Traditional
+and Simplified Chinese are not folded into one another; store duplicates in unspaced scripts collapse
+only when identical.
+
 ## 2.4.0 — 2026-10-12
 
 Works with holographic 0.8.0, which keeps the history of every fact and makes "forget" final.
