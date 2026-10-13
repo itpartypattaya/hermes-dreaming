@@ -243,6 +243,11 @@ def check_jobs(home, check_only, r):
             r.warn("no dreaming cron jobs yet — create them with install_cron.py")
         return
     ic = _load_install_cron(home)
+    # Jobs made before 2.4.0 have no forget sweep: a fact the human asked to forget then waits for the night
+    # in every copy the dream keeps, and nothing says so (review 2026-10-13).
+    if not any(isinstance(j, dict) and j.get("script") == ic.SWEEP_SCRIPT for j in listed):
+        r.warn(f"no {ic.SWEEP_SCRIPT} cron job — forgotten facts are cleaned from the dream's copies only "
+               "at night; run install_cron.py (it keeps the existing jobs), or --sweep-schedule '' on purpose")
     try:
         expected, problem = ic.resolve_skill()
     except ic.RegistryError as exc:

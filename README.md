@@ -231,7 +231,9 @@ databases unless told to, and then only in two steps:
 - `read` — every database appears in the report as counts (facts, new ones): no text is read or shown, no ids.
 - `promote_from` — the chats (topics with `scope: thread`, users with `scope: user`) whose facts join the pass. Each
   is corroborated **only by its own chat**, and that chat's messages corroborate nothing else. Once a promoted
-  fact is written to memory, every chat sees it — list only chats where that is what you want.
+  fact is written to memory, every chat sees it — list only chats where that is what you want. With `scope: user`
+  the plugin files a fact by the turn's author, but Hermes keeps no author per message: a user's facts are
+  corroborated by the messages of that user's own sessions (in a group, the session owner stands for the author).
 
 Such items carry `store` and ids like `telegram--1001234567890#17`; the agent writes them only through `memory`
 (a cron session cannot reach a chat's database), and "forget it" is said in that chat. Extraction stays with the

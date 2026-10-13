@@ -3,6 +3,30 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.6.1 — 2026-10-13
+
+Fixes from an audit of 2.4.0–2.6.0.
+
+### Fixed
+
+- **The forget-sweep gate no longer waits for a running pass.** `dream-forget-sweep.py` runs `dream.py
+  --forget-sweep` under a 120 s timeout, and the pass holds the state lock for its whole run (up to
+  `precheck.timeout_sec`): a long pass crossing a gate tick killed the gate, and Hermes delivered a "cron
+  watchdog script failed" alert for nothing. The gate now takes the lock without waiting and ends quietly when
+  the pass holds it — the pass sweeps before it starts and scrubs its output after, so nothing is left for the
+  gate; the next tick looks again.
+- **An unusual `plugins:` shape in config.yaml no longer ends the night.** `plugins:` as a list, or
+  `hermes-memory-store` as a bare value, raised inside the pass (`dream_error`) and in `install.py --check`;
+  such shapes now read as "unset".
+- **`install.py --check` warns when the forget-sweep cron job is missing** (jobs created before 2.4.0), and
+  `install_cron.py` refuses to create the job while `scripts/dream-forget-sweep.py` is not in place (the job
+  would fail at its first tick); `--sweep-schedule ''` skips both.
+
+### Documentation
+
+- With `scope: user`, a promoted user's facts are corroborated by the messages of that user's own sessions —
+  Hermes keeps no author per message, so in a group the session owner stands for the author (README).
+
 ## 2.6.0 — 2026-10-13
 
 ### Added

@@ -303,9 +303,13 @@ def _hermes_plugin_setting(key, home=None):
     if not text:
         return None
     data = _hermes_config(home)
-    if data:
-        value = ((data.get("plugins") or {}).get("hermes-memory-store") or {}).get(key)
-        if value is not None and value != "":
+    if isinstance(data, dict):
+        # A mapping is the plugin's shape; anything else (a list, a bare string after a wrong indent) is "unset",
+        # not a crash of the whole night (review 2026-10-13).
+        plugins = data.get("plugins")
+        store = plugins.get("hermes-memory-store") if isinstance(plugins, dict) else None
+        value = store.get(key) if isinstance(store, dict) else None
+        if value is not None and value != "" and not isinstance(value, (dict, list)):
             return str(value)
     section = re.search(r"^plugins:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
     if not section:
@@ -3850,20 +3854,26 @@ def _dream_job_dirs(home):
 
 
 @contextlib.contextmanager
-def _sweep_lock(home):
+def _sweep_lock(home, wait=True):
     """One writer of the dream's state at a time: the nightly pass and the forget gate both rewrite it. POSIX
-    advisory lock on cache/dream-state.lock; a no-op where fcntl does not exist."""
+    advisory lock on cache/dream-state.lock; a no-op where fcntl does not exist. Yields whether the lock is held:
+    with `wait=False` a held lock is not waited for (the gate runs under a timeout, and the pass that holds the
+    lock sweeps before it starts and scrubs its output after — nothing is left for the gate)."""
     try:
         import fcntl
     except ImportError:
-        yield
+        yield True
         return
     path = os.path.join(home, "cache", "dream-state.lock")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
         try:
-            yield
+            fcntl.flock(handle, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except (BlockingIOError, PermissionError):
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -4193,7 +4203,10 @@ def main(argv=None):
             print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
         return swept
 
-    with _sweep_lock(HOME):
+    with _sweep_lock(HOME, wait=not args.forget_sweep) as held:
+        if not held:  # the pass holds the state and sweeps itself; the gate's next tick looks again
+            print(json.dumps({"skipped": "the nightly pass holds the state"}, ensure_ascii=False))
+            return 0
         swept = sweep("before the pass")
         if args.forget_sweep:
             print(json.dumps(swept, ensure_ascii=False))

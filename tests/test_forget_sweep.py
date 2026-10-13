@@ -275,6 +275,32 @@ class ForgetSweep(unittest.TestCase):
                               "--forget-sweep"], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(json.loads(cli.stdout)["swept"], 0)
 
+    def test_gate_does_not_wait_for_a_running_pass(self):
+        try:
+            import fcntl
+        except ImportError:
+            self.skipTest("POSIX locks only")
+        env = dict(os.environ, HERMES_HOME=str(self.home), DREAM_SCRIPT=str(ROOT / "scripts" / "dream.py"),
+                   DREAM_FACT_STORE=str(self.db), DREAM_FACT_SOURCE="holographic")
+        self.seed_copies()
+        self.forget(2)
+        lock = self.home / "cache" / "dream-state.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            gate = subprocess.run([sys.executable, str(ROOT / "scripts" / "dream-forget-sweep.py")], env=env,
+                                  capture_output=True, text=True, encoding="utf-8", timeout=60)
+            cli = subprocess.run([sys.executable, str(ROOT / "scripts" / "dream.py"), "--hermes-home",
+                                  str(self.home), "--forget-sweep"], env=env, capture_output=True, text=True,
+                                 encoding="utf-8", timeout=60)
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertEqual((gate.returncode, gate.stdout), (0, ""), gate.stderr)
+        self.assertIn("skipped", json.loads(cli.stdout))
+        self.assertIn(FORGOTTEN_OLD[:20], (self.home / "cache" / "dream.json").read_text(encoding="utf-8"))
+        later = subprocess.run([sys.executable, str(ROOT / "scripts" / "dream-forget-sweep.py")], env=env,
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertIn("Forgotten facts cleaned", later.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

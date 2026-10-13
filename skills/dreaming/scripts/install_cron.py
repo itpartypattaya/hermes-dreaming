@@ -264,10 +264,11 @@ def skill_ref():
         return None, str(exc)
 
 
-def _preflight():
+def _preflight(sweep=True):
     """Fail loudly on the things that silently produce a broken install."""
     problems = []
-    for script in (DREAM_SCRIPT, EXTRACT_SCRIPT):
+    # The sweep gate too: a no_agent job made over a stale scripts/ copy fails at its first tick.
+    for script in (DREAM_SCRIPT, EXTRACT_SCRIPT) + ((SWEEP_SCRIPT,) if sweep else ()):
         if not (HOME / "scripts" / script).is_file():
             problems.append(f"missing {HOME}/scripts/{script} — run scripts/install.py first "
                             "(Hermes only runs cron scripts from that directory)")
@@ -297,7 +298,7 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
-    problems = _preflight()
+    problems = _preflight(sweep=bool(args.sweep_schedule))
     if problems:
         for p in problems:
             print(f"ERROR: {p}", file=sys.stderr)

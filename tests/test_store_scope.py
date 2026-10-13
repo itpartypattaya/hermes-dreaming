@@ -42,6 +42,14 @@ class StoreScopeTests(DreamFixture):
                 self.assertIn(f"scope: {scope}", note)
                 self.assertIn("fact_source", note)
 
+    def test_odd_plugins_shapes_read_as_unset(self):
+        for body in ("plugins:\n  - holographic\n", "plugins:\n  hermes-memory-store: on\n",
+                     "plugins:\n  hermes-memory-store:\n    scope:\n      - chat\n", "plugins: []\n"):
+            with self.subTest(body=body):
+                (self.home / "config.yaml").write_text("memory:\n  provider: holographic\n" + body, encoding="utf-8")
+                self.assertIsNone(dream._hermes_plugin_setting("scope"))
+                self.assertIsNone(dream.fact_store_note())
+
     def test_cron_writes_false_is_named(self):
         self._config("    cron_writes: false\n")
         self.assertIn("cron_writes", dream.fact_store_note())
