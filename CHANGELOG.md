@@ -3,6 +3,26 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.5.2 — 2026-10-13
+
+Fixes from a second external review (Codex) of 2.5.1, each with a test. It confirmed 7 of the 8 earlier findings
+fixed and one partly, and found what the 2.5.1 fixes broke.
+
+### Fixed
+
+- **"Since <date>" hid real events.** 2.5.1 treated a whole fact as durable when "since / с / od / dal …" and a
+  date appeared anywhere in it, so a range («Экзамен с 15.11.2026 по 17.11.2026», «Egzaminy od 14 listopada do 16
+  listopada»), a time («с 15.00») or an unrelated clause ("Call on 14 November; Anton has worked here since 2020")
+  was no longer an event. Now only the "since <date>" phrase itself is taken out before the check, a range stays
+  an event, and a day-month in digits needs a real month (15.00 is a time).
+- **Deadlines with dashes** ("by 14-11-2026", «до 14-11-2026») were missed by the 2.5.1 deadline pattern.
+- **Doctor visits** ("see a doctor", "doctor visit", «врач придёт», «вызвать врача») were lost when 2.5.1 narrowed
+  "doctor" / «врач» to keep professions durable.
+- **Chaining shared n-grams** was still quadratic when one character joins hundreds of pairs (一中 … 中一); it is
+  linear now (pairs are joined through the character they share), with the same stretches as before.
+
+Measured: the language benches, the blind sets and the author's live household data give the same numbers as 2.5.1.
+
 ## 2.5.1 — 2026-10-13
 
 Fixes from an external review of 2.5.0 (Codex), each with a test in `tests/test_languages.py`.

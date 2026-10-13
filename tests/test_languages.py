@@ -226,6 +226,48 @@ class ReviewFixes(unittest.TestCase):
         self.assertEqual(dream.extract_event_dates("Mary 5 and Mark 3", date(2026, 12, 21)), ([], []))
 
 
+class ReviewFixes251(unittest.TestCase):
+    """2.5.2: the external review of 2.5.1 (2026-10-13)."""
+
+    def test_a_range_is_still_an_event(self):
+        for text in ("Egzaminy od 14 listopada 2026 do 16 listopada 2026", "Экзамен с 15.11.2026 по 17.11.2026"):
+            with self.subTest(text=text):
+                self.assertTrue(dream.is_ephemeral_fact(text))
+                self.assertTrue(dream.is_expired_event(text, date(2026, 12, 21)))
+
+    def test_a_time_is_not_a_since_date(self):
+        self.assertTrue(dream.is_ephemeral_fact("Экзамен с 15.00 завтра"))
+
+    def test_since_takes_out_only_its_own_phrase(self):
+        text = "Call on 14 November 2026; Anton has worked here since 14 November 2020."
+        self.assertTrue(dream.is_ephemeral_fact(text))
+        self.assertTrue(dream.is_expired_event(text, date(2026, 12, 21)))
+        self.assertFalse(dream.is_expired_event(text, date(2026, 11, 1)))
+
+    def test_deadline_with_dashes(self):
+        for text in ("Pay tax by 14-11-2026", "Оплатить налог до 14-11-2026"):
+            with self.subTest(text=text):
+                self.assertTrue(dream.is_expired_event(text, date(2026, 12, 21)))
+
+    def test_doctor_visits(self):
+        for text in ("See a doctor on November 14 2026", "Doctor visit on November 14 2026",
+                     "Врач придёт 14 ноября 2026"):
+            with self.subTest(text=text):
+                self.assertTrue(dream.is_expired_event(text, date(2026, 12, 21)))
+
+    def test_stretches_with_a_shared_character_are_linear(self):
+        import time
+        grams = {chr(0x4E01 + i) + "中" for i in range(3000)} | {"中" + chr(0x4E01 + i) for i in range(3000)}
+        start = time.perf_counter()
+        self.assertEqual(len(dream.gram_stretches(grams)), 1)
+        self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_same_first_character_is_not_a_chain(self):
+        # 学校 and 学生 share 学 but neither continues the other: two stretches, as before.
+        self.assertEqual(len(dream.gram_stretches({"学校", "学生"})), 2)
+        self.assertEqual(len(dream.gram_stretches({"搬到", "到清", "清迈"})), 1)
+
+
 class Themes(unittest.TestCase):
     def test_only_han_word_pairs_are_themes(self):
         self.assertTrue(dream._theme_gram("学校"))

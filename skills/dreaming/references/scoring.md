@@ -238,7 +238,8 @@ the dream.
   reading, relative anchors — today / tomorrow in each of these languages — never
   expire). A dated fact is an event only with a trigger word (appointment, exam,
   meeting, flight, deadline, bring … in each language; a deadline is "until / by" and a
-  whole date): a birthday is not one, and nothing "since <date>" is («с 14 ноября», seit, desde, depuis …).
+  whole date): a birthday is not one, and a "since <date>" phrase («с 14 ноября», seit, desde, depuis …) is
+  taken out before the check — it starts a state, not an event; a range «с 15.11 по 17.11» stays an event.
 - **alerts** — `memory_loss`: more than `memory_loss_alert_fraction` (25%) of
   the entries present at the previous pass are gone (snapshot in
   `cache/dream-snapshot.json`). Wakes the agent; nothing is restored.

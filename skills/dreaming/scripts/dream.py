@@ -1092,29 +1092,32 @@ def _gram_script(gram):
 
 def gram_stretches(grams):
     """Groups of n-grams that chain into one stretch of text (each overlaps the next by all but one character)."""
+    # Linear, not pairwise: every n-gram ending in k chains with every n-gram starting with k, so all of them are one
+    # stretch — joined through k once instead of edge by edge (a character shared by hundreds of pairs, 一中 … 中一,
+    # made the pairwise version quadratic; review of 2.5.1). A key nobody continues joins nothing.
     grams = set(grams)
-    by_head = defaultdict(set)  # an index, not all pairs against all: a long Chinese text has hundreds of pairs
+    heads = {g[:-1] for g in grams}
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for g in grams:  # ends in a key that some n-gram starts with: join the key
+        find(g)
+        if g[1:] in heads:
+            parent[find(g)] = find(("key", g[1:]))
+    for g in grams:  # starts with a key that some n-gram ends in: join the same key
+        key = ("key", g[:-1])
+        if key in parent:
+            parent[find(g)] = find(key)
+    groups = defaultdict(set)
     for g in grams:
-        by_head[g[:-1]].add(g)
-    nxt = defaultdict(set)
-    for g in grams:
-        for h in by_head.get(g[1:], ()):
-            if h != g:
-                nxt[g].add(h)
-                nxt[h].add(g)
-    seen, out = set(), []
-    for g in sorted(grams):
-        if g in seen:
-            continue
-        group, todo = set(), [g]
-        while todo:
-            x = todo.pop()
-            if x not in group:
-                group.add(x)
-                todo.extend(nxt[x] - group)
-        seen |= group
-        out.append(group)
-    return out
+        groups[find(g)].add(g)
+    return sorted(groups.values(), key=min)
 
 
 def _mentions(shared):
@@ -1940,8 +1943,8 @@ EPHEMERAL_HINTS_RE = re.compile(
     r"randevu\w*|sınav\w*|toplantı\w*|uçuş\w*|teslim\w*|getir\w*|götür\w*|gezi\w*|"
     r"wizyt\w*|sprawdzian\w*|egzamin\w*|kartkówk\w*|spotkani\w*|przynieś\w*|oddać|wycieczk\w*|"
     r"janji|ujian|ulangan|rapat|pertemuan|penerbangan|tenggat|bawa|kumpulkan|karyawisata|"
-    r"dentist|(?:to|at)\s+the\s+doctor|doctor'?s\s+appointment|trip|flies|fly|due|стоматолог\w*|"
-    r"к\s+врачу|у\s+врача|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
+    r"dentist|(?:to|at|see|visit)\s+(?:the|a)\s+doctor|doctor'?s?\s+(?:appointment|visit)|trip|flies|fly|due|"
+    r"стоматолог\w*|к\s+врачу|у\s+врача|врач\s+прид[её]т|вызвать\s+врача|вызов\s+врача|при[её]м\s+врача|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
     r"llevar|dentista|médico|último\s+dia|colloqui\w*|uçağ\w*|uçak|son\s+ödeme|son\s+gün|dentyst\w*|"
     r"wylot\w*|lot\s+do|zebrani\w*|\w*toets\w*|ouderavond\w*|tandarts\w*|jadwal|batas|dikumpulkan)\b"
     r"|(?:สอบ|กำหนดส่ง|ทัศนศึกษา|นำมา|ส่ง|นัด|ประชุม|เที่ยวบิน|"
@@ -1979,9 +1982,10 @@ RELATIVE_DATE_RE = re.compile(
 )
 
 
-# A whole date: a day and a month name («1 декабря», "30. Nov", «4 grudnia»), or day/month in digits (30/11).
+# A whole date: a day and a month name («1 декабря», "30. Nov", «4 grudnia»), or a day and a month in digits
+# (30/11, 30.11, 14-11-2026 — a real month, so a time «15.00» is not a date; review of 2.5.1).
 _DATE_AHEAD = (rf"(?<!\d)\d{{1,2}}(?:\.|st|nd|rd|th|er)?\s+(?:de\s+|of\s+)?(?:{OTHER_MONTHS_RE}|{MONTHS_RE})\b"
-               r"|(?<!\d)\d{1,2}[./]\d{1,2}(?!\d)")
+               r"|(?<![\d-])(?:[12]\d|3[01]|0?[1-9])[./-](?:1[0-2]|0?[1-9])(?!\d)")
 # A deadline: "until / by / before" followed by a whole date («до 1 декабря», «bis 30. Nov», «do 4 grudnia»), or a
 # Turkish date with «kadar» after it («30/11'e kadar»). A bare number is not a date: "can do 20 pushups" is not a
 # Polish «do 20.» (review 2026-10-13), and the old open-ended `\S*` before «kadar» was quadratic on long numbers.
@@ -1991,18 +1995,33 @@ DEADLINE_RE = re.compile(
     rf"|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+kadar\b",
     re.IGNORECASE)
 # "Since <date>" opens a state that lasts — a job, a move, a rule («Антон врач с 14 ноября 2020 года», "Anton can
-# do 20 pushups since 14 November 2020"): such a fact is durable whatever trigger word it also has.
+# do 20 pushups since 14 November 2020"). Only that phrase is taken out before the event check, not the whole
+# fact: "Call on 14 November; Anton has worked here since 2020" is still a call (review of 2.5.1).
 SINCE_DATE_RE = re.compile(
     r"\b(?:since|seit|desde|depuis|dal|dalla|sinds|vanaf|od|sejak|с|со)\s+(?:the\s+|dem\s+|el\s+|le\s+|il\s+)?"
-    rf"(?:{_DATE_AHEAD})|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+(?:beri|itibaren|bu\s+yana)\b",
+    rf"(?:{_DATE_AHEAD})(?:\s+\d{{4}})?|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+(?:beri|itibaren|bu\s+yana)\b",
     re.IGNORECASE)
+# …unless the date opens a range: «с 15.11 по 17.11», «od 14 listopada do 16 listopada», "from … to …".
+RANGE_END_RE = re.compile(
+    r"\s*(?:г\.|года?)?\s*(?:,\s*)?(?:по|до|to|until|till|through|bis|al|au|a|do|tot|t/m|hingga|sampai|[-–—])\s*\d",
+    re.IGNORECASE)
+
+
+def _without_lasting(text):
+    """The text with every "since <date>" phrase cut out (a range «с … по …» stays: it is an event's span)."""
+    out, last = [], 0
+    for m in SINCE_DATE_RE.finditer(text):
+        if RANGE_END_RE.match(text, m.end()):
+            continue
+        out.append(text[last:m.start()])
+        last = m.end()
+    out.append(text[last:])
+    return " ".join(out)
 
 
 def is_ephemeral_fact(content):
     """Temporary dated school/calendar facts should not become durable memory."""
-    text = content or ""
-    if SINCE_DATE_RE.search(text):
-        return False
+    text = _without_lasting(content or "")
     has_time_anchor = bool(DATED_RE.search(text) or RELATIVE_DATE_RE.search(text))
     return bool(has_time_anchor and (EPHEMERAL_HINTS_RE.search(text) or DEADLINE_RE.search(text)))
 
@@ -2106,6 +2125,7 @@ def is_expired_event(content, today=None):
     text = content or ""
     if not is_ephemeral_fact(text):
         return False
+    text = _without_lasting(text)  # the date a state began is not the event's date
     if RELATIVE_DATE_RE.search(text):
         return False
     today = today or _now().astimezone(LOCAL_TZ).date()
