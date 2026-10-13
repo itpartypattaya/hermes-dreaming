@@ -187,10 +187,10 @@ def check_fact_source(home, dream, r):
         # Without it there is no fact store: the pass still reviews the memory
         # files, but promotions/new_facts/conflicts stay empty forever.
         advice = ("Set 'memory.provider: holographic', point fact_source at your own export, "
-                  "or set fact_source to 'none'. NOTE: holographic leaves the Hermes core on "
-                  "2026-10-15 — after that install it as a plugin (catalog or the standalone "
-                  "NousResearch/hermes-plugin-holographic copy); 'none' needs nothing and keeps "
-                  "the nightly memory review working")
+                  "or set fact_source to 'none'. NOTE: holographic left the Hermes core on "
+                  "2026-10-11 (v0.21.7) — install it as a plugin: hermes plugins install holographic "
+                  "(itpartypattaya/hermes-plugin-holographic); if `hermes update` turned memory off, "
+                  "see that README. 'none' needs nothing and keeps the nightly memory review working")
         if _write_approval(home):
             # Worth saying before the advice is taken: `fact_store` writes to
             # memory_store.db directly, and the approval gate covers MEMORY.md,
