@@ -535,7 +535,7 @@ https http www""".split())
 # The other languages the holographic store reads (German, Spanish, French, Portuguese, Italian, Dutch, Turkish,
 # Polish, Indonesian): function words of four letters and more — shorter ones never become tokens. Without them two
 # unrelated Polish lines met on «dobra» + «wieczorem», two Dutch ones on «gaat» + «naar» (2026-10-13). Words that
-# are also English content words («door», «data») are left out.
+# are also English content words («door», «data», «solo», «fare») are left out.
 OTHER_STOP = set("""aber alle allem allen aller alles also andere anderen auch beim bereits bitte bist bisschen dabei
 dafür daher damit dann darauf darum dass dein deine deinem deinen deiner denn dessen dich dies diese diesem diesen
 dieser dieses doch dort durch eine einem einen einer eines etwas euch euer eure für gegen gibt habe haben hast hatte
@@ -546,14 +546,14 @@ welcher wenn werden wieder wird wirklich wurde würde zwischen danke genau gerad
 algo algunos ahora antes aquí aquel así bien cada casi como contra cual cuál cuando cuándo cuánto desde después donde
 dónde durante ella ellas ellos entonces entre eran eres esta está están estar estas este esto estos fuera gracias
 hace hacer hasta hola mismo mucho nosotros nuestra nuestro otra otro para pero poco porque puede pueden quien quién
-sido sobre solo sólo somos también tanto tener tengo tiene tienen todo todos usted vamos vale será siempre esos esas
+sido sobre sólo somos también tanto tener tengo tiene tienen todo todos usted vamos vale será siempre esos esas
 bueno
 alors après aussi autre avant avec avoir beaucoup bonjour cela celle celui cette chez comme comment dans depuis donc
 elle elles encore être fait faire faut leur leurs mais merci même notre nous parce pendant peut pour pourquoi quand
 quel quelle quelque sera serait sont sous suis tout toute toutes tous très vous votre vers voilà ceci ceux
 agora ainda algum alguma aqui assim até então essa esse está estão estou isso isto mesmo muito nossa nosso obrigado
 obrigada onde outra outro pela pelo pode porquê qual quem também têm tenho tudo você vocês sempre
-anche ancora avere bene cosa così dalla dalle dallo degli della delle dello dove dopo ecco essere fare grazie hanno
+anche ancora avere bene cosa così dalla dalle dallo degli della delle dello dove dopo ecco essere grazie hanno
 loro mentre molto nella nelle nello nostro nostra ogni allora perché però poco quale quanto quello quella questo
 questa sono stato stata tanto tutti tutto vostro ciao fino
 alle alles altijd ander andere omdat beetje bijna daar daarom deze doen dus eens hebben heeft iets jouw kunnen maar
@@ -721,10 +721,10 @@ def gram_weight(gram):
     """How much one shared n-gram is worth: 1, or ½ with a function character / all kana, 0 for no topic."""
     if _SEA_RE.match(gram):
         return 0.0 if any(gram in w for w in TH_FUNCTION) else 1.0
-    if _HIRAGANA_RE.fullmatch(gram):
-        return 0.5
     hits = sum(c in CJK_FUNCTION for c in gram)
-    return 0.0 if hits == len(gram) else 0.5 if hits else 1.0
+    if hits == len(gram):  # before the kana rule: には, ので are particles, not half a word (review 2026-10-13)
+        return 0.0
+    return 0.5 if hits or _HIRAGANA_RE.fullmatch(gram) else 1.0
 
 
 def run_grams(run):
@@ -1093,10 +1093,13 @@ def _gram_script(gram):
 def gram_stretches(grams):
     """Groups of n-grams that chain into one stretch of text (each overlaps the next by all but one character)."""
     grams = set(grams)
+    by_head = defaultdict(set)  # an index, not all pairs against all: a long Chinese text has hundreds of pairs
+    for g in grams:
+        by_head[g[:-1]].add(g)
     nxt = defaultdict(set)
     for g in grams:
-        for h in grams:
-            if g != h and g[1:] == h[:-1]:
+        for h in by_head.get(g[1:], ()):
+            if h != g:
                 nxt[g].add(h)
                 nxt[h].add(g)
     seen, out = set(), []
@@ -1118,6 +1121,8 @@ def _mentions(shared):
     """Whether a shared set of stems is a mention: two words or stretches of n-grams, or one long stretch (a rare
     shared word is checked by the caller, see DISTINCTIVE_PREFIX_LATIN)."""
     score = sum(1 for s in shared if not is_gram(s))
+    if score >= 2:
+        return True
     for group in gram_stretches(s for s in shared if is_gram(s)):
         if len(group) >= DISTINCTIVE_GRAMS[_gram_script(next(iter(group)))]:
             return True
@@ -1607,6 +1612,16 @@ RU_MONTH_WORD_RE = re.compile(
 RU_MONTH_NUM = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5, "июн": 6, "июл": 7, "август": 8,
                 "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
 AMBIGUOUS_MONTHS = frozenset("may mar mai maj maja mart mei jan sep dec".split())
+# Month names are looked up without case and diacritics: IGNORECASE lets "KASIM" match «kasım», but "KASIM".lower()
+# is "kasim", which was not a key — the pass died on a KeyError (review 2026-10-13).
+_OTHER_MONTHS_FOLDED = {latin_fold(name): num for name, num in OTHER_MONTHS.items()}
+
+
+def other_month(word):
+    """Month number of a month name in one of the OTHER_MONTHS languages, any case; None when it is not one."""
+    return _OTHER_MONTHS_FOLDED.get(latin_fold((word or "").lower()))
+
+
 OTHER_MONTH_WORD_RE = re.compile(rf"(?<!\w)({OTHER_MONTHS_RE})(?!\w)", re.IGNORECASE)
 
 
@@ -1617,11 +1632,13 @@ def _month_markers(text):
     for m in RU_MONTH_WORD_RE.finditer(text):
         nums.add(RU_MONTH_NUM[next(g for g in m.groups() if g).lower()])
     for m in OTHER_MONTH_WORD_RE.finditer(text):
-        word = m.group(1).lower()
-        if word not in AMBIGUOUS_MONTHS:
-            nums.add(OTHER_MONTHS[word])
+        month = other_month(m.group(1))
+        if month and latin_fold(m.group(1).lower()) not in AMBIGUOUS_MONTHS:
+            nums.add(month)
     for m in DAY_MONTH_RE.finditer(text):
-        nums.add(OTHER_MONTHS[m.group(2).lower()])
+        month = other_month(m.group(2))
+        if month:
+            nums.add(month)
     for m in EN_DATE_RE.finditer(text):
         nums.add(EN_MONTHS[m.group(1).lower()[:3]])
     for regex in (CJK_DATE_RE, KO_DATE_RE):
@@ -1923,12 +1940,10 @@ EPHEMERAL_HINTS_RE = re.compile(
     r"randevu\w*|sınav\w*|toplantı\w*|uçuş\w*|teslim\w*|getir\w*|götür\w*|gezi\w*|"
     r"wizyt\w*|sprawdzian\w*|egzamin\w*|kartkówk\w*|spotkani\w*|przynieś\w*|oddać|wycieczk\w*|"
     r"janji|ujian|ulangan|rapat|pertemuan|penerbangan|tenggat|bawa|kumpulkan|karyawisata|"
-    r"dentist|doctor|trip|flies|fly|due|стоматолог\w*|врач\w*|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
+    r"dentist|(?:to|at)\s+the\s+doctor|doctor'?s\s+appointment|trip|flies|fly|due|стоматолог\w*|"
+    r"к\s+врачу|у\s+врача|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
     r"llevar|dentista|médico|último\s+dia|colloqui\w*|uçağ\w*|uçak|son\s+ödeme|son\s+gün|dentyst\w*|"
     r"wylot\w*|lot\s+do|zebrani\w*|\w*toets\w*|ouderavond\w*|tandarts\w*|jadwal|batas|dikumpulkan)\b"
-    # a deadline: "until / by / before" and a day («до 1 декабря», «bis 30. Nov», «30/11'e kadar»)
-    r"|\b(?:до|until|by|before|till|bis|bis\s+zum|antes\s+del?|hasta\s+el|avant\s+le|até|entro\s+il|entro|"
-    r"tot|uiterlijk|do|sebelum)\s+\d{1,2}(?!\d)|\d{1,2}(?:[./]\d{1,2})?\S*\s+(?:\w+\s+)?kadar\b"
     r"|(?:สอบ|กำหนดส่ง|ทัศนศึกษา|นำมา|ส่ง|นัด|ประชุม|เที่ยวบิน|"
     r"予約|テスト|試験|会議|打ち合わせ|フライト|締め切り|締切|持って|提出|遠足|"
     r"预约|預約|约了|約了|考试|考試|测验|測驗|会议|會議|航班|截止|带上|帶上|提交|春游|秋游|"
@@ -1964,11 +1979,32 @@ RELATIVE_DATE_RE = re.compile(
 )
 
 
+# A whole date: a day and a month name («1 декабря», "30. Nov", «4 grudnia»), or day/month in digits (30/11).
+_DATE_AHEAD = (rf"(?<!\d)\d{{1,2}}(?:\.|st|nd|rd|th|er)?\s+(?:de\s+|of\s+)?(?:{OTHER_MONTHS_RE}|{MONTHS_RE})\b"
+               r"|(?<!\d)\d{1,2}[./]\d{1,2}(?!\d)")
+# A deadline: "until / by / before" followed by a whole date («до 1 декабря», «bis 30. Nov», «do 4 grudnia»), or a
+# Turkish date with «kadar» after it («30/11'e kadar»). A bare number is not a date: "can do 20 pushups" is not a
+# Polish «do 20.» (review 2026-10-13), and the old open-ended `\S*` before «kadar» was quadratic on long numbers.
+DEADLINE_RE = re.compile(
+    r"\b(?:до|until|by|before|till|bis|bis\s+zum|antes\s+del?|hasta\s+el|avant\s+le|até|entro\s+il|entro|tot|"
+    rf"uiterlijk|do|sebelum)\s+(?:the\s+|dem\s+|el\s+|le\s+|il\s+)?(?:{_DATE_AHEAD})"
+    rf"|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+kadar\b",
+    re.IGNORECASE)
+# "Since <date>" opens a state that lasts — a job, a move, a rule («Антон врач с 14 ноября 2020 года», "Anton can
+# do 20 pushups since 14 November 2020"): such a fact is durable whatever trigger word it also has.
+SINCE_DATE_RE = re.compile(
+    r"\b(?:since|seit|desde|depuis|dal|dalla|sinds|vanaf|od|sejak|с|со)\s+(?:the\s+|dem\s+|el\s+|le\s+|il\s+)?"
+    rf"(?:{_DATE_AHEAD})|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+(?:beri|itibaren|bu\s+yana)\b",
+    re.IGNORECASE)
+
+
 def is_ephemeral_fact(content):
     """Temporary dated school/calendar facts should not become durable memory."""
     text = content or ""
+    if SINCE_DATE_RE.search(text):
+        return False
     has_time_anchor = bool(DATED_RE.search(text) or RELATIVE_DATE_RE.search(text))
-    return bool(has_time_anchor and EPHEMERAL_HINTS_RE.search(text))
+    return bool(has_time_anchor and (EPHEMERAL_HINTS_RE.search(text) or DEADLINE_RE.search(text)))
 
 
 # A dated event whose date has passed is garbage, not context: it must not be
@@ -1987,11 +2023,11 @@ THAI_MONTHS = {"มกราคม": 1, "กุมภาพันธ์": 2, "�
 
 ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 RU_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({MONTHS_RE})(?:\s+(\d{{4}}))?\b", re.IGNORECASE)
-# Month names whole ("Dec", "December"), not any word that starts like one: "mardi 10", "Marina 5" and "Mark 3"
-# used to be March dates. A day may carry its suffix ("Dec 17th").
+# Month names whole ("Dec", "December"), not any word that starts like one: "mardi 10", "Marina 5", "Mark 3",
+# "Jane 14" and "Mary 5" used to be dates (review 2026-10-13). A day may carry its suffix ("Dec 17th").
 EN_DATE_RE = re.compile(
-    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:uary|ruary|ch|il|e|y|ust|t|tember|ober|ember)?\.?"
-    r"\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b", re.IGNORECASE)
+    r"\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|"
+    r"october|oct|november|nov|december|dec)\b\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b", re.IGNORECASE)
 THAI_DATE_RE = re.compile(rf"(\d{{1,2}})\s+({THAI_MONTHS_RE})(?:\s+(\d{{4}}))?")
 
 
@@ -2040,7 +2076,7 @@ def extract_event_dates(text, today):
         if got:
             certain.append(got)
     for day, month_word, year in DAY_MONTH_RE.findall(text):
-        month = OTHER_MONTHS.get(month_word.lower())
+        month = other_month(month_word)
         got = _safe_date(year, month, int(day), today) if month else None
         if got:
             certain.append(got)

@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.5.1 — 2026-10-13
+
+Fixes from an external review of 2.5.0 (Codex), each with a test in `tests/test_languages.py`.
+
+### Fixed
+
+- **A month name in capitals crashed the pass**: «14 KASIM 2026» matched the Turkish month case-insensitively,
+  but its lower case was not a key — `KeyError`, and the night's dream failed. Month names are looked up without
+  case and diacritics.
+- **A profession with a date was a one-off event**: "Anton is a doctor since 14 November 2020" and «Антон врач с
+  14 ноября 2020 года» were recognised as a visit that had passed, so the fact could never be promoted. "doctor" and
+  «врач» are event words only as a visit ("to the doctor", «к врачу»), and nothing "since <date>" (since, с, seit,
+  desde, depuis, dal, sinds, od, sejak, «'den beri») is a one-off.
+- **A deadline needs a whole date**: "can do 20 pushups" was Polish «do 20.»; the deadline pattern now wants a day
+  with a month («до 1 декабря», «bis 30. Nov», 30/11). Its old open-ended form before Turkish «kadar» took
+  quadratic time on long numbers.
+- **Japanese particles** (には, ので) counted half a word each and four of them made a mention; a pair of
+  function characters is dropped before the kana rule.
+- **English content words** «solo» and «fare» were Spanish / Italian stopwords: "solo travel" and "travel" were one
+  fact for the store-duplicate check.
+- **Shared n-grams** were chained by comparing every pair with every other (quadratic on long Chinese texts); they
+  are indexed now, and two shared words decide before any chaining.
+- **"Jane 14" and "Mary 5"** were still January and March dates; English month names are matched whole.
+
+Measured: the language benches, the blind sets and the author's live household data give the same numbers as 2.5.0.
+
 ## 2.5.0 — 2026-10-13
 
 Every language the holographic store reads (0.11.0 reads 18). The dream compared words with its own

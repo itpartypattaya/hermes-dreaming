@@ -237,7 +237,8 @@ the dream.
   11월 14일, Buddhist years, ambiguous 5/10 counted as past only under every
   reading, relative anchors — today / tomorrow in each of these languages — never
   expire). A dated fact is an event only with a trigger word (appointment, exam,
-  meeting, flight, deadline, bring … in each language): a birthday is not one.
+  meeting, flight, deadline, bring … in each language; a deadline is "until / by" and a
+  whole date): a birthday is not one, and nothing "since <date>" is («с 14 ноября», seit, desde, depuis …).
 - **alerts** — `memory_loss`: more than `memory_loss_alert_fraction` (25%) of
   the entries present at the previous pass are gone (snapshot in
   `cache/dream-snapshot.json`). Wakes the agent; nothing is restored.

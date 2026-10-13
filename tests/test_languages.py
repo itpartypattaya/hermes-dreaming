@@ -171,6 +171,61 @@ class Numbers(unittest.TestCase):
         self.assertEqual(dream._numbers("12 листопада"), {"12"})  # Ukrainian is not parsed, not mistaken either
 
 
+class ReviewFixes(unittest.TestCase):
+    """2.5.1: the external review of 2.5.0 (2026-10-13), one test per finding."""
+
+    def test_uppercase_turkish_month_does_not_crash(self):
+        self.assertEqual(dream._numbers("14 KASIM 2026"), {"14", "2026", "month:11"})
+        self.assertIn(date(2026, 11, 14), dream.extract_event_dates("14 KASIM sınav", date(2026, 11, 1))[0])
+
+    def test_folded_month_names_do_not_collide(self):
+        for name, num in dream.OTHER_MONTHS.items():
+            self.assertEqual(dream.other_month(name.upper()), num, name)
+
+    def test_since_a_date_is_a_lasting_state(self):
+        for text in ("Anton is a doctor since 14 November 2020.", "Антон врач с 14 ноября 2020 года.",
+                     "Since 14 November 2020 Anton can do 20 pushups.", "Lena geht seit 1. September zur Schule."):
+            with self.subTest(text=text):
+                self.assertFalse(dream.is_ephemeral_fact(text))
+
+    def test_a_profession_is_not_a_visit(self):
+        self.assertFalse(dream.is_ephemeral_fact("Anton is a doctor, born on 14 November 1990."))
+        self.assertTrue(dream.is_ephemeral_fact("Lily goes to the doctor on 14 November."))
+        self.assertTrue(dream.is_ephemeral_fact("Тёме к врачу 5 ноября в 16:30"))
+
+    def test_a_deadline_needs_a_whole_date(self):
+        self.assertFalse(dream.is_ephemeral_fact("On 14 November Anton could do 20 pushups."))
+        self.assertTrue(dream.is_ephemeral_fact("Транспортный налог надо заплатить до 1 декабря"))
+        self.assertTrue(dream.is_ephemeral_fact("Bu formu 30/11'e kadar teslim et"))
+
+    def test_long_numbers_stay_fast(self):
+        import time
+        start = time.perf_counter()
+        dream.is_ephemeral_fact("14 November " + "1" * 20000)
+        self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_japanese_particles_are_not_shared_words(self):
+        self.assertEqual(dream.gram_weight("には"), 0.0)
+        self.assertFalse(mentioned("apples には ので とも へや", "oranges には ので とも へや"))
+
+    def test_english_content_words_are_not_foreign_stopwords(self):
+        self.assertIn("solo", dream.sig_tokens("Anton prefers solo travel"))
+        self.assertIn("fare", dream.sig_tokens("the bus fare went up"))
+        self.assertFalse(dream._store_duplicates("Anton prefers solo travel abroad", "Anton prefers travel abroad"))
+
+    def test_stretches_are_indexed(self):
+        import time
+        grams = {chr(0x4E00 + i) + chr(0x4E00 + i + 1) for i in range(3000)}
+        start = time.perf_counter()
+        self.assertEqual(len(dream.gram_stretches(grams)), 1)
+        self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_names_are_not_months(self):
+        certain, _ = dream.extract_event_dates("Call Jane 14 times on December 20 2026", date(2026, 12, 21))
+        self.assertEqual(certain, [date(2026, 12, 20)])
+        self.assertEqual(dream.extract_event_dates("Mary 5 and Mark 3", date(2026, 12, 21)), ([], []))
+
+
 class Themes(unittest.TestCase):
     def test_only_han_word_pairs_are_themes(self):
         self.assertTrue(dream._theme_gram("学校"))
