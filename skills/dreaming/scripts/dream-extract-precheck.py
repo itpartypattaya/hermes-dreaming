@@ -241,6 +241,14 @@ def main():
                   "the session — extraction skipped, the cursor stays where it is", file=sys.stderr)
             print(json.dumps({"wakeAgent": False}))
             return 0
+        # …and the provider must be able to store from cron: with `scope: user / chat / thread` a cron
+        # session has no chat and writes nothing, with `cron_writes: false` it is read-only — the model
+        # would read up to 200 messages and every `add` would be refused.
+        note = dream.fact_store_note()
+        if note:
+            print(f"[dream-extract] {note} — extraction skipped, the cursor stays where it is", file=sys.stderr)
+            print(json.dumps({"wakeAgent": False}))
+            return 0
         loaded = load_state(STATE)
         state = resolve_pending(dream, loaded, ext["max_retries"])
         now = datetime.now(timezone.utc)

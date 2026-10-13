@@ -66,7 +66,7 @@ function characters (什么, 我们, には) and filler runs (ありがとう, �
 dropped, a pair with one function character or of hiragana counts half. Shared
 n-grams count by the **stretch** of text they cover: the pairs that chain
 (アン → ント → トン) are one shared word, so a name alone is not a mention; a Han
-stretch weighs one word per two characters (搬到清迈 is "move to Chiang Mai"),
+stretch weighs one word per two characters (搬到上海 is "move to Shanghai"),
 a stretch of 5 pairs (6 for Thai triples, 4 for Hangul) counts alone, like a rare
 word. Themes take only Han pairs without function characters — kana, Hangul and
 Thai n-grams are pieces of words. Known gaps: Traditional and Simplified Chinese
@@ -189,6 +189,13 @@ costs the whole night's writes. So the anchor is handed over ready to copy, and
 `SKILL.md` makes `add` the default and `replace` conditional on having one.
 
 ## Feeding the store (`dream-extract-precheck.py`)
+
+**When the store cannot fill up.** holographic with `scope: user`, `chat` or `thread` keeps facts in a
+separate database per user / chat / topic (`holographic-users/`, `holographic-chats/`), which the dream does
+not read — promoting one chat's facts into memory every chat sees would undo that separation — and a cron
+job, having no chat, writes nothing at all. With `cron_writes: false` a cron job is read-only. In both cases
+the report and the diary carry `fact_store_note`, `install.py --check` warns, and the extraction gate does
+not wake the model (its cursor stays). The memory-file review keeps working; `fact_source: none` says so.
 
 The dream consolidates; it does not invent candidates. In the stock holographic
 plugin the fact store only grows through explicit `fact_store` calls and the

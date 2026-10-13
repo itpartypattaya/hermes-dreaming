@@ -208,6 +208,10 @@ def check_fact_source(home, dream, r):
     else:
         r.warn(f"memory provider 'holographic', but no {path} yet — the pass treats it as empty; "
                "the file appears with the first stored fact")
+    if provider == "holographic":
+        note = dream.fact_store_note(home)
+        if note:
+            r.warn(note)
 
 
 def _load_install_cron(home):

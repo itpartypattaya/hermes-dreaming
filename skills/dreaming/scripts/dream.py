@@ -288,17 +288,17 @@ def hermes_memory_settings(home=None):
     return out
 
 
-def _hermes_plugin_db_path(home=None):
-    """`plugins.hermes-memory-store.db_path` from Hermes config.yaml, or None.
+def _hermes_plugin_setting(key, home=None):
+    """`plugins.hermes-memory-store.<key>` from Hermes config.yaml as a string, or None.
     Read with PyYAML when available, else a narrow line scanner — the pass must
-    not grow a dependency for one key."""
+    not grow a dependency for a few keys."""
     text = _hermes_config_text(home)
     if not text:
         return None
     data = _hermes_config(home)
     if data:
-        value = ((data.get("plugins") or {}).get("hermes-memory-store") or {}).get("db_path")
-        if value:
+        value = ((data.get("plugins") or {}).get("hermes-memory-store") or {}).get(key)
+        if value is not None and value != "":
             return str(value)
     section = re.search(r"^plugins:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
     if not section:
@@ -307,9 +307,41 @@ def _hermes_plugin_db_path(home=None):
                       section.group(1), re.MULTILINE)
     if not store:
         return None
-    hit = re.search(r"^[ \t]+db_path:[ \t]*([^#\n]*)", store.group(1), re.MULTILINE)
+    hit = re.search(rf"^[ \t]+{re.escape(key)}:[ \t]*([^#\n]*)", store.group(1), re.MULTILINE)
     value = hit.group(1).strip().strip("\"'") if hit else ""
     return value or None
+
+
+def _hermes_plugin_db_path(home=None):
+    """`plugins.hermes-memory-store.db_path` from Hermes config.yaml, or None."""
+    return _hermes_plugin_setting("db_path", home)
+
+
+# holographic `scope` values that keep facts in separate files (holographic-users/, holographic-chats/) next to
+# `db_path`. With them the shared store the dream reads gets nothing: chats write to their own files, and a cron
+# job — no chat, no user — reads and writes nothing at all, so the extraction job stores nothing either.
+SPLIT_SCOPES = {"user": "user", "chat": "chat", "thread": "forum topic"}
+
+
+def fact_store_note(home=None):
+    """Why the holographic fact store the dream reads cannot fill up, in one sentence, or None.
+
+    Said in the report, the diary and `install.py --check`, and the extraction gate stops on it: the pass itself
+    still works (the memory-file review needs no facts), but promotions stay empty for a reason the user should
+    know — not because nothing was said (external review, 2026-10-13)."""
+    if fact_source() != "holographic":
+        return None
+    scope = (_hermes_plugin_setting("scope", home) or "profile").strip().lower()
+    if scope in SPLIT_SCOPES:
+        return (f"holographic runs with scope: {scope} — facts go to a separate database per {SPLIT_SCOPES[scope]}, "
+                "which the dream does not read (it would carry one chat's facts into memory every chat sees), and a "
+                "cron job writes nothing, so the shared store stays as it is; the memory-file review still works. "
+                "Set fact_source to 'none' to make this explicit")
+    cron_writes = (_hermes_plugin_setting("cron_writes", home) or "").strip().lower()
+    if cron_writes in ("false", "no", "off", "0"):
+        return ("holographic cron_writes is false — the extraction job cannot store candidate facts, so only facts "
+                "the agent saves in ordinary turns reach the dream")
+    return None
 
 
 FACT_SOURCES = ("holographic", "none", "sqlite", "jsonl")
@@ -747,7 +779,7 @@ def _keep_token(tok):
 
 def _raw_tokens(text):
     """Significant tokens of an already unwrapped string (brackets are metadata): words, and the n-grams of the
-    runs of unsegmented script (cut out first, so "HR24的老板" gives the word "hr24" and the pair "老板")."""
+    runs of unsegmented script (cut out first, so "ACME的老板" gives the word "acme" and the pair "老板")."""
     low = re.sub(r"\[[^\]]*\]", " ", strip_urls(_fold(text))).lower()
     grams = set()
     for run in UNSEGMENTED_RE.findall(low):
@@ -1078,8 +1110,8 @@ DISTINCTIVE_LATIN = 8
 DISTINCTIVE_OTHER = 10
 
 
-# Shared n-grams count by the stretches of text they cover, not one by one: the three pairs of アントン are one
-# name, as "Anton" is one word. Pairs that chain (アン → ント → トン) are one shared stretch; a mention needs two
+# Shared n-grams count by the stretches of text they cover, not one by one: the three pairs of ソフィア are one
+# name, as "Sofia" is one word. Pairs that chain (ソフ → フィ → ィア) are one shared stretch; a mention needs two
 # stretches, or a stretch and a word — as it needs two shared words in spaced scripts. A stretch of a name alone
 # would otherwise corroborate every fact about that person. A stretch with only half-weight n-grams (a particle
 # glued to a name, ンは) counts half; a long stretch is rare enough to count alone, as a long word does.
@@ -1130,7 +1162,7 @@ def _mentions(shared):
         if len(group) >= DISTINCTIVE_GRAMS[_gram_script(next(iter(group)))]:
             return True
         weight = max(gram_weight(g) for g in group)
-        # Chinese writes several words without a break (搬到清迈 = "move to Chiang Mai"): a stretch of Han
+        # Chinese writes several words without a break (搬到上海 = "move to Shanghai"): a stretch of Han
         # characters weighs one word per two characters; kana, Hangul and Thai stretches are mostly one word.
         if any(_HAN_RE.search(g) for g in group):
             weight *= max(1.0, (len(group) + 1) / 2)
@@ -1994,9 +2026,9 @@ DEADLINE_RE = re.compile(
     rf"uiterlijk|do|sebelum)\s+(?:the\s+|dem\s+|el\s+|le\s+|il\s+)?(?:{_DATE_AHEAD})"
     rf"|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+kadar\b",
     re.IGNORECASE)
-# "Since <date>" opens a state that lasts — a job, a move, a rule («Антон врач с 14 ноября 2020 года», "Anton can
+# "Since <date>" opens a state that lasts — a job, a move, a rule («Илья врач с 14 ноября 2020 года», "Tom can
 # do 20 pushups since 14 November 2020"). Only that phrase is taken out before the event check, not the whole
-# fact: "Call on 14 November; Anton has worked here since 2020" is still a call (review of 2.5.1).
+# fact: "Call on 14 November; Tom has worked here since 2020" is still a call (review of 2.5.1).
 SINCE_DATE_RE = re.compile(
     r"\b(?:since|seit|desde|depuis|dal|dalla|sinds|vanaf|od|sejak|с|со)\s+(?:the\s+|dem\s+|el\s+|le\s+|il\s+)?"
     rf"(?:{_DATE_AHEAD})(?:\s+\d{{4}})?|(?:{_DATE_AHEAD})(?:\s+\d{{4}})?'?\w{{0,4}}\s+(?:beri|itibaren|bu\s+yana)\b",
@@ -3088,9 +3120,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
     if queue_alert:
         alerts.append(queue_alert)
+    store_note = fact_store_note()
     diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
                         ephemeral_events, quarantined, len(suppressed), conflicts=published_conflicts,
-                        alerts=alerts)
+                        alerts=alerts, note=store_note)
 
     memory_sources = load_durable_memory_sources(mem_md)
 
@@ -3140,6 +3173,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "store_duplicates": len(promotions_dups) + len(new_facts_dups),
                   "alerts": len(alerts)},
         "memory_usage": usage,
+        # Why the fact store cannot fill up (holographic scope / cron_writes), or None. Not work: never opens the gate.
+        "fact_store_note": store_note,
         "alerts": alerts,
         "promotions": [_pub_near(s) for s in published_promotions],
         "new_facts": [_pub_near(s) for s in new_facts],
@@ -3219,7 +3254,7 @@ def _safe_preview(text, n):
 
 
 def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephemeral_events=None,
-                quarantined=None, suppressed=0, conflicts=None, alerts=None):
+                quarantined=None, suppressed=0, conflicts=None, alerts=None, note=None):
     ephemeral_events = ephemeral_events or []
     quarantined = quarantined or []
     conflicts = conflicts or []
@@ -3227,6 +3262,8 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
              f"Theme window: {window} d · facts: {nfacts} · messages (corroboration): {nmsgs}.", ""]
     for a in alerts or []:
         lines.append(f"⚠️ {a.get('message')}")
+    if note:
+        lines.append(f"ℹ️ {note}.")
 
     def _line(p):
         if "meta" in p:
@@ -3767,6 +3804,8 @@ def dry_run_summary(result, source):
                       for name, rec in (result.get("memory_usage") or {}).items())
     if usage:
         lines.append(f"memory: {usage}")
+    if result.get("fact_store_note"):
+        lines.append(f"note: {result['fact_store_note']}")
 
     def facts(title, items, why=False):
         lines.append(f"{title}: {len(items)}")

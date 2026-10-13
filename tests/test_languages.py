@@ -46,14 +46,14 @@ def mentioned(fact, message):
 
 class Tokens(unittest.TestCase):
     def test_unsegmented_runs_become_ngrams(self):
-        toks = dream.sig_tokens("伊娃对花生过敏")
+        toks = dream.sig_tokens("莉娜对花生过敏")
         self.assertIn("花生", toks)
         self.assertIn("过敏", toks)
-        self.assertNotIn("伊娃对花生过敏", toks)
+        self.assertNotIn("莉娜对花生过敏", toks)
 
     def test_latin_inside_chinese_is_a_word(self):
-        toks = dream.sig_tokens("HR24的老板是克修莎")
-        self.assertIn("hr24", toks)
+        toks = dream.sig_tokens("ACME的老板是王丽")
+        self.assertIn("acme", toks)
         self.assertIn("老板", toks)
 
     def test_function_pairs_and_fillers_are_dropped(self):
@@ -62,11 +62,11 @@ class Tokens(unittest.TestCase):
         self.assertEqual(dream.sig_tokens("ขอบคุณครับ"), set())
 
     def test_thai_is_compared_by_triples(self):
-        self.assertTrue(all(len(t) == 3 for t in dream.sig_tokens("อีวาแพ้ถั่วลิสง")))
+        self.assertTrue(all(len(t) == 3 for t in dream.sig_tokens("ลีน่าแพ้ถั่วลิสง")))
 
     def test_russian_and_english_tokens_unchanged(self):
         self.assertEqual(dream.sig_tokens("Илья переехал в Лиссабон"), {"переехал", "лиссабон"})
-        self.assertEqual(dream.sig_tokens("Anton rides a Honda Forza"), {"anton", "rides", "honda", "forza"})
+        self.assertEqual(dream.sig_tokens("Martin rides a Vespa scooter"), {"martin", "rides", "vespa", "scooter"})
 
 
 class Stems(unittest.TestCase):
@@ -82,10 +82,10 @@ class Stems(unittest.TestCase):
 
 class Mentions(unittest.TestCase):
     CASES = {  # fact, a message about it, a message about something else
-        "zh": ("家里的猫是一只英国短毛猫，名叫米娅", "米娅这只英国短毛猫最近掉毛很厉害", "英国的天气今天特别冷"),
-        "ja": ("エヴァは毎週土曜日の朝に水泳教室がある", "エヴァの水泳教室、今週は休みだって", "土曜日は雨らしいよ"),
-        "ko": ("에바는 매주 토요일 아침에 수영 수업이 있다", "에바 수영 수업 이번 주는 쉰대", "토요일에 비 온대"),
-        "th": ("อีวาแพ้ถั่วลิสง ห้ามกินขนมที่มีถั่ว", "อย่าลืมว่าอีวาแพ้ถั่วลิสงนะ", "วันนี้ฝนตกหนักมาก"),
+        "zh": ("家里的猫是一只英国短毛猫，名叫团子", "团子这只英国短毛猫最近掉毛很厉害", "英国的天气今天特别冷"),
+        "ja": ("レナは毎週土曜日の朝に水泳教室がある", "レナの水泳教室、今週は休みだって", "土曜日は雨らしいよ"),
+        "ko": ("레나는 매주 토요일 아침에 수영 수업이 있다", "레나 수영 수업 이번 주는 쉰대", "토요일에 비 온대"),
+        "th": ("ลีน่าแพ้ถั่วลิสง ห้ามกินขนมที่มีถั่ว", "อย่าลืมว่าลีน่าแพ้ถั่วลิสงนะ", "วันนี้ฝนตกหนักมาก"),
         "de": ("Lena hat jeden Dienstag Schwimmtraining im Westbad", "Lena, Schwimmtraining fällt diese Woche aus",
                "Am Dienstag ist der Markt geschlossen"),
         "pl": ("Zosia chodzi do szkoły podstawowej przy ulicy Długiej", "Zosia dziś nie idzie do szkoły, ma katar",
@@ -101,16 +101,16 @@ class Mentions(unittest.TestCase):
                 self.assertFalse(mentioned(fact, other), other)
 
     def test_a_name_alone_is_not_a_mention(self):
-        # The three pairs of アントン are one name, not three shared words.
-        self.assertFalse(mentioned("アントンは砂糖なしのブラックコーヒーを飲む", "アントンはどこ？"))
+        # The three pairs of ソフィア are one name, not three shared words.
+        self.assertFalse(mentioned("ソフィアは砂糖なしのブラックコーヒーを飲む", "ソフィアはどこ？"))
 
     def test_a_shared_five_letter_prefix_is_not_a_rare_word(self):
         # «commercial» is long, but «comment» only shares its first five letters.
-        self.assertFalse(mentioned("Ksenia recherche un responsable commercial", "Comment ça va ?"))
+        self.assertFalse(mentioned("Claire recherche un responsable commercial", "Comment ça va ?"))
         self.assertTrue(mentioned("Ilya moved to Lisbon for a transcription job", "the transcriptions are done"))
 
     def test_a_latin_prefix_never_meets_a_mixed_token(self):
-        self.assertFalse(mentioned("Антон получает уведомления только на telegram-юзернейм",
+        self.assertFalse(mentioned("Илья получает уведомления только на telegram-юзернейм",
                                    "добавь telegram_react в список"))
 
     def test_a_month_is_not_a_topic(self):
@@ -159,8 +159,8 @@ class Numbers(unittest.TestCase):
         self.assertEqual(dream._numbers("a5b v0.21.6"), {"6"})
 
     def test_conflict_in_chinese(self):
-        old = "伊娃每周六上午在酒店游泳池上游泳课，每节课800泰铢。"
-        new = "伊娃每周六上午在酒店游泳池上游泳课，每节课900泰铢。"
+        old = "莉娜每周六上午在酒店游泳池上游泳课，每节课800泰铢。"
+        new = "莉娜每周六上午在酒店游泳池上游泳课，每节课900泰铢。"
         self.assertEqual(dream.find_conflicts(new, old)[0]["fact_numbers"], ["900"])
 
     def test_month_markers_are_whole_words(self):
@@ -183,18 +183,18 @@ class ReviewFixes(unittest.TestCase):
             self.assertEqual(dream.other_month(name.upper()), num, name)
 
     def test_since_a_date_is_a_lasting_state(self):
-        for text in ("Anton is a doctor since 14 November 2020.", "Антон врач с 14 ноября 2020 года.",
-                     "Since 14 November 2020 Anton can do 20 pushups.", "Lena geht seit 1. September zur Schule."):
+        for text in ("Tom is a doctor since 14 November 2020.", "Илья врач с 14 ноября 2020 года.",
+                     "Since 14 November 2020 Tom can do 20 pushups.", "Lena geht seit 1. September zur Schule."):
             with self.subTest(text=text):
                 self.assertFalse(dream.is_ephemeral_fact(text))
 
     def test_a_profession_is_not_a_visit(self):
-        self.assertFalse(dream.is_ephemeral_fact("Anton is a doctor, born on 14 November 1990."))
+        self.assertFalse(dream.is_ephemeral_fact("Tom is a doctor, born on 14 November 1990."))
         self.assertTrue(dream.is_ephemeral_fact("Lily goes to the doctor on 14 November."))
         self.assertTrue(dream.is_ephemeral_fact("Тёме к врачу 5 ноября в 16:30"))
 
     def test_a_deadline_needs_a_whole_date(self):
-        self.assertFalse(dream.is_ephemeral_fact("On 14 November Anton could do 20 pushups."))
+        self.assertFalse(dream.is_ephemeral_fact("On 14 November Tom could do 20 pushups."))
         self.assertTrue(dream.is_ephemeral_fact("Транспортный налог надо заплатить до 1 декабря"))
         self.assertTrue(dream.is_ephemeral_fact("Bu formu 30/11'e kadar teslim et"))
 
@@ -209,9 +209,9 @@ class ReviewFixes(unittest.TestCase):
         self.assertFalse(mentioned("apples には ので とも へや", "oranges には ので とも へや"))
 
     def test_english_content_words_are_not_foreign_stopwords(self):
-        self.assertIn("solo", dream.sig_tokens("Anton prefers solo travel"))
+        self.assertIn("solo", dream.sig_tokens("Martin prefers solo travel"))
         self.assertIn("fare", dream.sig_tokens("the bus fare went up"))
-        self.assertFalse(dream._store_duplicates("Anton prefers solo travel abroad", "Anton prefers travel abroad"))
+        self.assertFalse(dream._store_duplicates("Martin prefers solo travel abroad", "Martin prefers travel abroad"))
 
     def test_stretches_are_indexed(self):
         import time
@@ -239,7 +239,7 @@ class ReviewFixes251(unittest.TestCase):
         self.assertTrue(dream.is_ephemeral_fact("Экзамен с 15.00 завтра"))
 
     def test_since_takes_out_only_its_own_phrase(self):
-        text = "Call on 14 November 2026; Anton has worked here since 14 November 2020."
+        text = "Call on 14 November 2026; Tom has worked here since 14 November 2020."
         self.assertTrue(dream.is_ephemeral_fact(text))
         self.assertTrue(dream.is_expired_event(text, date(2026, 12, 21)))
         self.assertFalse(dream.is_expired_event(text, date(2026, 11, 1)))
@@ -265,7 +265,7 @@ class ReviewFixes251(unittest.TestCase):
     def test_same_first_character_is_not_a_chain(self):
         # 学校 and 学生 share 学 but neither continues the other: two stretches, as before.
         self.assertEqual(len(dream.gram_stretches({"学校", "学生"})), 2)
-        self.assertEqual(len(dream.gram_stretches({"搬到", "到清", "清迈"})), 1)
+        self.assertEqual(len(dream.gram_stretches({"搬到", "到上", "上海"})), 1)
 
 
 class Themes(unittest.TestCase):

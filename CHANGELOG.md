@@ -3,6 +3,21 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.5.3 — 2026-10-13
+
+### Added
+
+- **The dream says when the fact store cannot fill up.** holographic with `scope: user`, `chat` or `thread` keeps
+  facts in a database per user / chat / topic, which the dream does not read (it would carry one chat's facts
+  into memory every chat sees), and a cron job — no chat — writes nothing, so the weekly extraction stored nothing
+  without a word. With `cron_writes: false` a cron job is read-only. Now the report (`fact_store_note`), the diary
+  and `install.py --check` name the reason, and the extraction gate does not wake the model, keeping its cursor.
+  The memory-file review is unaffected; `fact_source: none` makes it explicit.
+
+### Changed
+
+- Examples in comments, tests and this changelog use fictional names only.
+
 ## 2.5.2 — 2026-10-13
 
 Fixes from a second external review (Codex) of 2.5.1, each with a test. It confirmed 7 of the 8 earlier findings
@@ -12,7 +27,7 @@ fixed and one partly, and found what the 2.5.1 fixes broke.
 
 - **"Since <date>" hid real events.** 2.5.1 treated a whole fact as durable when "since / с / od / dal …" and a
   date appeared anywhere in it, so a range («Экзамен с 15.11.2026 по 17.11.2026», «Egzaminy od 14 listopada do 16
-  listopada»), a time («с 15.00») or an unrelated clause ("Call on 14 November; Anton has worked here since 2020")
+  listopada»), a time («с 15.00») or an unrelated clause ("Call on 14 November; Tom has worked here since 2020")
   was no longer an event. Now only the "since <date>" phrase itself is taken out before the check, a range stays
   an event, and a day-month in digits needs a real month (15.00 is a time).
 - **Deadlines with dashes** ("by 14-11-2026", «до 14-11-2026») were missed by the 2.5.1 deadline pattern.
@@ -32,7 +47,7 @@ Fixes from an external review of 2.5.0 (Codex), each with a test in `tests/test_
 - **A month name in capitals crashed the pass**: «14 KASIM 2026» matched the Turkish month case-insensitively,
   but its lower case was not a key — `KeyError`, and the night's dream failed. Month names are looked up without
   case and diacritics.
-- **A profession with a date was a one-off event**: "Anton is a doctor since 14 November 2020" and «Антон врач с
+- **A profession with a date was a one-off event**: "Tom is a doctor since 14 November 2020" and «Илья врач с
   14 ноября 2020 года» were recognised as a visit that had passed, so the fact could never be promoted. "doctor" and
   «врач» are event words only as a visit ("to the doctor", «к врачу»), and nothing "since <date>" (since, с, seit,
   desde, depuis, dal, sinds, od, sejak, «'den beri») is a one-off.
@@ -61,7 +76,7 @@ only in Russian, English and Thai.
 - **Chinese, Japanese, Korean, Thai** (and Lao, Khmer, Myanmar) are compared by character n-grams,
   as the holographic store compares them: pairs for Han/kana and Hangul, triples for the Southeast
   Asian scripts. Pairs of function characters (什么, 我们, には) and filler runs (ありがとう, ขอบคุณ)
-  are dropped. Shared n-grams count by the stretch of text they cover — the three pairs of アントン
+  are dropped. Shared n-grams count by the stretch of text they cover — the three pairs of ソフィア
   are one name, so a name alone is not a mention; a Han stretch weighs a word per two characters, a
   lone Thai triple half a word. Themes take only Han pairs that are words.
 - **Latin languages**: stems without diacritics (szkoła / szkole, öğretmen / ogretmeni were two
