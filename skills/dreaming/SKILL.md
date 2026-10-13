@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.6.1
+version: 2.7.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
@@ -65,6 +65,7 @@ in each of them (`references/scoring.md`, "Every language").
 | Payload section | What you do |
 |---|---|
 | `promotions` | write one short fact through `memory`, or reject it — no third outcome |
+| `previously_rejected` on an item | a human rejected this fact half a year ago or more and it was said again since: ask whether it is true now (quote the old reason); never write it without a yes |
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
 | `conflicts` | same subject, different numbers: `replace` if the newer one is trustworthy, else ask |
@@ -75,7 +76,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
 | `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
 | `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
-| `alerts` (`memory_loss`) | one line, ask whether it was intended; restore nothing |
+| `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing |
 | `dream_error` | reply `⚠️ Nightly dream failed: <reason>` and stop |
 
 ## Procedure

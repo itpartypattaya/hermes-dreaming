@@ -145,6 +145,13 @@ DEFAULT_CONFIG = {
     "memory_char_limits": {},
     # Markers of pinned §-entries in MEMORY.md: never flagged as stale.
     "pinned_markers": ["📌", "[pinned]"],
+    # Probes: phrases that must stay in the durable memory files ("allergic to peanuts"). The loss guard below
+    # catches a mass loss; one entry merged away while memory was being tidied at its limit is under its threshold.
+    # A probe that disappears raises one alert (and one more if it comes back and goes again).
+    "probes": [],
+    # A rejected fact (dream-reject.py) is asked about once more when the rejection is older than this many days
+    # and the fact was said again after it (a new store row and a human mention since); 0 = never.
+    "reject_reask_days": 180,
     # Loss guard: the pass snapshots the durable files; if on the next pass more
     # than this fraction of yesterday's entries is gone, an alert is raised
     # (a bad LLM turn or a wrong `memory replace` — never silent).
@@ -606,7 +613,7 @@ def configure(cfg):
     global STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
     global PROFILE_HINT_RE, PROFILE_CATEGORIES, DIARY_HEADING, DIARY_SECTION_RE
     global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
-    global PINNED_MARKERS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
+    global PINNED_MARKERS, PROBES, REJECT_REASK_DAYS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
     global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, KEYWORDS_ENABLED, KEYWORDS_CAP
     CONFIG = cfg
@@ -688,6 +695,11 @@ def configure(cfg):
     DURABLE_MEMORY_PATHS = list(cfg.get("durable_memory_paths") or [])
     MEMORY_CHAR_LIMITS = dict(cfg.get("memory_char_limits") or {})
     PINNED_MARKERS = [str(m) for m in (cfg.get("pinned_markers") or []) if m]
+    PROBES = [str(m).strip() for m in (cfg.get("probes") or []) if str(m or "").strip()]
+    try:
+        REJECT_REASK_DAYS = max(0, int(cfg.get("reject_reask_days", 180)))
+    except (TypeError, ValueError):
+        REJECT_REASK_DAYS = 180
     try:
         MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
     except (TypeError, ValueError):
@@ -1456,7 +1468,7 @@ def signals_for_fact(f, messages):
            "recency": recency, "consolidation": consolidation, "conceptual_richness": conceptual_richness}
     score = round(sum(WEIGHTS[k] * v for k, v in sig.items()), 3)
     meta = {"days_old": round(days_updated, 1), "rc": rc, "mentions": mentions, "ref_days": ref_days,
-            "evidence": evidence}
+            "evidence": evidence, "last_ts": last_ts or 0}
     return score, {k: round(v, 3) for k, v in sig.items()}, meta
 
 
@@ -1868,11 +1880,55 @@ def _month_markers(text):
     return {f"month:{n:02d}" for n in nums}
 
 
+# A day of the week is as much a "number" as a month: "ballet moved to Tuesdays" against the entry "ballet on Mondays"
+# is an update, and without a marker the two shared every word, so the fuzzy dedupe swallowed the move as "already in
+# memory" (audit 2026-10-13). Whole-word prefixes, longest first ("cumartesi" before "cuma"); words that are also
+# ordinary ones are left out (Turkish "pazar" is a market, Indonesian "minggu" a week).
+_WEEKDAY_NAMES = (  # a cell of five letters and more is a prefix, a shorter one or one ending in "=" a whole word
+    # Russian by its forms: "среда" is also an environment ("рабочая среда", "в среде"), "суббот…" a субботник,
+    # "воскресен…" a resurrection, "Пятницкая" a street — only the accusative and plural forms of среда count
+    "понедельник вторник среду=|средам=|средами= четверг пятница=|пятницу=|пятницы=|пятнице=|пятницам=|пятницами= "
+    "суббота=|субботу=|субботы=|субботе=|субботам=|субботами= воскресенье=|воскресенья=|воскресенью=|воскресеньям=|"
+    "воскресеньями=",
+    "monday tuesday wednesday thursday friday saturday sunday",
+    "montag dienstag mittwoch donnerstag freitag samstag|sonnabend sonntag",
+    "lunes martes miercoles jueves viernes sabado domingo",
+    "lundi mardi mercredi jeudi vendredi samedi dimanche",
+    "segunda-feira terca-feira quarta-feira quinta-feira sexta-feira sabado domingo",
+    "lunedi martedi mercoledi giovedi venerdi sabato domenica",
+    "maandag dinsdag woensdag donderdag vrijdag zaterdag zondag",
+    "pazartesi sali|salilari carsamba persembe cuma|cumalari cumartesi -",
+    "poniedzial wtorek|wtork sroda=|srode=|srody=|srodach|srodami|srodzie czwart piatek|piatk sobot niedziel",  # srodek: middle
+    "senin selasa rabu kamis jumat sabtu -",
+)
+_WEEKDAY_PREFIXES_NUM = sorted({(p, n) for row in _WEEKDAY_NAMES for n, cell in enumerate(row.split(), 1)
+                                for p in cell.split("|") if p != "-"}, key=lambda pn: -len(pn[0]))
+_WEEKDAY_WORD_RE = re.compile(r"(?<![\w-])[^\W\d_][\w-]*", re.UNICODE)
+_CJK_WEEKDAY_RE = re.compile(r"(?:星期|礼拜|禮拜|周|週)([一二三四五六日天])|([月火水木金土日])曜|([월화수목금토일])요일")
+_CJK_WEEKDAY_NUM = {**dict(zip("一二三四五六", range(1, 7))), "日": 7, "天": 7,
+                    **dict(zip("月火水木金土", range(1, 7))), **dict(zip("월화수목금토일", range(1, 8)))}
+
+
+def _weekday_markers(text):
+    """`weekday:N` (1 = Monday) for every day of the week named in the text."""
+    days = set()
+    for m in _WEEKDAY_WORD_RE.finditer(text or ""):
+        word = latin_fold(m.group(0).lower())
+        for prefix, n in _WEEKDAY_PREFIXES_NUM:
+            if word == prefix.rstrip("=") or (len(prefix) >= 5 and not prefix.endswith("=") and word.startswith(prefix)):
+                days.add(n)
+                break
+    for m in _CJK_WEEKDAY_RE.finditer(text or ""):
+        ch = next(g for g in m.groups() if g)
+        days.add(7 if m.group(2) == "日" else _CJK_WEEKDAY_NUM[ch])
+    return {f"weekday:{n}" for n in days}
+
+
 def _numbers(text):
     body = LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
     normalized = THOUSANDS_RE.sub("", _norm(body))
     nums = {n.strip(".,:") for n in NUMBER_RE.findall(normalized)}
-    return {n for n in nums if n} | _month_markers(normalized)
+    return {n for n in nums if n} | _month_markers(normalized) | _weekday_markers(normalized)
 
 
 def find_conflicts(content, memory_text):
@@ -1945,7 +2001,9 @@ def _store_duplicates(a, b):
     for mine, other in ((wa - wb, wb), (wb - wa, wa)):
         other_stems = {_stem(w) for w in other if len(w) >= 5}
         for w in mine:
-            if w in stop or (len(w) >= 5 and _stem(w) in other_stems):
+            # A word with a digit is never an inflection: "2026-10-20" and "2026-09-15" share the stem "2026-", and two
+            # dates of one recurring event were folded into one fact (audit 2026-10-13).
+            if w in stop or (len(w) >= 5 and not any(c.isdigit() for c in w) and _stem(w) in other_stems):
                 continue
             return False
     return True
@@ -2047,21 +2105,46 @@ def is_rejected(content, rejected):
     """Match by text fingerprint or by rewording of the same fact (both
     directions — a short human rejection must be able to close a long
     re-extracted fact, with the same strict reverse conditions as dedupe)."""
+    return rejection_of(content, rejected) is not None
+
+
+def rejection_of(content, rejected):
+    """The latest reject record that matches `content` (see is_rejected), or None."""
     if not rejected:
-        return False
+        return None
     fingerprint = _fact_fingerprint(content)
     item_stems = _stems(sig_tokens(content))
+    found = []
     for rec in rejected.values():
         if not isinstance(rec, dict):
             continue
         if rec.get("fingerprint") == fingerprint:
-            return True
+            found.append(rec)
+            continue
         text = rec.get("content") or ""
         if not text or len(item_stems) < 4:
             continue
         if _covers(item_stems, _stems(sig_tokens(text))):
-            return True
-    return False
+            found.append(rec)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)  # an unreadable date loses to any readable one
+    return max(found, key=lambda r: _parse_iso(str(r.get("at") or r.get("rejected_at") or "")) or epoch) if found         else None
+
+
+def said_again(fact, meta, rec, now=None):
+    """True when a rejection is old enough to ask about once more and the fact was said again after it: its store
+    row was created after the rejection AND a human mentioned it after it. A rejection is not forever — "no longer
+    does ballet" was right in May and wrong once she went back in September (mem0#7612 is the same trap with
+    expiry). But "said again" alone cannot tell that from the core re-extracting the same stale fact while people
+    still talk about it — the very case the list was made for (twelve identical questions in five weeks) — so only a
+    rejection older than `reject_reask_days` (180; 0 = never) is asked about again, and a second "no" starts the
+    count over. The same old row stays silenced."""
+    if not REJECT_REASK_DAYS:
+        return False
+    at = _parse_iso(str(rec.get("at") or rec.get("rejected_at") or ""))
+    created = _parse_ts(fact.get("created_at"))
+    if at is None or created is None or (now or _now()) - at < timedelta(days=REJECT_REASK_DAYS):
+        return False
+    return created > at and (meta.get("last_ts") or 0) > at.timestamp()
 
 
 # ---------------------------------------------------------------------------
@@ -2671,13 +2754,45 @@ def load_snapshot(path):
         return {}
 
 
-def check_memory_loss(mem_md, snapshot_path):
+_PROBE_SENTENCE_RE = re.compile(r"[.;!?。；！？\n]+")
+
+
+def probe_found(probe, memory_text):
+    """A probe is in memory when its text is (case, ё and spacing aside), or every word of it is in one entry
+    (any form of it: "allergic to peanuts" / "peanut allergy" is not that, "аллергия на арахис" / "аллергии на
+    арахис" is)."""
+    if _norm(probe) in _norm(memory_text):
+        return True
+    stems = _stems(sig_tokens(probe))
+    # in one sentence: "allergic to pollen; Bob likes peanuts" holds both words and not the fact (review 2026-10-13)
+    return bool(stems) and any(stems <= _stems(sig_tokens(sentence)) for chunk in _memory_chunks(memory_text)
+                               for sentence in _PROBE_SENTENCE_RE.split(chunk))
+
+
+def check_probes(memory_text, previous_missing):
+    """(alerts, missing): one alert per probe that went missing since the previous pass (or was never found);
+    a probe still missing stays quiet — the alert said it, the agent cannot restore it on its own."""
+    missing = [p for p in PROBES if not probe_found(p, memory_text)]
+    before = set(previous_missing or [])
+    alerts = [{"kind": "probe_missing", "probe": p[:120],
+               "message": f"memory no longer holds “{p[:120]}” (a probe in dreaming.json) — check whether an "
+                          f"entry was merged or removed by mistake."} for p in missing if p not in before]
+    return alerts, missing
+
+
+def check_memory_loss(mem_md, snapshot_path, memory_text=None):
     """Compare durable files with the previous snapshot; write a new one.
     Returns a list of alerts (possibly empty)."""
     if not snapshot_path:
+        if PROBES:  # without the snapshot a missing probe would alert every night
+            print("[dream] warn: probes are checked only with a snapshot state (--snapshot-state)", file=sys.stderr)
         return []
     previous = load_snapshot(snapshot_path)
     current, alerts = {}, []
+    probes_missing = []
+    if PROBES and memory_text is not None:
+        probe_alerts, probes_missing = check_probes(memory_text, previous.get("_probes_missing"))
+        alerts.extend(probe_alerts)
     for p in _memory_candidate_paths(mem_md):
         name = _rel_home(p)
         prev_sizes, prev_heads = _snapshot_sizes(previous.get(name))
@@ -2730,7 +2845,8 @@ def check_memory_loss(mem_md, snapshot_path):
                                               f"a replace did not drop the rest of it."})
     try:
         _write_private(snapshot_path, json.dumps(
-            {**current, "_at": _now().isoformat(timespec="seconds")}, ensure_ascii=False))
+            {**current, "_at": _now().isoformat(timespec="seconds"),
+             **({"_probes_missing": probes_missing} if probes_missing else {})}, ensure_ascii=False))
     except OSError as e:
         print(f"[dream] warn: snapshot not written: {e}", file=sys.stderr)
     return alerts
@@ -3138,12 +3254,19 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     scored = []
     for f in facts:
         score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store))
+        rejection = rejection_of(f["content"], rejected)
+        again = rejection is not None and said_again(f, meta, rejection)
         scored.append({**f, "score": score, "signals": sig, "meta": meta,
                        "unsafe": classify_unsafe(f["content"]),
                        "in_memory": already_in_memory(f["content"], memory_text),
                        "staged": bool(staged_text)
                        and already_in_memory(f["content"], staged_text),
-                       "rejected": is_rejected(f["content"], rejected)})
+                       "rejected": rejection is not None and not again,
+                       # said again after a human rejected it: a candidate once more, but one to ask about
+                       **({"previously_rejected": {"at": str(rejection.get("at") or rejection.get("rejected_at")
+                                                             or "")[:10],
+                                                   "reason": str(rejection.get("reason") or "")[:160]}}
+                          if again else {})})
 
     # Rejected by a human leaves through no section — not as a candidate, not
     # as a "new fact", not as a relevance question. Removed BEFORE quarantine:
@@ -3304,7 +3427,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
             print(f"[dream] warn: seen-state not written: {e}", file=sys.stderr)
 
     usage = memory_usage(mem_md)
-    alerts = check_memory_loss(mem_md, snapshot_state_path)
+    alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
     queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
     if queue_alert:
         alerts.append(queue_alert)
@@ -3420,6 +3543,8 @@ def _pub_fields(s):
     out = _pub_base(s)
     if s.get("store"):
         out["store"] = s["store"]  # a chat's own database: memory tool only, never fact_store / fact_feedback
+    if s.get("previously_rejected"):
+        out["previously_rejected"] = s["previously_rejected"]  # ask the human again; never write it straight away
     return out
 
 

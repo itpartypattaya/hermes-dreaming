@@ -128,7 +128,11 @@ rejection can close a long re-extracted fact under the same strict reverse
 conditions as dedupe: 0.75 coverage, ≥8 stems, ≥6 shared). Key = text
 fingerprint, never `fact_id` (sqlite reuses ids). Applied **before**
 quarantine, so a quarantined fact can be closed; a rejected secret stores only
-its fingerprint.
+its fingerprint. A rejection is not forever (2.7.0): when it is older than `reject_reask_days` (180; 0 = never)
+and the fact was said again after it — a store row created after the rejection and a human mention since — the
+fact is a candidate again, with `previously_rejected: {at, reason}`, for the agent to ask about. Younger
+rejections stay silent whatever happens: "said again" cannot be told from the core re-extracting the same stale
+fact while people still talk about it, the case the list was made for; a second "no" starts the count over.
 
 ## Dedupe against durable memory
 
@@ -162,7 +166,10 @@ computed independently of fuzzy `in_memory` — a reworded fact with a new numbe
 is exactly what fuzzy dedupe swallows. Only an identical head or an alias rule
 suppresses it. Idea from mem0 (ADD/UPDATE/NOOP) and Graphiti (edge
 invalidation), done without an LLM: the agent decides, the script never
-rewrites memory. 14-day display cooldown.
+rewrites memory. 14-day display cooldown. A month or a day of the week named in words counts as a number
+(`month:MM`, `weekday:N`, 2.7.0: "ballet moved to Tuesdays" against "ballet on Mondays" is an update); in the
+store's near-duplicate check a word with a digit is never an inflection, so two dates of one recurring event
+stay two facts.
 
 ## What a candidate carries (and why)
 
@@ -274,7 +281,10 @@ the dream.
   taken out before the check — it starts a state, not an event; a range «с 15.11 по 17.11» stays an event.
 - **alerts** — `memory_loss`: more than `memory_loss_alert_fraction` (25%) of
   the entries present at the previous pass are gone (snapshot in
-  `cache/dream-snapshot.json`). Wakes the agent; nothing is restored.
+  `cache/dream-snapshot.json`). Wakes the agent; nothing is restored. `probe_missing` (2.7.0): a phrase of
+  `probes` is no longer in the memory files — by its text, or every word of it in one sentence of an entry in any form. One alert
+  per disappearance (the missing ones are kept in the snapshot; no snapshot state, no probes); the loss guard misses one entry merged away
+  while memory was tidied at its limit.
 - **memory_usage** — chars per durable file and % of `memory_char_limits`.
 - **memory_pressure** — present only when a file is at or above
   `precheck.memory_full_pct`: `[{file, percent, chars, limit}]`, worst first. The

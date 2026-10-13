@@ -3,6 +3,38 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.0 — 2026-10-13
+
+From a review of what people report about agent memory (bugs and requests on GitHub, mem0, Graphiti).
+
+### Added
+
+- **A rejection is asked about again after half a year** (`reject_reask_days`, 180; `0` = never). The reject list
+  silenced a fact forever, so a fact that became true again ("no longer does ballet" in May, back at it in
+  September) never returned — mem0#7612 is the same trap with expiry. Now a rejection older than the setting is
+  reopened when the fact was said again after it: a store row created after the rejection and a human mention
+  since. The item carries `previously_rejected: {at, reason}` and the agent asks rather than writes; a second "no"
+  starts the count over. Younger rejections stay silent whatever happens: "said again" cannot be told from the core
+  re-extracting the same stale fact while people still talk about it — the case the list exists for.
+- **Probes** (`probes`, empty by default): phrases that must stay in the memory files — by their text, or every word
+  in one sentence of an entry, in any form. One `probe_missing` alert when one disappears (the missing ones are kept
+  in the snapshot; without a snapshot state probes are not checked), again only if it comes back and goes again. The
+  loss guard catches a mass loss; a single entry merged away while memory was tidied at its limit was under its
+  threshold.
+
+### Fixed
+
+- **A day of the week counts as a number.** "Ballet moved to Tuesdays" against the entry "ballet on Mondays" shared
+  every word, so the fuzzy dedupe called it "already in memory"; a weekday is now a marker like a month in words,
+  and the move is a `conflict` (an update to ask about). Eleven languages plus Chinese, Japanese and Korean;
+  ambiguous words are left out (Turkish `pazar`, Indonesian `minggu`, Polish `środek`; Russian by its forms, so
+  «рабочая среда», «субботник» and «воскресение» are no weekdays). Abbreviations (`Tue`, `Wed`) are not read: `sat`,
+  `wed`, `sun` and French `mon` are ordinary words; and `周` + a numeral may be a name (周一鸣). Reviewed by Codex CLI
+  before release.
+- **Two dates of one recurring event are no longer store duplicates.** In the near-duplicate check `2026-10-20`
+  and `2026-09-15` shared the five-letter stem `2026-` and counted as one word in two forms, so one appointment
+  was hidden behind the other; a word with a digit is never an inflection now.
+
 ## 2.6.1 — 2026-10-13
 
 Fixes from an audit of 2.4.0–2.6.0.

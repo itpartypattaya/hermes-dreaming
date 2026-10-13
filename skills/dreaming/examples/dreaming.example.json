@@ -36,6 +36,9 @@
   "diary": {"heading": "## Dream", "keep_sections": 90},
   "pinned_markers": ["📌", "[pinned]"],
   "memory_loss_alert_fraction": 0.25,
+  "_comment_probes": "Phrases that must stay in MEMORY.md / USER.md; one alert when one disappears.",
+  "probes": [],
+  "reject_reask_days": 180,
 
   "keywords": {"enabled": false, "cap": 10},
 

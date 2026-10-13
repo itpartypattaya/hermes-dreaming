@@ -286,6 +286,8 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 | `memory_char_limits` | char limits of MEMORY.md / USER.md. **Leave it out** and the limits are read from Hermes' own `memory.memory_char_limit` / `user_char_limit`; the example's numbers are the core defaults and will misreport an install that raised them |
 | `pending.dir`, `pending.alert_min`, `pending.alert_days` | the approval queue (`pending/memory`): when ≥`alert_min` writes have waited longer than `alert_days`, one alert is raised |
 | `pinned_markers` | entries with these markers are never asked about |
+| `probes` | phrases that must stay in MEMORY.md / USER.md (`["allergic to peanuts"]`); when one disappears — by its text, or every word of it in one sentence of an entry in any form — one `probe_missing` alert. The loss guard catches a mass loss; this catches the one entry merged away while memory was tidied at its limit. Empty by default |
+| `reject_reask_days` | a rejected fact (`dream-reject.py`) is asked about once more when the rejection is older than this (180 days) and the fact was said again since — a new store row and a human mention after it; the item carries `previously_rejected`. `0` = never |
 | `windows`, `gates`, `weights` | scoring knobs — `references/scoring.md`; `gates.md_confirmed_cooldown_days` (90) is the rest period of a confirmed entry |
 | `precheck.memory_full_pct` | fill level (%) at which a memory file alone wakes the agent (default 85; `0` disables) |
 | `precheck.timeout_sec` | how long the gate waits for `dream.py` before reporting `dream_error` (default 600) |
