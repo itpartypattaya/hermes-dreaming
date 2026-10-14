@@ -1,10 +1,10 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.7.0
+version: 2.7.3
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
-compatibility: Hermes Agent >= 0.21 (checked against 0.21.6)
+compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
 allowed-tools: memory terminal read_file
 tags: [memory, consolidation, dreaming, cron, fact-store]
 ---
@@ -68,7 +68,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `previously_rejected` on an item | a human rejected this fact half a year ago or more and it was said again since: ask whether it is true now (quote the old reason); never write it without a yes |
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
-| `conflicts` | same subject, different numbers: `replace` if the newer one is trustworthy, else ask |
+| `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask |
 | `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |
 | `memory_pressure` | consolidate the file it names before adding anything |
@@ -104,8 +104,9 @@ in each of them (`references/scoring.md`, "Every language").
      overwrite**: carry over everything worth keeping into `new_content`;
    - `multi_section: true` and a `note` when the entry has more than one line — then `new_content`
      must contain the merged entry, not just your new sentence;
-   - `replace_unsafe: true` when the entry is too long to show in full — do not replace it blind:
-     `add` a separate entry or raise the question instead.
+   - `replace_unsafe: true` when the entry is too long to show in full, holds a secret or an
+     instruction (then `entry` is a placeholder), or carried a fact that was since forgotten — do not
+     replace it blind: `add` a separate entry or raise the question instead.
 
    Pass `full_entry` as **`matched_entry`** whenever the tool accepts it: the core then pins the
    edit to that exact entry (and, with an approval gate, applies it to that entry only, however
@@ -158,7 +159,8 @@ in each of them (`references/scoring.md`, "Every language").
    turns). For each, call `fact_feedback` with `action="unhelpful"` and that `fact_id` — one call
    per item, nothing else. It changes no memory entry and deletes nothing: trust drops by 0.10, and
    below the item's `floor` (the store's own threshold, 0.3 by default) the fact leaves search and prefetch. If the tool is not in this session, skip the
-   section silently. In the report: one line with the count, no ids.
+   section silently. In the report: one line with the count, no ids. A rejected secret arrives as
+   `[hidden: secret]` with its `fact_id` only — the call needs nothing more; never ask for the text.
 7b. **`keywords_needed` — let search find the fact by other words.** holographic ≥ 0.6.0 finds a
    fact by words it does not contain only through its keywords. For each item call `fact_store`
    `action="update"` with its `fact_id` and `keywords`: 3–8 words a person might ask with that the
@@ -197,7 +199,9 @@ in each of them (`references/scoring.md`, "Every language").
    statement per fact, absolute dates taken from the message's `t`. Only what humans said about
    themselves or their world; skip one-off events, schedules, emotions of the moment, secrets, raw
    medical data, third-party claims about the user, chit-chat and anything `existing_facts`
-   already covers. At most 8 facts; zero is fine. When the JSON carries `keywords`, give each fact
+   already covers. A message carries `chat` (the chat type) and `from` (the sender's id) when they
+   are known: a first-person statement belongs to that sender only — never merge two senders'
+   statements into one person's fact; without `from`, name a person only if the text names them. At most 8 facts; zero is fine. When the JSON carries `keywords`, give each fact
    its 3–8 keywords right in the `add` (as in step 7b) — it then never joins the backlog. When a
    message says since when something holds ("moved on 1 September"), pass `valid_from` (YYYY-MM-DD);
    never use the message date as the start. An `add` answered `past_version` or `forgotten` stored
@@ -228,7 +232,8 @@ in each of them (`references/scoring.md`, "Every language").
   from the store is a separate action, only on an explicit request.
 - **Emerging themes that read like your own logs** (job names, model ids, config keys) mean a
   trusted chat has threads where the agent talks to itself: list them in `excluded_threads` (or the
-  source in `untrusted_sources`) instead of raising the gates.
+  source in `untrusted_sources`; `cron`, `subagent` and `tool` are always excluded) instead of
+  raising the gates.
 - **The memory tool cannot touch the fact store.** Without `fact_history`, `dream-reject.py` is the
   only way to silence a fact, and it writes only `cache/dream-rejected.json` (text fingerprint; a
   secret's text is never stored). `quarantined` facts are closed the same way. With it, `end` /

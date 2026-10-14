@@ -49,6 +49,8 @@ HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
 # Configuration
 # ---------------------------------------------------------------------------
 
+ALWAYS_UNTRUSTED_SOURCES = ("cron", "subagent", "tool")
+
 DEFAULT_CONFIG = {
     # IANA timezone for the diary date and for bucketing messages into "days".
     # Without it a 03:00 local dream would be filed under yesterday's UTC date.
@@ -69,7 +71,7 @@ DEFAULT_CONFIG = {
     # cron, subagent and tool runs that way (MACHINE_PACED_SOURCES), and a
     # subagent brief looks exactly like a person talking — same wording, same
     # role=user rows (external review, 2026-10-07).
-    "untrusted_sources": ["cron", "subagent", "tool"],
+    "untrusted_sources": ["cron", "subagent", "tool"],  # always included, see configure()
     # Regexes; a message whose text matches any of them never corroborates.
     # For machine text that carries no source of its own — bridge briefs
     # ("via to-mia"), bot digests, forwarded reports — which land in whatever
@@ -746,8 +748,11 @@ def configure(cfg):
     env_sources = os.environ.get("DREAM_UNTRUSTED_SOURCES")
     raw_sources = (env_sources.split(",") if env_sources is not None
                    else (cfg.get("untrusted_sources") or []))
-    # `cron` is not configurable away: a job prompt is never speech.
-    UNTRUSTED_SOURCES = {"cron"} | {str(s).strip() for s in raw_sources if str(s).strip()}
+    # Machine-paced sources are not configurable away: a job prompt, a subagent
+    # brief and a tool-driven turn are never speech. A list in dreaming.json
+    # replaces the default instead of extending it, and the shipped example once
+    # listed only `cron` (Codex review of 2.7.2, 2026-10-14).
+    UNTRUSTED_SOURCES = set(ALWAYS_UNTRUSTED_SOURCES) | {str(s).strip() for s in raw_sources if str(s).strip()}
     EXCLUDE_PATTERNS = []
     for pat in (cfg.get("exclude_patterns") or []):
         try:
@@ -1372,7 +1377,7 @@ def load_messages(db, days):
         seen_rows.add(key)
         out.append({"id": mid, "content": content, "ts": ts, "day": _day_of(ts),
                     "tokens": sig_tokens(content), "store": store if store in promote else None,
-                    "own_only": own_only})
+                    "own_only": own_only, "chat_type": chat_type, "user_id": user_id})
     return out
 
 
@@ -1805,6 +1810,41 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
             and len(shared) / len(chunk_stems) >= SUMMARY_CONTAINMENT)
 
 
+# A negation flips a fact without changing its words: «<person> ест арахис» and
+# «<person> не ест арахис» share every significant stem (negations are
+# stopwords for corroboration), so fuzzy dedupe called the second "already in
+# memory" — the changed fact was dropped silently, and an old rejection closed
+# the opposite one (Codex review of 2.7.2, 2026-10-14). A candidate whose
+# negations differ from those of the clauses of an entry that speak about the
+# same thing is no duplicate of it: it stays a candidate and goes to
+# `conflicts` as a possible update.
+EN_POLARITY = set("""not no never nor neither none nothing nobody without cannot
+doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn less more""".split())
+_POLARITY_WORDS = {w.replace("ё", "е") for w in POLARITY_STOP | EN_POLARITY}
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;,\n]+")
+
+
+def _polarity(text):
+    return _store_words(text) & _POLARITY_WORDS
+
+
+def _entry_polarity(content, chunk):
+    """Negations of the clauses of *chunk* that speak about what *content* does (two shared stems or more; the
+    single closest clause when none does) — the rest of a long entry is another statement."""
+    item_stems = _stems(sig_tokens(content))
+    scored = [(clause, len(item_stems & _stems(sig_tokens(clause))))
+              for clause in _CLAUSE_SPLIT_RE.split(chunk or "") if clause.strip()]
+    if not scored:
+        return set()
+    near = [clause for clause, n in scored if n >= 2] or [max(scored, key=lambda p: p[1])[0]]
+    return set().union(*(_polarity(clause) for clause in near))
+
+
+def polarity_differs(content, chunk):
+    """True when `content` negates (or un-negates) what the matching part of `chunk` says."""
+    return _polarity(content) != _entry_polarity(content, chunk)
+
+
 HEAD_CHARS = 40
 HEAD_MATCH_MIN_STEM_RATIO = 0.6
 
@@ -1829,7 +1869,7 @@ def exact_or_alias_in_memory(content, memory_text):
                 continue
             if norm in chunk_norm:
                 return True
-            if not (_numbers(content) <= _numbers(chunk)):
+            if not (_numbers(content) <= _numbers(chunk)) or polarity_differs(content, chunk):
                 continue
             chunk_stems = _stems(sig_tokens(chunk))
             if (not item_stems
@@ -1852,9 +1892,9 @@ def already_in_memory(content, memory_text, token_threshold=0.62):
     item_stems = _stems(item_tokens)
     for chunk in _memory_chunks(memory_text):
         chunk_stems = _stems(sig_tokens(chunk))
-        if _covers(item_stems, chunk_stems, token_threshold):
-            return True
-        if _same_subject(item_stems, chunk_stems, content, chunk):
+        if ((_covers(item_stems, chunk_stems, token_threshold)
+             or _same_subject(item_stems, chunk_stems, content, chunk))
+                and not polarity_differs(content, chunk)):
             return True
     return False
 
@@ -2012,13 +2052,12 @@ def _numbers(text):
 
 
 def find_conflicts(content, memory_text):
-    """Memory chunks that look like the same subject with different numbers/dates."""
+    """Memory chunks that look like the same subject with different numbers/dates,
+    or with the opposite negation (see polarity_differs)."""
     item_stems = _stems(sig_tokens(content))
     if len(item_stems) < CONFLICT_MIN_SHARED:
         return []
     item_nums = _numbers(content)
-    if not item_nums:
-        return []
     out = []
     for chunk in _memory_chunks(memory_text):
         chunk_stems = _stems(sig_tokens(chunk))
@@ -2028,9 +2067,16 @@ def find_conflicts(content, memory_text):
         overlap = len(shared) / min(len(item_stems), len(chunk_stems))
         if len(shared) < CONFLICT_MIN_SHARED or overlap < CONFLICT_MIN_OVERLAP:
             continue
+        if polarity_differs(content, chunk):
+            out.append({"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
+                        "fact_negations": sorted(_polarity(content)),
+                        "memory_negations": sorted(_entry_polarity(content, chunk))})
+            continue
+        if not item_nums:
+            continue
         chunk_nums = _numbers(chunk)
         if chunk_nums and chunk_nums != item_nums and not (item_nums <= chunk_nums):
-            out.append({"entry": chunk[:160],
+            out.append({"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
                         "fact_numbers": sorted(item_nums - chunk_nums),
                         "memory_numbers": sorted(chunk_nums - item_nums)})
     return out
@@ -2152,13 +2198,20 @@ def trust_feedback_items(suppressed, rejected, fact_source_name):
         if isinstance(rec, dict):
             reason = str(rec.get("reason") or "")
             when = str(rec.get("at") or rec.get("rejected_at") or "")[:10]
+        # Rejected facts leave before quarantine, so a secret the human closed with
+        # dream-reject.py came back here in clear text (Codex review of 2.7.2): the call
+        # needs only the id.
+        unsafe = s.get("unsafe") or classify_unsafe(s["content"])
+        if unsafe or classify_unsafe(reason):
+            reason = ""
         out.append({
             "fact_id": s["fact_id"],
-            "content": s["content"][:200],
+            "content": f"[hidden: {unsafe}]" if unsafe else s["content"][:200],
             "trust": round(trust, 2),
             # The store's own floor, in the item itself: the precheck hands the agent the items,
             # not `gates`, so a floor kept only there never reached the nightly prompt.
             "floor": round(floor, 2),
+            "fingerprint": fingerprint,
             "rejected_at": when,
             "rejected_reason": reason[:160],
             "why": (f"rejected by a human{' on ' + when if when else ''}, but the store still "
@@ -2227,7 +2280,7 @@ def rejection_of(content, rejected):
         text = rec.get("content") or ""
         if not text or len(item_stems) < 4:
             continue
-        if _covers(item_stems, _stems(sig_tokens(text))):
+        if _covers(item_stems, _stems(sig_tokens(text))) and _polarity(content) == _polarity(text):
             found.append(rec)
     epoch = datetime.min.replace(tzinfo=timezone.utc)  # an unreadable date loses to any readable one
     return max(found, key=lambda r: _parse_iso(str(r.get("at") or r.get("rejected_at") or "")) or epoch) if found         else None
@@ -2281,6 +2334,10 @@ def unseen(items, bucket, now, cooldown_days=None, key=None):
             continue
         fresh.append(item)
     return fresh
+
+
+def _feedback_key(item):
+    return item.get("fingerprint") or _fact_fingerprint(item["content"])
 
 
 def mark_seen(items, bucket, now, key=None):
@@ -2572,12 +2629,29 @@ PASSWORD_MARKER_RE = re.compile(
     r"(?:парол[ьяию]|password|passwd|passphrase|seed[- ]?фраза|seed[- ]?phrase|"
     r"секретн\w{0,4}\s+(?:ключ|код)|api[- ]?ключ|private\s+key|2fa[- ]?код|"
     r"пин[- ]?код|\bпин\b|\bpin\b|код\s+от)"
-    r"(?:[^\n:=—]{0,40})?[:=—]\s*\S{4,}",
+    r"(?:[^\n:=—]{0,40})?[:=—]\s*(?P<value>\S{4,})",
     re.IGNORECASE)
-# …and these say "we changed it", not "here it is".
+# …and these say "we changed it", not "here it is" — but only in the marker's
+# own sentence, and only when what follows the separator is a word rather than
+# a credential: "Changed password: hunter2" and "Забыл список. Пароль: hunter2"
+# both hand the value over (Codex review of 2.7.2, 2026-10-14).
 PASSWORD_EVENT_RE = re.compile(
     r"(?:смен\w+|помен\w+|обнов\w+|сброс\w+|забыл\w*|changed|rotated|reset|forgot)",
     re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.!?\n]")
+# A digit or a symbol makes the value a credential whatever verb comes first;
+# "сменила пароль от Wi-Fi — новый знает только она" stays an event.
+_CREDENTIAL_VALUE_RE = re.compile(r"[\d!@#$%^&*_+=~|\\/<>{}\[\]]")
+
+
+def _password_marker_unsafe(text):
+    for marker in PASSWORD_MARKER_RE.finditer(text):
+        if _CREDENTIAL_VALUE_RE.search(marker.group("value")):
+            return True
+        ends = [m.end() for m in _SENTENCE_END_RE.finditer(text, 0, marker.start())]
+        if not PASSWORD_EVENT_RE.search(text[(ends[-1] if ends else 0):marker.end()]):
+            return True
+    return False
 INJECTION_RE = re.compile(
     r"(?:"
     # Stems, not exact forms: «Игнорируйте», «игнорировать», «забудьте» are the
@@ -2610,8 +2684,7 @@ def classify_unsafe(content):
     text = content or ""
     if SECRET_RE.search(text):
         return "secret"
-    marker = PASSWORD_MARKER_RE.search(text)
-    if marker and not PASSWORD_EVENT_RE.search(text[:marker.end()]):
+    if _password_marker_unsafe(text):
         return "secret"
     if INJECTION_RE.search(text):
         return "injection"
@@ -2761,6 +2834,15 @@ def nearest_entry(content, memory_text=None, sources=None):
     item = {"entry": best[:160], "overlap": round(best_score, 2)}
     if best_src:
         item["target"] = best_src
+    # An entry a human wrote with a credential (or an instruction) in it: the
+    # candidate still learns that it has a neighbour, but not its text — the
+    # full entry and the replace anchor carried the secret into the prompt, the
+    # cache and the cron log (Codex review of 2.7.2, 2026-10-14).
+    if classify_unsafe(best):
+        item.update(entry=ENTRY_REDACTED, replace_unsafe=True,
+                    note="this entry holds a secret or an instruction and is not shown: "
+                         "do not replace it — add a separate entry or ask")
+        return item
     # `replace` rewrites the WHOLE entry, so the agent must know what it is
     # about to overwrite: how big the entry is, whether it has more than one
     # line/section, and — while it fits the prompt budget — its full text, so
@@ -2905,7 +2987,9 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             # loss there is — it must not slip through as "nothing to compare"
             # and then be overwritten by an empty snapshot. Alert once; the
             # snapshot forgets the file only after the alert was raised.
-            if len(prev) >= 4:
+            # The same floor as for a file that is still there: one big entry is worth an alert too
+            # (Codex review of 2.7.2 — a lone 2000-character entry vanished with its file, silently).
+            if len(prev) >= 4 or sum(prev_sizes.values()) >= LOSS_MIN_CHARS:
                 alerts.append({"kind": "memory_loss", "file": name,
                                "lost": len(prev), "had": len(prev),
                                "message": f"{name}: the file is missing — all {len(prev)} entries "
@@ -3022,7 +3106,8 @@ def _revert_unacked(seen, state_db):
         if not isinstance(bucket, dict):
             continue
         for k in keys or []:
-            if bucket.pop(k, None) is not None:
+            # Ride-along sections are reopened silently: on a night the gate kept shut nobody was meant to answer.
+            if bucket.pop(k, None) is not None and bucket_name not in ("trust_feedback", "keywords_needed"):
                 dropped += 1
     reask = set(pending.get("asked") or [])
     if dropped or reask:
@@ -3479,7 +3564,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # the tool.
     # Chat-store facts get neither call: a cron session cannot reach a chat's database.
     feedback_pending = trust_feedback_items([s for s in suppressed if not s.get("store")], rejected, fact_source())
-    feedback_fresh = unseen(feedback_pending, seen_feedback, now)
+    feedback_fresh = unseen(feedback_pending, seen_feedback, now, key=_feedback_key)
     # Only the shown slice is marked, so what the cap cuts off is not suppressed
     # — it simply comes tomorrow. The counter means "resting", nothing else.
     feedback = feedback_fresh[:FEEDBACK_CAP]
@@ -3505,7 +3590,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     if seen_state_path:
         mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
         mark_seen(published_promotions, seen_promotions, now)
-        mark_seen(feedback, seen_feedback, now)
+        mark_seen(feedback, seen_feedback, now, key=_feedback_key)
         mark_seen(keywords_needed, seen_keywords, now)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
@@ -3514,6 +3599,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         prune_seen(seen_promotions, now, cooldown_days=PROMOTION_COOLDOWN_DAYS)
         prune_seen(seen_feedback, now)
         prune_seen(seen_keywords, now)
+    # The queue alert stamps its own cooldown into `seen`: computed before the state is written, or the stamp
+    # never reached the file and the same alert woke the agent every night (Codex review of 2.7.2).
+    queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
+    if seen_state_path:
         # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
         fp = _fact_fingerprint
         seen["_pending"] = {
@@ -3521,7 +3610,12 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
             "seen": {"new_facts": [fp(s["content"]) for s in new_facts + new_facts_dups],
                      "fact_decays": [fp(s["content"]) for s in published_decays],
                      "conflicts": [fp(s["content"]) for s in published_conflicts],
-                     "promotions": [fp(s["content"]) for s in published_promotions]},
+                     "promotions": [fp(s["content"]) for s in published_promotions],
+                     # Ride-along sections are marked even when nothing else woke the agent; without an entry
+                     # here a night the gate kept shut still rested them for the whole cooldown (Codex review
+                     # of 2.7.2).
+                     "trust_feedback": [_feedback_key(i) for i in feedback],
+                     "keywords_needed": [fp(i["content"]) for i in keywords_needed]},
             "asked": [d["key"] for d in md_dec if d.get("key")],
         }
         try:
@@ -3531,7 +3625,6 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
 
     usage = memory_usage(mem_md)
     alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
-    queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
     if queue_alert:
         alerts.append(queue_alert)
     store_note = fact_store_note()
@@ -3671,9 +3764,10 @@ def _pub_base(s):
 # ---------------------------------------------------------------------------
 
 REDACTED = "[redacted: the entry holds a secret — look it up in the file by index]"
+ENTRY_REDACTED = "[redacted: the entry holds a secret or an instruction]"
 
 
-def _safe_preview(text, n):
+def _safe_preview(text, n, redacted=REDACTED):
     """Preview of durable text for the prompt and the diary.
 
     A MEMORY.md entry can itself hold a credential (a human wrote it there).
@@ -3681,7 +3775,7 @@ def _safe_preview(text, n):
     diary carried the entry verbatim — the one place where a secret from memory
     reached the prompt and then a file on disk (external review, 2026-10-07)."""
     if classify_unsafe(text):
-        return REDACTED
+        return redacted
     return (text or "")[:n]
 
 
@@ -3900,8 +3994,14 @@ def load_forgotten(db=None, errors=None):
     path = db or fact_store_path()
     try:
         out = _tombstones(path)
-    except sqlite3.Error:  # the shared store, as before 2.6.0: unreadable = nothing to sweep this time
+    except sqlite3.Error as exc:
+        # Unreadable is not "nothing was forgotten": the gate used to exit clean and silent while the copies
+        # stayed (Codex review of 2.7.2). Reported like a chat store's error; the next run tries again.
         out = {}
+        if errors is not None:
+            errors.append(f"{path}: {exc}")
+        else:
+            print(f"[dream] warn: tombstones of the fact store unreadable: {exc}", file=sys.stderr)
     if not db:  # and those of the chat stores promoted now or before, as "<key>#<id>"
         stores = list_chat_stores()
         for key in sorted(sweep_stores() & set(stores)):
@@ -4062,6 +4162,58 @@ def _scrub_strings(node, ids, index):
     return removed
 
 
+FORGOTTEN_COPY = "[removed: a forgotten fact]"
+_COPY_PIECE_RE = re.compile(r"\n|(?<=[.!?;])\s+")
+
+
+def _carries_forgotten(text, hashes):
+    """True when *text* holds a forgotten fact verbatim — as a whole, as a line or as a sentence. Only the
+    preview hashes are left of its text, so a reworded copy is not found; a memory entry written from the fact
+    and an `existing_facts` line of the extraction pass are verbatim."""
+    if not hashes or not isinstance(text, str) or not text.strip():
+        return False
+    for piece in {text, *_COPY_PIECE_RE.split(text)}:
+        piece = piece.strip().lstrip("§").strip()
+        if piece and hashes & {_preview_hash(piece[:85]), _preview_hash(_diary_text(piece, 85))}:
+            return True
+    return False
+
+
+def _scrub_copies(node, hashes):
+    """Copies of forgotten facts that ride WITHOUT their fact_id — a memory entry shown as another candidate's
+    `nearest_entry`, a "still relevant?" entry, a conflict's entry, a bare string in a list. `_drop_fact_items`
+    only knew items by id, and these stayed in the payload (Codex review of 2.7.2). A `nearest_entry` goes as a
+    whole: its anchor without the text is a blind replace."""
+    removed = 0
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if key == "diary":
+                continue  # line rules of its own (_scrub_strings)
+            if isinstance(value, str):
+                if value != FORGOTTEN_COPY and _carries_forgotten(value, hashes):
+                    node[key] = FORGOTTEN_COPY
+                    removed += 1
+            elif key == "nearest_entry" and isinstance(value, dict) and any(
+                    _carries_forgotten(v, hashes) for v in value.values()):
+                node[key] = {"entry": FORGOTTEN_COPY, "replace_unsafe": True}
+                removed += 1
+            else:
+                removed += _scrub_copies(value, hashes)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, str):
+                if value != FORGOTTEN_COPY and _carries_forgotten(value, hashes):
+                    node[i] = FORGOTTEN_COPY
+                    removed += 1
+            else:
+                removed += _scrub_copies(value, hashes)
+    return removed
+
+
+def _preview_set(index):
+    return {h for rec in index.values() for h in (rec or {}).get("previews", [])}
+
+
 def scrub_result(result):
     """A pass's result without facts forgotten while it ran (it loaded them before the forget): before it is
     published, not after."""
@@ -4069,7 +4221,8 @@ def scrub_result(result):
     if not ids:
         return 0
     index = forgotten_diary_index(ids)
-    return _drop_fact_items(result, ids) + _scrub_strings(result, ids, index)
+    return (_drop_fact_items(result, ids) + _scrub_strings(result, ids, index)
+            + _scrub_copies(result, _preview_set(index)))
 
 
 def _dream_job_dirs(home):
@@ -4082,6 +4235,16 @@ def _dream_job_dirs(home):
         if script in DREAM_JOB_SCRIPTS and job.get("id"):
             out.append(os.path.join(home, "cron", "output", str(job["id"])))
     return out
+
+
+_JSON_STRING_RE = re.compile(r'"((?:[^"\\\n]|\\.){20,})"')
+
+
+def _json_string(literal):
+    try:
+        return json.loads(f'"{literal}"')
+    except ValueError:
+        return literal
 
 
 @contextlib.contextmanager
@@ -4159,7 +4322,8 @@ def forget_sweep(db=None, home=None):
     payload_path = os.path.join(home, "cache", "dream.json")
     payload = _json_file(payload_path, {})
     if payload:
-        summary["payload"] = _drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
+        summary["payload"] = (_drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
+                              + _scrub_copies(payload, _preview_set(index)))
         if summary["payload"]:
             _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -4214,12 +4378,16 @@ def forget_sweep(db=None, home=None):
         except OSError as exc:
             summary["errors"].append(f"{folder}: {exc}")
             continue
+        hashes = _preview_set(index)
         for name in names:
             path = os.path.join(folder, name)
             try:
                 with open(path, encoding="utf-8", errors="replace") as f:
-                    mentioned = set(pattern.findall(f.read()))
-                if mentioned & ids:
+                    text = f.read()
+                # By id, and by a verbatim copy in any JSON string of the log: logs of the extraction pass before
+                # 2.7.3 carried `existing_facts` as bare strings, and a memory entry rides without an id.
+                if set(pattern.findall(text)) & ids or any(
+                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text)):
                     os.remove(path)
                     summary["cron_logs"] += 1
             except OSError as exc:
@@ -4323,7 +4491,7 @@ def dry_run_summary(result, source):
 
     facts("promotions (candidates for durable memory)", result.get("promotions") or [], why=True)
     facts("new facts to review", result.get("new_facts") or [])
-    facts("conflicts (same subject, different numbers)", result.get("conflicts") or [])
+    facts("conflicts (same subject, different numbers or negation)", result.get("conflicts") or [])
     facts("facts that look unused", result.get("fact_decays") or [])
     md = result.get("md_decays") or []
     lines.append('memory entries to ask "still relevant?": ' + str(len(md)))

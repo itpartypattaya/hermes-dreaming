@@ -280,7 +280,7 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 | `timezone` | IANA zone for the diary date and day-bucketing of mentions. Not set → Hermes' own `timezone`, then UTC |
 | `trusted_chat_ids` | group chats whose messages corroborate memory (**fail-closed**: empty = none) |
 | `excluded_threads` | threads of a trusted chat that must not corroborate — `{"<chat_id>": ["<thread_id>", …]}` |
-| `untrusted_sources` | session sources that are machine prompts — `cron`, `subagent` and `tool` by default; add `cli` when scripts drive the agent |
+| `untrusted_sources` | session sources that are machine prompts — `cron`, `subagent` and `tool` are always excluded; add `cli` when scripts drive the agent |
 | `exclude_patterns` | regexes; a message whose text matches never corroborates (bridge briefs, forwarded digests — machine text with no source of its own) |
 | `trust_private_chats`, `trust_sessions_without_chat` | whether a DM, and a session with no chat metadata, count as human speech (both default `true`) |
 | `agent_names`, `extra_stopwords` | noise words for the tokenizer |

@@ -98,8 +98,9 @@ a copy of the row it folds, and both copies are visible, so one compaction used
 to add +0.04 to a fact's score.
 
 **Trusted sources** (fail-closed): machine-paced sessions never corroborate —
-`untrusted_sources` defaults to `cron`, `subagent` and `tool` (a subagent brief
-reads exactly like a person talking, and the core groups them the same way);
+`cron`, `subagent` and `tool` are always untrusted, whatever `untrusted_sources`
+lists (a subagent brief reads exactly like a person talking, and the core groups
+them the same way); the list adds sources such as `cli`;
 `exclude_patterns` drops machine text that has no source of its own (bridge
 briefs, forwarded digests) by regex on the content; group chats only from
 `trusted_chat_ids`;
@@ -161,7 +162,10 @@ synonyms in recurring rules; they are installation-specific.
 
 A candidate that overlaps a memory chunk (≥4 shared stems, overlap ≥0.45) but
 carries **different numbers/dates** is reported in `conflicts` with
-`fact_numbers` / `memory_numbers` and `nearest_entry`. This is deliberately
+`fact_numbers` / `memory_numbers` and `nearest_entry`. The same goes for the
+**opposite negation** ("does not eat" against "eats" in the closest clause of
+the entry): `fact_negations` / `memory_negations` — and such a candidate is no
+duplicate for fuzzy dedupe or for the reject list either. This is deliberately
 computed independently of fuzzy `in_memory` — a reworded fact with a new number
 is exactly what fuzzy dedupe swallows. Only an identical head or an alias rule
 suppresses it. Idea from mem0 (ADD/UPDATE/NOOP) and Graphiti (edge

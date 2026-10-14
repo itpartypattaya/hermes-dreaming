@@ -92,6 +92,11 @@ FACT_FIELDS = (
     "duplicates",
     "ephemeral",
     "user_profile_hint",
+    # Both carry a rule, not a detail: "ask the human again before writing" and
+    # "a chat's own database — memory tool only". Dropping them here sent an old
+    # rejection to the agent as an ordinary promotion (Codex review of 2.7.2).
+    "previously_rejected",
+    "store",
 )
 
 # Keys that wake the agent — only sections it can act upon. `themes` and

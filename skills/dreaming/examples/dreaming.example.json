@@ -9,8 +9,8 @@
 
   "_comment_excluded_threads": "Threads of a TRUSTED forum chat that are not human talk: the agent's own alerts, an assistant bridge, machine-generated cards. Absent or empty = the whole chat corroborates, as before.",
   "excluded_threads": {"-1001234567890": ["437"]},
-  "_comment_untrusted_sources": "Session sources whose role=user rows are machine prompts. cron is always excluded; add cli if a script (backup, sync, report) drives the agent non-interactively.",
-  "untrusted_sources": ["cron"],
+  "_comment_untrusted_sources": "Session sources whose role=user rows are machine prompts. cron, subagent and tool are always excluded; add cli if a script (backup, sync, report) drives the agent non-interactively.",
+  "untrusted_sources": ["cron", "subagent", "tool"],
 
   "agent_names": ["hermes"],
   "extra_stopwords": [],

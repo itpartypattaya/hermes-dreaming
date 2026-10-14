@@ -89,11 +89,21 @@ def load_state(path):
 
 
 def save_state(path, data):
-    """0600: the content is private."""
+    """0600: the content is private. Written beside and renamed over: truncating in place let a reader in
+    between see an empty list, and every rejection came back for a night (Codex review of 2.7.2)."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def fetch_content(fact_id):
@@ -128,6 +138,15 @@ def main(argv=None):
                          "cache/dream.json, or the path given). Use right after a manual "
                          "memory cleanup: what you dropped comes back as a promotion")
     args = ap.parse_args(argv)
+    if args.list:
+        return _run(ap, args)
+    # Read, change, write under the lock the nightly pass and the forget gate hold while they rewrite the
+    # same file: a rejection added between their read and their write was lost (Codex review of 2.7.2).
+    with _dream()._sweep_lock(HOME):
+        return _run(ap, args)
+
+
+def _run(ap, args):
     state_path = args.state or _default_state()
 
     state = load_state(state_path)

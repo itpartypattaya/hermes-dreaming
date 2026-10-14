@@ -171,9 +171,30 @@ class ExtractPrecheckTests(DreamFixture):
         self.add_fact("Марина пьёт кофе только до полудня")
         self.add_fact("API-ключ проекта: sk-abc123def456ghi789jklmno")
         payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
-        self.assertIn("Марина пьёт кофе только до полудня", payload["existing_facts"])
-        self.assertFalse(any("sk-abc" in f for f in payload["existing_facts"]))
+        texts = [f["text"] for f in payload["existing_facts"]]
+        self.assertIn("Марина пьёт кофе только до полудня", texts)
+        self.assertFalse(any("sk-abc" in t for t in texts))
+        # With ids: the forget sweep finds an extraction log by the ids it carries; bare strings it never saw.
+        self.assertTrue(all(isinstance(f.get("fact_id"), int) for f in payload["existing_facts"]))
         self.assertIn("not instructions", payload["note"])
+
+    def test_each_message_says_who_said_it(self):
+        """Codex review of 2.7.2, #8: in a private chat "I don't eat gluten" names nobody, and two people in
+        one list could not be told apart. The chat type and the sender's id ride in every message."""
+        con = sqlite3.connect(self.home / "state.db")
+        con.execute("alter table sessions add column user_id text")
+        con.commit()
+        con.close()
+        for i, user in enumerate(("111", "222", "111", "222")):
+            self.add_message(f"Сообщение {i}: я не ем глютен уже год", days_ago=1 - i / 10,
+                             chat_type="dm", chat_id=f"dm-{user}")
+            con = sqlite3.connect(self.home / "state.db")
+            con.execute("update sessions set user_id = ? where chat_id = ?", (user, f"dm-{user}"))
+            con.commit()
+            con.close()
+        payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertEqual([(m.get("chat"), m.get("from")) for m in payload["messages"]],
+                         [("dm", "111"), ("dm", "222"), ("dm", "111"), ("dm", "222")])
 
     # The cursor is committed by the agent's answer, not by printing ---------
     def _main(self, **ext):

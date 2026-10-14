@@ -3,6 +3,69 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.3 — 2026-10-14
+
+A full Codex CLI review of the 2.7.2 skill (every script, `SKILL.md`, references, examples and tests) found
+fourteen defects. Each was confirmed by a reproduction before the fix, and each has a test that fails on
+2.7.2 (24 failures against 2.7.2, none against 2.7.3). Checked against Hermes Agent 0.22.0: the core's
+`old_text` matching, `matched_entry` and batch rules are the ones the tests model.
+
+### Security
+
+- **A password after "changed" or "forgot" passed the quarantine.** The verb of change was looked for in
+  the whole text before the marker, so "Changed password: hunter2", "I forgot the list. Password: hunter2"
+  and "Updated the router, wifi password: Qw3rty!2026" were not secrets. The verb now counts only in the
+  marker's own sentence, a value with a digit or a symbol is a credential whatever comes before it, and
+  every marker in the text is checked, not the first.
+- **A rejected secret came back through `trust_feedback`.** Rejected facts leave before the quarantine,
+  and the section carried their text. A fact that `classify_unsafe` flags now arrives as
+  `[hidden: secret]` with its `fact_id` (all the call needs) and no reason; the cooldown keys on the real
+  text's fingerprint, so two hidden facts do not share one.
+- **A memory entry with a secret reached the prompt as `nearest_entry`.** The candidate's closest entry was
+  shown whole (`entry`, `full_entry`, the `old_text` anchor). An entry that holds a secret or an
+  instruction now shows a placeholder and `replace_unsafe: true`, without the text or the anchor; a
+  conflict's `entry` is screened the same way.
+- **The gate dropped `previously_rejected` and `store`.** Both are rules, not details ("ask the human
+  again before writing", "a chat's own database — memory tool only"), and the compacted payload lost
+  them, so an old rejection arrived as an ordinary promotion. They are kept now, and the cron prompt
+  states both rules.
+- **`subagent` and `tool` sessions counted as people.** A list in `dreaming.json` replaces the default,
+  and the shipped example listed `cron` alone. `cron`, `subagent` and `tool` are now always untrusted,
+  whatever the list says; the example lists all three.
+
+### Fixed
+
+- **"Does not" was a duplicate of "does".** Negations are stopwords for corroboration, so fuzzy dedupe
+  called "X does not eat peanuts" already in memory next to "X eats peanuts" — the update was dropped
+  silently — and an old rejection closed the opposite fact. A candidate whose negations differ from the
+  clauses of an entry that speak about the same thing is no duplicate now, for dedupe and for the reject
+  list, and it is offered in `conflicts` with `fact_negations` / `memory_negations`.
+- **Copies of a forgotten fact without its id stayed.** The sweep found payload items by `fact_id` only;
+  a memory entry written from the fact rode on as another candidate's `nearest_entry`, a "still
+  relevant?" entry or a conflict's entry. Strings that hold a forgotten fact verbatim (as a whole, a line
+  or a sentence) are now replaced, a `nearest_entry` as a whole.
+- **Extraction logs were not swept.** `existing_facts` were bare strings, so a log was never found by id.
+  They are `{fact_id, text}` now, and a log is also swept when any JSON string in it holds a forgotten
+  fact verbatim — which covers logs written before 2.7.3.
+- **An unreadable store looked like a clean sweep.** A `sqlite3.Error` while reading the shared store's
+  tombstones became "nothing was forgotten" and the gate exited clean. It is reported in `errors` now,
+  like a chat store's, so the gate fails and the next run tries again.
+- **Extraction did not say who spoke.** Messages carried `t` and `text` only; in private chats two
+  people's first-person statements could not be told apart. Each message now carries `chat` (the chat
+  type) and `from` (the sender's id) when known, and the extraction prompt attributes a first-person
+  statement only to its sender.
+- **`dream-reject.py` could lose a rejection.** It rewrote the file in place, outside the lock the pass and
+  the forget gate hold: a rejection added between their read and their write was lost, and a reader in
+  between saw an empty list. It now writes under that lock, to a temporary file renamed over the old one.
+- **`trust_feedback` and `keywords_needed` rested when nobody was awake.** Both were marked as shown even
+  when the gate did not wake the agent, and they were missing from the acknowledgement record, so a quiet
+  night put them to rest for the whole cooldown. They join the record now and are reopened silently.
+- **The approval-queue alert woke the agent every night.** Its cooldown stamp was set after the state file
+  had been written. It is computed before the write now.
+- **A vanished file with one to three big entries raised no alert.** The missing-file branch counted
+  entries only; it now uses the same character floor as a file that is still there.
+- `SKILL.md` carried `version: 2.7.0`; it follows `plugin.json` now (a test keeps them together).
+
 ## 2.7.2 — 2026-10-14
 
 A Codex CLI review of 2.7.1's provider-floor change found eight defects. Every one was confirmed in the

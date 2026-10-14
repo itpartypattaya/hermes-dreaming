@@ -301,6 +301,52 @@ class ForgetSweep(unittest.TestCase):
                                capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertIn("Forgotten facts cleaned", later.stdout)
 
+    # Full Codex review of 2.7.2 (2026-10-14) -----------------------------------------------------
+    def test_copies_without_their_own_id_are_found(self):
+        """#4: the sweep knew facts by `fact_id` only. A memory entry written from the fact rode on — as
+        another candidate's nearest entry and as a "still relevant?" question."""
+        dream.forget_sweep(db=str(self.db))  # the index, while the facts exist
+        payload = {"promotions": [{"fact_id": 1, "content": KEPT,
+                                   "nearest_entry": {"entry": FORGOTTEN_NEW[:160], "full_entry": FORGOTTEN_NEW,
+                                                     "old_text": FORGOTTEN_NEW}}],
+                   "md_decays": [{"index": 3, "entry": FORGOTTEN_NEW}],
+                   "conflicts": [{"fact_id": 1, "content": KEPT,
+                                  "conflicts": [{"entry": f"Старое. {FORGOTTEN_NEW}"}]}]}
+        self.path("cache/dream.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        self.forget(3)
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertEqual(summary["payload"], 3)
+        text = self.path("cache/dream.json").read_text(encoding="utf-8")
+        self.assertNotIn(FORGOTTEN_NEW[:30], text)
+        payload = json.loads(text)
+        self.assertEqual(payload["promotions"][0]["content"], KEPT, "the candidate itself stays")
+        self.assertEqual(payload["promotions"][0]["nearest_entry"],
+                         {"entry": dream.FORGOTTEN_COPY, "replace_unsafe": True}, "an anchor without its text is a blind replace")
+
+    def test_extraction_logs_are_found_old_and_new(self):
+        """#5: `existing_facts` were bare strings, so an extraction log was never found by id."""
+        dream.forget_sweep(db=str(self.db))
+        (self.home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+            {"id": "job-dream", "script": "dream-precheck.py"},
+            {"id": "job-extract", "script": "dream-extract-precheck.py"}]}), encoding="utf-8")
+        folder = self.path("cron/output/job-extract")
+        folder.mkdir(parents=True)
+        legacy = {"existing_facts": [KEPT[:120], FORGOTTEN_NEW[:120]], "messages": [{"t": "x", "text": "y"}]}
+        current = {"existing_facts": [{"fact_id": 1, "text": KEPT}, {"fact_id": 3, "text": FORGOTTEN_NEW}]}
+        untouched = {"existing_facts": [KEPT[:120]]}
+        for name, body in (("legacy.md", legacy), ("current.md", current), ("untouched.md", untouched)):
+            (folder / name).write_text("prompt " + json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        self.forget(3)
+        self.assertEqual(dream.forget_sweep(db=str(self.db))["cron_logs"], 2)
+        self.assertEqual(os.listdir(folder), ["untouched.md"])
+
+    def test_an_unreadable_store_is_an_error_not_a_clean_sweep(self):
+        """#13: an unreadable shared store read as "nothing was forgotten" — the gate stayed silent."""
+        self.db.write_bytes(b"not a database at all " * 20)
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertTrue(summary["errors"])
+        self.assertIn(str(self.db), summary["errors"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
