@@ -39,6 +39,20 @@ class PasswordEventTests(unittest.TestCase):
                      "Забыл пароль от роутера, сбрасывали кнопкой"):
             self.assertIsNone(dream.classify_unsafe(text), text)
 
+    def test_review_of_274_separators_and_plain_words(self):
+        """Review of 2.7.4 (Antigravity): a hyphen separator was missed, so was an all-letter password after a
+        verb of change and a colon, while a number after a dash in a story about the change was taken for one."""
+        for text in ("Марина поменяла пароль от кабинета - Secret123!",
+                     "Марина поменяла пароль от кабинета: розовыйслон",
+                     "Пароль от сейфа – 77214"):
+            self.assertEqual(dream.classify_unsafe(text), "secret", text)
+        for text in ("Поменял пароль от роутера — 5GHz сеть перезагрузилась",
+                     "Сбросил пароль от Zoom — 40-минутный лимит остался",
+                     "Забыл пароль от домофона — кв.123 не открывает",
+                     "Changed password on server — step1 completed",
+                     "Пароль от Wi-Fi сменили вчера вечером"):
+            self.assertIsNone(dream.classify_unsafe(text), text)
+
 
 class PolarityTests(unittest.TestCase):
     """#7: a negation is a stopword for corroboration, and fuzzy dedupe took "does not eat" for "eats"."""
@@ -67,7 +81,7 @@ class PolarityTests(unittest.TestCase):
         mem, fact = self.PAIRS[0]
         hits = dream.find_conflicts(fact, "§\n" + mem)
         self.assertEqual(len(hits), 1)
-        self.assertEqual((hits[0]["fact_negations"], hits[0]["memory_negations"]), (["not roasted", "not tolerate"], []))
+        self.assertEqual((hits[0]["fact_negations"], hits[0]["memory_negations"]), (["not tolerate"], []))
 
     def test_a_negation_elsewhere_in_the_entry_does_not_count(self):
         mem = "У хозяина байк Vespa Turbo; бензин и транспорт — не машина."
@@ -94,6 +108,19 @@ class PolarityTests(unittest.TestCase):
                 "желаемая зарплата и контакты кандидата.")
         self.assertIsNone(dream.polarity_flip(fact, entry))
         self.assertTrue(dream.already_in_memory(fact, "§\n" + entry))
+
+    def test_comparatives_negate_nothing(self):
+        """Review of 2.7.4: "больше"/"more" counted as negations — "drinks more coffee" made a false conflict, and
+        in "больше не ест" the comparative took the verb and the flip was lost."""
+        self.assertIsNone(dream.polarity_flip("John usually drinks more coffee in office",
+                                              "John usually drinks coffee in office"))
+        self.assertEqual(dream.polarity_flip("Марина больше не ест мясо", "Марина больше ест мясо"),
+                         (["не ест"], []))
+
+    def test_a_shared_negation_does_not_hide_another_flip(self):
+        """Review of 2.7.4: a shared "не ест мясо" masked the flip "не пьёт / пьёт молоко"."""
+        self.assertEqual(dream.polarity_flip("Марина не ест мясо и не пьет молоко", "Марина не ест мясо и пьет молоко"),
+                         (["не ест", "не пьет"], ["не ест"]))
 
     def test_a_long_profile_with_other_negations_is_no_conflict(self):
         """The first draft of the fix compared negations with every sentence of the entry that shared two words: on
@@ -230,6 +257,11 @@ class RideAlongCooldownTests(_HolographicFixture):
             self.assertIsNone(precheck.compact_payload(first), "keywords alone do not wake the agent")
             second = self.run_dream(seen_state=seen, ack=False)
             self.assertEqual(len(second["keywords_needed"]), 1, "the agent never saw them — the rest is lifted")
+            long_fact = "Марина ведёт дневник тренировок и записывает каждое занятие подробно. " * 6
+            item = dream.keywords_needed_items([{"fact_id": 9, "content": long_fact, "meta": {"rc": 1},
+                                                 "keywords": ""}], "holographic")
+            # the cooldown key is the full text's, not that of the first 300 characters (review of 2.7.4)
+            self.assertEqual(dream._feedback_key(item[0]), dream._fact_fingerprint(long_fact))
         finally:
             dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = saved
 
@@ -268,6 +300,31 @@ class MissingFileTests(DreamFixture):
 class RejectWriteTests(unittest.TestCase):
     """#9: the reject list was rewritten in place and without the shared lock — a write between another
     writer's read and write was lost, and a reader could catch an empty file."""
+
+    def test_no_write_without_the_lock(self):
+        """Review of 2.7.4: without the lock (`held` = False) the write went ahead as if nothing happened."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "rejected.json")
+            real = reject._dream()
+
+            @contextlib.contextmanager
+            def busy(home, wait=True):
+                yield False
+
+            class Spy:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+            spy = Spy()
+            spy._sweep_lock = busy
+            saved = reject._dream
+            reject._dream = lambda: spy
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(reject.main(["--state", state, "--content", "Thread 9 is not needed any more"]), 1)
+            finally:
+                reject._dream = saved
+            self.assertFalse(os.path.exists(state))
 
     def test_the_write_is_whole_and_under_the_state_lock(self):
         import tempfile

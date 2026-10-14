@@ -142,7 +142,10 @@ def main(argv=None):
         return _run(ap, args)
     # Read, change, write under the lock the nightly pass and the forget gate hold while they rewrite the
     # same file: a rejection added between their read and their write was lost (Codex review of 2.7.2).
-    with _dream()._sweep_lock(HOME):
+    with _dream()._sweep_lock(HOME) as held:
+        if not held:
+            print("the dream's state lock could not be taken — nothing written, try again", file=sys.stderr)
+            return 1
         return _run(ap, args)
 
 

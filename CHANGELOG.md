@@ -3,6 +3,43 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.5 — 2026-10-15
+
+An Antigravity CLI review of the 2.7.2 → 2.7.4 diff (Gemini 3.8 Flash, with the test suite and its own
+reproductions) found eight issues; six were confirmed and are fixed, each with a regression test. With
+2.7.5 a live install's decisions on its 58 facts and the secret screening of a month of its messages are
+still the same as with 2.7.2.
+
+### Fixed
+
+- **Comparatives counted as negations.** "more" / "больше" were in the negation list, so "drinks more
+  coffee" was a flip of "drinks coffee", and in "больше не ест" the comparative took the verb and the real
+  flip was lost. Negations are a list of their own now; comparatives stay significant only for the
+  store-duplicate check.
+- **A shared negation masked another flip.** "Does not eat meat and does not drink milk" against "does not
+  eat meat and drinks milk" was no flip because both negate "eat". The sets of negated words are compared
+  as a whole now. The window is one word, two after a modal ("не должна использоваться"); the fixed
+  two-word window of 2.7.4 is what made the same negation in another word order look different.
+- **Password separators.** A spaced hyphen or an en dash after a credential marker was not a separator, and
+  an all-letter password after a verb of change and a colon ("changed the password: correcthorse") passed.
+  A colon or "=" now always hands the value over. After a dash a verb of change makes the sentence an event
+  unless the value looks like a credential (six or more characters, no Cyrillic, a digit or a symbol), so
+  "reset the Zoom password — 40-minute limit still there" is no longer quarantined.
+- **A forgotten fact's text left a placeholder candidate.** An item whose own text is a forgotten fact
+  stayed in `promotions` as "[removed: …]", kept the gate open and offered the placeholder for memory. The
+  item now leaves the list.
+- **`keywords_needed` keyed its cooldown on the first 300 characters**, so a longer fact's mark never
+  matched the forget sweep. It keys on the full text, like `trust_feedback`.
+- **`dream-reject.py` wrote without the lock** when `_sweep_lock` could not take it; it now writes nothing
+  and exits 1.
+
+### Not changed
+
+- A negation in another sentence of a multi-sentence entry is still missed when that sentence alone is not
+  close to the candidate (stem Jaccard < 0.5). Looser matching invented conflicts on live data.
+- `dream-reject.py` locks `$HERMES_HOME`; a `--state` file in another home is not covered. Hermes runs it
+  with its own `HERMES_HOME`.
+
 ## 2.7.4 — 2026-10-14
 
 ### Fixed

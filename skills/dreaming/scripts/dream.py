@@ -1816,18 +1816,26 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
 # memory" — the changed fact was dropped silently, and an old rejection closed
 # the opposite one (Codex review of 2.7.2, 2026-10-14). What is compared is
 # what each side NEGATES — the word right after a negation ("не ест",
-# "does not tolerate") — and only words both texts contain: "ест" negated on one
+# "does not tolerate"; past a modal, the verb it carries: "не должна
+# использоваться") — and only words both texts contain: a word negated on one
 # side and plain on the other is a flip; a "не" about something the other text
 # does not mention is not. A long entry is narrowed first to its sentences that
 # say nearly the same as the candidate (stem Jaccard >= 0.5): a profile has a
 # "не" in some sentence about something else. A flipped candidate is no
 # duplicate of that entry (nor of a rejection): it stays a candidate and goes to
-# `conflicts` as a possible update. Two cruder versions of this check, tried on
-# a live install before release, invented three conflicts and revived one
-# rejected fact.
-EN_POLARITY = set("""not no never nor neither none nothing nobody without cannot
-doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn less more""".split())
-_POLARITY_WORDS = {w.replace("ё", "е") for w in POLARITY_STOP | EN_POLARITY}
+# `conflicts` as a possible update. Only negations count — comparatives
+# ("больше", "more") are significant for the store-duplicate check but negate
+# nothing ("drinks more coffee" is no flip of "drinks coffee"; review of 2.7.4).
+NEGATION_WORDS = {w.replace("ё", "е") for w in """не нет без ни никогда нельзя
+not no never nor neither none nothing nobody without cannot
+doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn
+nicht kein keine keinen keiner niemals ohne nunca nada nadie ningún ninguna jamás
+jamais rien personne sans pas non nenhum nenhuma niente nessuno senza
+niet geen nooit niets zonder değil asla nie nigdy żaden tidak bukan belum tanpa""".split()}
+# A modal carries the negated verb: the word after it is negated too.
+_MODALS = set("""должен должна должно должны может могут мог могла могли нужно надо будет будут стал
+стала стали хочет хотят умеет can could should would will must may might need needs have has had do does
+did be been is are was were want wants going""".split())
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
 POLARITY_MIN_JACCARD = 0.5
 
@@ -1837,19 +1845,17 @@ def _plain_words(text):
 
 
 def _negated(words):
-    """{stem: "не ест"} — the two real words after each negation (other negations and 1–2 letter words skipped):
-    two, because a modal stands between ("не должна использоваться" negates what "не используется" does)."""
+    """{stem: "не ест"} — the first real word after each negation (other negations and 1–2 letter words
+    skipped), and the next one as well when the first is a modal."""
     out = {}
     for i, w in enumerate(words):
-        if w not in _POLARITY_WORDS:
+        if w not in NEGATION_WORDS:
             continue
-        taken = 0
         for nxt in words[i + 1:]:
-            if nxt in _POLARITY_WORDS or len(nxt) < 3:
+            if nxt in NEGATION_WORDS or len(nxt) < 3:
                 continue
             out.setdefault(_stem(nxt), f"{w} {nxt}")
-            taken += 1
-            if taken == 2:
+            if nxt not in _MODALS:
                 break
     return out
 
@@ -1867,9 +1873,7 @@ def polarity_flip(content, chunk):
     both = {_stem(w) for w in mine} & {_stem(w) for w in theirs}
     a = {k: v for k, v in _negated(mine).items() if k in both}
     b = {k: v for k, v in _negated(theirs).items() if k in both}
-    # One side negates and the other does not, or both negate but never the same word. Two negations that
-    # share a word are one statement in other words ("не указывались дополнительные…" / "не указывать в…").
-    if bool(a) == bool(b) and (not a or set(a) & set(b)):
+    if set(a) == set(b):
         return None
     return sorted(a.values()), sorted(b.values())
 
@@ -2271,6 +2275,9 @@ def keywords_needed_items(safe, fact_source_name):
         out.append({
             "fact_id": s["fact_id"],
             "content": s["content"][:300],
+            # The cooldown and the forget sweep key on the full text; a key of the cut text never matched a
+            # fact longer than 300 characters (review of 2.7.4).
+            "fingerprint": _fact_fingerprint(s["content"]),
             "retrieval_count": s["meta"]["rc"],
             "call": {"tool": "fact_store", "action": "update", "fact_id": s["fact_id"],
                      "keywords": ["3-8 words a person might ask with that the fact lacks"]},
@@ -2663,27 +2670,36 @@ PASSWORD_MARKER_RE = re.compile(
     r"(?:парол[ьяию]|password|passwd|passphrase|seed[- ]?фраза|seed[- ]?phrase|"
     r"секретн\w{0,4}\s+(?:ключ|код)|api[- ]?ключ|private\s+key|2fa[- ]?код|"
     r"пин[- ]?код|\bпин\b|\bpin\b|код\s+от)"
-    r"(?:[^\n:=—]{0,40})?[:=—]\s*(?P<value>\S{4,})",
+    r"(?:[^\n:=—–]{0,40}?)(?P<sep>[:=—–]|\s-\s)\s*(?P<value>\S{4,})",
     re.IGNORECASE)
-# …and these say "we changed it", not "here it is" — but only in the marker's
-# own sentence, and only when what follows the separator is a word rather than
-# a credential: "Changed password: hunter2" and "Забыл список. Пароль: hunter2"
-# both hand the value over (Codex review of 2.7.2, 2026-10-14).
+# …and these say "we changed it", not "here it is". A colon or "=" hands the
+# value over whatever comes first ("Changed password: hunter2", "поменяла
+# пароль: розовыйслон"). After a dash a verb of change in the marker's own
+# sentence makes it an event — "сменила пароль от Wi-Fi — новый знает только
+# она", "сбросил пароль от Zoom — 40-минутный лимит остался" — unless the value
+# looks like a credential: six or more characters, no Cyrillic, a digit or a
+# symbol ("— Secret123!"). Codex review of 2.7.2 and review of 2.7.4.
 PASSWORD_EVENT_RE = re.compile(
     r"(?:смен\w+|помен\w+|обнов\w+|сброс\w+|забыл\w*|changed|rotated|reset|forgot)",
     re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"[.!?\n]")
-# A digit or a symbol makes the value a credential whatever verb comes first;
-# "сменила пароль от Wi-Fi — новый знает только она" stays an event.
 _CREDENTIAL_VALUE_RE = re.compile(r"[\d!@#$%^&*_+=~|\\/<>{}\[\]]")
+_CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+
+
+def _looks_like_credential(value):
+    value = value.rstrip(".,;")
+    return len(value) >= 6 and not _CYRILLIC_RE.search(value) and bool(_CREDENTIAL_VALUE_RE.search(value))
 
 
 def _password_marker_unsafe(text):
     for marker in PASSWORD_MARKER_RE.finditer(text):
-        if _CREDENTIAL_VALUE_RE.search(marker.group("value")):
+        if marker.group("sep").strip() in (":", "="):
             return True
         ends = [m.end() for m in _SENTENCE_END_RE.finditer(text, 0, marker.start())]
         if not PASSWORD_EVENT_RE.search(text[(ends[-1] if ends else 0):marker.end()]):
+            return True
+        if _looks_like_credential(marker.group("value")):
             return True
     return False
 INJECTION_RE = re.compile(
@@ -3610,7 +3626,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # agent found nothing for rests like any shown item instead of coming back
     # every night; one that got keywords simply leaves the list.
     keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], fact_source())
-    keywords_fresh = unseen(keywords_pending, seen_keywords, now)
+    keywords_fresh = unseen(keywords_pending, seen_keywords, now, key=_feedback_key)
     keywords_needed = keywords_fresh[:KEYWORDS_CAP]
 
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
@@ -3625,7 +3641,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
         mark_seen(published_promotions, seen_promotions, now)
         mark_seen(feedback, seen_feedback, now, key=_feedback_key)
-        mark_seen(keywords_needed, seen_keywords, now)
+        mark_seen(keywords_needed, seen_keywords, now, key=_feedback_key)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
@@ -3649,7 +3665,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                      # here a night the gate kept shut still rested them for the whole cooldown (Codex review
                      # of 2.7.2).
                      "trust_feedback": [_feedback_key(i) for i in feedback],
-                     "keywords_needed": [fp(i["content"]) for i in keywords_needed]},
+                     "keywords_needed": [_feedback_key(i) for i in keywords_needed]},
             "asked": [d["key"] for d in md_dec if d.get("key")],
         }
         try:
@@ -4234,13 +4250,21 @@ def _scrub_copies(node, hashes):
             else:
                 removed += _scrub_copies(value, hashes)
     elif isinstance(node, list):
-        for i, value in enumerate(node):
+        keep = []
+        for value in node:
             if isinstance(value, str):
                 if value != FORGOTTEN_COPY and _carries_forgotten(value, hashes):
-                    node[i] = FORGOTTEN_COPY
+                    value = FORGOTTEN_COPY
                     removed += 1
+            elif isinstance(value, dict) and _carries_forgotten(value.get("content"), hashes):
+                # An item whose own text is the forgotten fact goes with it: a placeholder left in
+                # `promotions` kept the gate open and offered "[removed: …]" for memory (review of 2.7.4).
+                removed += 1
+                continue
             else:
                 removed += _scrub_copies(value, hashes)
+            keep.append(value)
+        node[:] = keep
     return removed
 
 

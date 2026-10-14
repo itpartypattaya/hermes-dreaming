@@ -323,6 +323,18 @@ class ForgetSweep(unittest.TestCase):
         self.assertEqual(payload["promotions"][0]["nearest_entry"],
                          {"entry": dream.FORGOTTEN_COPY, "replace_unsafe": True}, "an anchor without its text is a blind replace")
 
+    def test_an_item_carrying_a_forgotten_text_leaves_the_list(self):
+        """Review of 2.7.4: a candidate whose own text is a forgotten fact stayed in `promotions` with a
+        placeholder for its text, kept the gate open and offered "[removed: …]" for memory."""
+        dream.forget_sweep(db=str(self.db))
+        payload = {"promotions": [{"fact_id": 99, "content": FORGOTTEN_NEW}, {"fact_id": 1, "content": KEPT}],
+                   "stats": {"promotions": 2}}
+        self.path("cache/dream.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        self.forget(3)
+        dream.forget_sweep(db=str(self.db))
+        payload = json.loads(self.path("cache/dream.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["fact_id"] for p in payload["promotions"]], [1])
+
     def test_extraction_logs_are_found_old_and_new(self):
         """#5: `existing_facts` were bare strings, so an extraction log was never found by id."""
         dream.forget_sweep(db=str(self.db))

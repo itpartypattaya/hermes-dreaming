@@ -163,9 +163,10 @@ synonyms in recurring rules; they are installation-specific.
 A candidate that overlaps a memory chunk (≥4 shared stems, overlap ≥0.45) but
 carries **different numbers/dates** is reported in `conflicts` with
 `fact_numbers` / `memory_numbers` and `nearest_entry`. The same goes for the
-**opposite negation**: one side negates a word both contain ("does not eat"
-against "eats") and the other does not, or both negate but never the same word.
-A long entry is first narrowed to its sentences that say nearly the same (stem
+**opposite negation**: the two texts negate different words among those they
+both contain ("does not eat" against "eats"; the word after a modal counts too,
+"не должна использоваться"). Comparatives ("more", "больше") negate nothing. A
+long entry is first narrowed to its sentences that say nearly the same (stem
 Jaccard >= 0.5). Reported as `fact_negations` / `memory_negations`, and such a
 candidate is no duplicate for fuzzy dedupe or for the reject list either. This is deliberately
 computed independently of fuzzy `in_memory` — a reworded fact with a new number
