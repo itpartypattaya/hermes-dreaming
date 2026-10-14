@@ -3,6 +3,21 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.4 — 2026-10-14
+
+### Fixed
+
+- **The negation check of 2.7.3 was too coarse.** Run against a live install's store, memory and reject list
+  next to 2.7.2, it gathered the negations of every sentence of an entry that shared two words with the
+  candidate: a long profile without `§` entries has a "not" in some sentence about something else, which
+  invented three conflicts and turned a fact already in memory back into a promotion. It now compares what
+  each side NEGATES — the words right after a negation, and only words both texts contain — after narrowing
+  a long entry to its sentences that say nearly the same (stem Jaccard >= 0.5). A flip is one side negating
+  and the other not, or both negating but never the same word. Two intermediate drafts were rejected on the
+  same data (a rejected fact split differently into sentences came back; the same negation in another word
+  order counted as a flip); each of the three cases has a regression test. With 2.7.4 the decisions on the
+  install's 58 facts and the secret screening of a month of its messages are the same as with 2.7.2.
+
 ## 2.7.3 — 2026-10-14
 
 A full Codex CLI review of the 2.7.2 skill (every script, `SKILL.md`, references, examples and tests) found

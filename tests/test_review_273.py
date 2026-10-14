@@ -67,12 +67,42 @@ class PolarityTests(unittest.TestCase):
         mem, fact = self.PAIRS[0]
         hits = dream.find_conflicts(fact, "§\n" + mem)
         self.assertEqual(len(hits), 1)
-        self.assertEqual((hits[0]["fact_negations"], hits[0]["memory_negations"]), (["not"], []))
+        self.assertEqual((hits[0]["fact_negations"], hits[0]["memory_negations"]), (["not roasted", "not tolerate"], []))
 
     def test_a_negation_elsewhere_in_the_entry_does_not_count(self):
         mem = "У хозяина байк Vespa Turbo; бензин и транспорт — не машина."
         fact = "У хозяина байк Vespa Turbo; транспортные расходы на бензин относятся к байку, не к машине."
         self.assertTrue(dream.already_in_memory(fact, mem))
+
+    def test_the_same_negation_split_differently_still_matches(self):
+        """The second draft compared sentence with sentence: a one-sentence rejection with "не" in its tail did not
+        close the same fact split in two by ";" — on a live install a rejected fact came back. Negated words are
+        compared now."""
+        rejected = {"x": {"content": "Рабочий чат, ветка 256: переводы и адаптация школьных сообщений из LINE, "
+                                     "если контекст не говорит иное.", "fingerprint": "-", "at": "2026-08-23"}}
+        fact = ("Рабочий чат: thread 256 — переводы из школьного чата из Line; сообщения сюда трактовать как запрос "
+                "перевести школьные сообщения, если контекст не говорит другое.")
+        self.assertIsNone(dream.polarity_flip(fact, rejected["x"]["content"]))
+        self.assertTrue(dream.is_rejected(fact, rejected))
+
+    def test_the_same_negation_in_another_word_order_matches(self):
+        """The third draft compared the sets of negated words as a whole: "не указывались дополнительные…" and
+        "не указывать в клиентских…" say the same with different sets. On a live install: a false promotion."""
+        entry = ("Марина предпочитает не указывать в клиентских версиях резюме дополнительную информацию, "
+                 "желаемую зарплату и контакты кандидата.")
+        fact = ("Марина предпочитает, чтобы в клиентских версиях резюме не указывались дополнительная информация, "
+                "желаемая зарплата и контакты кандидата.")
+        self.assertIsNone(dream.polarity_flip(fact, entry))
+        self.assertTrue(dream.already_in_memory(fact, "§\n" + entry))
+
+    def test_a_long_profile_with_other_negations_is_no_conflict(self):
+        """The first draft of the fix compared negations with every sentence of the entry that shared two words: on
+        a live install a long profile without § entries produced three false "conflicts" and one false promotion."""
+        mem = ("## Марина\nМарина — дизайнер, живёт у моря. Марина не работает по выходным дома. "
+               "Не любит шумные кафе и громкую музыку.")
+        fact = "Марина — дизайнер, живёт у моря и работает удалённо из дома."
+        self.assertIsNone(dream.polarity_flip(fact, mem))
+        self.assertEqual(dream.find_conflicts(fact, mem), [])
 
 
 class UntrustedSourcesTests(unittest.TestCase):

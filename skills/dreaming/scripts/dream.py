@@ -1814,35 +1814,69 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
 # «<person> не ест арахис» share every significant stem (negations are
 # stopwords for corroboration), so fuzzy dedupe called the second "already in
 # memory" — the changed fact was dropped silently, and an old rejection closed
-# the opposite one (Codex review of 2.7.2, 2026-10-14). A candidate whose
-# negations differ from those of the clauses of an entry that speak about the
-# same thing is no duplicate of it: it stays a candidate and goes to
-# `conflicts` as a possible update.
+# the opposite one (Codex review of 2.7.2, 2026-10-14). What is compared is
+# what each side NEGATES — the word right after a negation ("не ест",
+# "does not tolerate") — and only words both texts contain: "ест" negated on one
+# side and plain on the other is a flip; a "не" about something the other text
+# does not mention is not. A long entry is narrowed first to its sentences that
+# say nearly the same as the candidate (stem Jaccard >= 0.5): a profile has a
+# "не" in some sentence about something else. A flipped candidate is no
+# duplicate of that entry (nor of a rejection): it stays a candidate and goes to
+# `conflicts` as a possible update. Two cruder versions of this check, tried on
+# a live install before release, invented three conflicts and revived one
+# rejected fact.
 EN_POLARITY = set("""not no never nor neither none nothing nobody without cannot
 doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn less more""".split())
 _POLARITY_WORDS = {w.replace("ё", "е") for w in POLARITY_STOP | EN_POLARITY}
-_CLAUSE_SPLIT_RE = re.compile(r"[.!?;,\n]+")
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+POLARITY_MIN_JACCARD = 0.5
 
 
-def _polarity(text):
-    return _store_words(text) & _POLARITY_WORDS
+def _plain_words(text):
+    return _WORD_RE.findall(_norm(text).replace("ё", "е"))
 
 
-def _entry_polarity(content, chunk):
-    """Negations of the clauses of *chunk* that speak about what *content* does (two shared stems or more; the
-    single closest clause when none does) — the rest of a long entry is another statement."""
-    item_stems = _stems(sig_tokens(content))
-    scored = [(clause, len(item_stems & _stems(sig_tokens(clause))))
-              for clause in _CLAUSE_SPLIT_RE.split(chunk or "") if clause.strip()]
-    if not scored:
-        return set()
-    near = [clause for clause, n in scored if n >= 2] or [max(scored, key=lambda p: p[1])[0]]
-    return set().union(*(_polarity(clause) for clause in near))
+def _negated(words):
+    """{stem: "не ест"} — the two real words after each negation (other negations and 1–2 letter words skipped):
+    two, because a modal stands between ("не должна использоваться" negates what "не используется" does)."""
+    out = {}
+    for i, w in enumerate(words):
+        if w not in _POLARITY_WORDS:
+            continue
+        taken = 0
+        for nxt in words[i + 1:]:
+            if nxt in _POLARITY_WORDS or len(nxt) < 3:
+                continue
+            out.setdefault(_stem(nxt), f"{w} {nxt}")
+            taken += 1
+            if taken == 2:
+                break
+    return out
+
+
+def polarity_flip(content, chunk):
+    """(what the fact negates, what the entry negates) when they disagree about a word both contain, or None."""
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(chunk or "") if s.strip()]
+    if len(sentences) > 1:
+        item = _stems(sig_tokens(content))
+        sentences = [s for s in sentences
+                     if (st := _stems(sig_tokens(s))) and item and len(item & st) / len(item | st) >= POLARITY_MIN_JACCARD]
+        if not sentences:
+            return None
+    mine, theirs = _plain_words(content), _plain_words(". ".join(sentences))
+    both = {_stem(w) for w in mine} & {_stem(w) for w in theirs}
+    a = {k: v for k, v in _negated(mine).items() if k in both}
+    b = {k: v for k, v in _negated(theirs).items() if k in both}
+    # One side negates and the other does not, or both negate but never the same word. Two negations that
+    # share a word are one statement in other words ("не указывались дополнительные…" / "не указывать в…").
+    if bool(a) == bool(b) and (not a or set(a) & set(b)):
+        return None
+    return sorted(a.values()), sorted(b.values())
 
 
 def polarity_differs(content, chunk):
-    """True when `content` negates (or un-negates) what the matching part of `chunk` says."""
-    return _polarity(content) != _entry_polarity(content, chunk)
+    """True when `content` negates (or un-negates) what `chunk` says about the same word."""
+    return polarity_flip(content, chunk) is not None
 
 
 HEAD_CHARS = 40
@@ -2067,10 +2101,10 @@ def find_conflicts(content, memory_text):
         overlap = len(shared) / min(len(item_stems), len(chunk_stems))
         if len(shared) < CONFLICT_MIN_SHARED or overlap < CONFLICT_MIN_OVERLAP:
             continue
-        if polarity_differs(content, chunk):
+        flip = polarity_flip(content, chunk)
+        if flip:
             out.append({"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
-                        "fact_negations": sorted(_polarity(content)),
-                        "memory_negations": sorted(_entry_polarity(content, chunk))})
+                        "fact_negations": flip[0], "memory_negations": flip[1]})
             continue
         if not item_nums:
             continue
@@ -2280,7 +2314,7 @@ def rejection_of(content, rejected):
         text = rec.get("content") or ""
         if not text or len(item_stems) < 4:
             continue
-        if _covers(item_stems, _stems(sig_tokens(text))) and _polarity(content) == _polarity(text):
+        if _covers(item_stems, _stems(sig_tokens(text))) and not polarity_differs(content, text):
             found.append(rec)
     epoch = datetime.min.replace(tzinfo=timezone.utc)  # an unreadable date loses to any readable one
     return max(found, key=lambda r: _parse_iso(str(r.get("at") or r.get("rejected_at") or "")) or epoch) if found         else None
