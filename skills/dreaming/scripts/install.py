@@ -176,7 +176,11 @@ def _check_holographic_settings(home, dream, r):
                "the pass's own promotions come back as new facts (and prefetch injects what the "
                "system prompt already holds in full). The provider's default is false")
     floor = dream.holographic_min_trust(home)
-    if floor is not None and abs(floor - 0.3) > 1e-9:
+    if dream.FEEDBACK_FLOOR_EXPLICIT:
+        if floor is not None and abs(floor - dream.FEEDBACK_TRUST_FLOOR) > 1e-9:
+            r.ok(f"holographic min_trust_threshold is {floor:g}, but gates.feedback_trust_floor "
+                 f"{dream.FEEDBACK_TRUST_FLOOR:g} in dreaming.json overrides it for trust_feedback")
+    elif floor is not None and abs(floor - 0.3) > 1e-9:
         r.ok(f"holographic min_trust_threshold is {floor:g} — trust_feedback uses that floor, "
              "not the 0.3 default")
 

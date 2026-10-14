@@ -157,7 +157,7 @@ in each of them (`references/scoring.md`, "Every language").
    rejected that the fact store still trusts (so the provider keeps injecting it into ordinary
    turns). For each, call `fact_feedback` with `action="unhelpful"` and that `fact_id` — one call
    per item, nothing else. It changes no memory entry and deletes nothing: trust drops by 0.10, and
-   below 0.3 the fact leaves search and prefetch. If the tool is not in this session, skip the
+   below the item's `floor` (the store's own threshold, 0.3 by default) the fact leaves search and prefetch. If the tool is not in this session, skip the
    section silently. In the report: one line with the count, no ids.
 7b. **`keywords_needed` — let search find the fact by other words.** holographic ≥ 0.6.0 finds a
    fact by words it does not contain only through its keywords. For each item call `fact_store`

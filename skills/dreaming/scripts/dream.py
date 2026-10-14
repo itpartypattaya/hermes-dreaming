@@ -251,22 +251,34 @@ def _hermes_config_text(home=None):
     try:
         with open(os.path.join(home or HOME, "config.yaml"), encoding="utf-8") as f:
             return f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # a file that is not UTF-8 reads as "no config", not a crash
         return ""
+
+
+def _hermes_config_parsed(home=None):
+    """(Hermes config.yaml as a dict, parsed) — `parsed` is True when PyYAML read the file.
+
+    The flag is what the plugin-setting reader needs: once YAML has read the file, its answer
+    is the truth, and "the key is not there" must stay "not there" instead of falling through
+    to a line scanner that cannot tell `store.key` from `store.something.key`."""
+    text = _hermes_config_text(home)
+    if not text:
+        return {}, False
+    try:
+        import yaml  # type: ignore
+    except Exception:  # noqa: BLE001 — no PyYAML: the scanner below is the only reader
+        return {}, False
+    try:
+        data = yaml.safe_load(text)
+    except Exception:  # noqa: BLE001 — a file YAML cannot parse: let the scanner try
+        return {}, False
+    return (data if isinstance(data, dict) else {}), True
 
 
 def _hermes_config(home=None):
     """Hermes config.yaml as a dict, or {} without PyYAML or on a parse error.
     Callers must degrade gracefully: the pass never requires a dependency."""
-    text = _hermes_config_text(home)
-    if not text:
-        return {}
-    try:
-        import yaml  # type: ignore
-        data = yaml.safe_load(text)
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — no yaml, or a file it cannot parse
-        return {}
+    return _hermes_config_parsed(home)[0]
 
 
 def hermes_memory_settings(home=None):
@@ -315,23 +327,55 @@ def _hermes_plugin_setting(key, home=None):
     text = _hermes_config_text(home)
     if not text:
         return None
-    data = _hermes_config(home)
-    if isinstance(data, dict):
-        # A mapping is the plugin's shape; anything else (a list, a bare string after a wrong indent) is "unset",
+    data, parsed = _hermes_config_parsed(home)
+    if parsed:
+        # YAML read the file, so its answer is final: a key that is absent, nested deeper
+        # (`store.diagnostics.key`) or not a scalar is "unset" — it must not fall through to the
+        # scanner, which would find the nested one (Codex review of 2.7.1). A mapping is the
+        # plugin's shape; anything else (a list, a bare string after a wrong indent) is "unset",
         # not a crash of the whole night (review 2026-10-13).
         plugins = data.get("plugins")
         store = plugins.get("hermes-memory-store") if isinstance(plugins, dict) else None
         value = store.get(key) if isinstance(store, dict) else None
-        if value is not None and value != "" and not isinstance(value, (dict, list)):
-            return str(value)
-    section = re.search(r"^plugins:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
+        if value is None or value == "" or isinstance(value, (dict, list)):
+            return None
+        return str(value)
+    return _scan_plugin_setting(text, key)
+
+
+_FLOW_STORE_RE = re.compile(r"^[ \t]+hermes-memory-store:[ \t]*\{([^{}\n]*)\}[ \t]*(?:#.*)?$", re.MULTILINE)
+
+
+def _scan_plugin_setting(text, key):
+    """The line scanner behind `_hermes_plugin_setting` when PyYAML is missing or failed.
+
+    Only a DIRECT child of `hermes-memory-store` counts: the first key line fixes the block's
+    indent, and anything deeper belongs to a nested mapping. A last line without a trailing
+    newline is read like any other, and a one-line flow mapping (`hermes-memory-store:
+    {scope: chat, min_trust_threshold: 0.4}`) is read too — both are valid YAML that the
+    previous scanner silently skipped, which turned a configured floor into the default."""
+    text = text if text.endswith("\n") else text + "\n"
+    section = re.search(r"^plugins:[ \t]*\n((?:[ \t]+.*\n|[ \t]*\n)*)", text, re.MULTILINE)
     if not section:
         return None
-    store = re.search(r"^[ \t]+hermes-memory-store:[ \t]*\n((?:[ \t]{4,}.*\n|\n)*)",
+    flow = _FLOW_STORE_RE.search(section.group(1))
+    if flow:
+        for pair in flow.group(1).split(","):
+            name, sep, value = pair.partition(":")
+            if sep and name.strip().strip("\"'") == key:
+                value = value.strip().strip("\"'")
+                return value or None
+        return None
+    store = re.search(r"^([ \t]+)hermes-memory-store:[ \t]*\n((?:\1[ \t]+.*\n|[ \t]*\n)*)",
                       section.group(1), re.MULTILINE)
     if not store:
         return None
-    hit = re.search(rf"^[ \t]+{re.escape(key)}:[ \t]*([^#\n]*)", store.group(1), re.MULTILINE)
+    body = store.group(2)
+    first = re.search(r"^([ \t]+)\S", body, re.MULTILINE)
+    if not first:
+        return None
+    indent = re.escape(first.group(1))
+    hit = re.search(rf"^{indent}{re.escape(key)}:[ \t]*([^#\n]*)", body, re.MULTILINE)
     value = hit.group(1).strip().strip("\"'") if hit else ""
     return value or None
 
@@ -639,7 +683,7 @@ def configure(cfg):
     global PINNED_MARKERS, PROBES, REJECT_REASK_DAYS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
     global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, KEYWORDS_ENABLED, KEYWORDS_CAP
-    global FEEDBACK_FLOOR_EXPLICIT, _FEEDBACK_FLOOR_CACHE
+    global FEEDBACK_FLOOR_EXPLICIT
     CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
     # from Hermes' own config.yaml, so here it is simply used.
@@ -656,19 +700,23 @@ def configure(cfg):
                                       int(gates.get("md_confirmed_cooldown_days", 90)), int)
     PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
                                    int(gates.get("promotion_cooldown_days", 3)), int)
+    # Two settings, two parses: a bad cap used to reset the floor too, and an explicit
+    # override silently became the provider's value (Codex review of 2.7.1).
     raw_floor = gates.get("feedback_trust_floor")
     try:
         FEEDBACK_TRUST_FLOOR = 0.3 if raw_floor is None else float(raw_floor)
+        if not 0.0 <= FEEDBACK_TRUST_FLOOR <= 1.0:
+            raise ValueError(raw_floor)
+    except (TypeError, ValueError):
+        FEEDBACK_TRUST_FLOOR, raw_floor = 0.3, None  # unusable override = no override
+    try:
         FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
     except (TypeError, ValueError):
-        FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, raw_floor = 0.3, 5, None
+        FEEDBACK_CAP = 5
     # Whether the floor above is a deliberate override. Unset, `feedback_floor()`
     # asks the provider instead of guessing (resolved lazily: one config read per
     # run, and only for the holographic source).
     FEEDBACK_FLOOR_EXPLICIT = raw_floor is not None
-    # Reset on every configure(): also the initial value, since this module
-    # configures itself on import.
-    _FEEDBACK_FLOOR_CACHE = None
     kw = cfg.get("keywords") if isinstance(cfg.get("keywords"), dict) else {}
     KEYWORDS_ENABLED = kw.get("enabled") is True
     try:
@@ -2066,18 +2114,17 @@ def feedback_floor(fact_source_name=None, home=None):
 
     Explicit `gates.feedback_trust_floor` wins; otherwise the holographic
     provider's own `min_trust_threshold`; otherwise 0.3 (its default, and the
-    value every earlier version of this pass assumed). Cached for the run: the
-    answer comes from a config file that does not change under us."""
-    global _FEEDBACK_FLOOR_CACHE
+    value every earlier version of this pass assumed). Not cached: 2.7.1 kept
+    the answer in a module global shared by every home and every run, so a
+    second run in the same process — or a run for another home — got the first
+    one's floor (Codex review). A config read costs nothing next to the pass."""
     if FEEDBACK_FLOOR_EXPLICIT:
         return FEEDBACK_TRUST_FLOOR
     source = fact_source_name if fact_source_name is not None else fact_source()
     if source != "holographic":
         return FEEDBACK_TRUST_FLOOR
-    if _FEEDBACK_FLOOR_CACHE is None:
-        provider = holographic_min_trust(home)
-        _FEEDBACK_FLOOR_CACHE = FEEDBACK_TRUST_FLOOR if provider is None else provider
-    return _FEEDBACK_FLOOR_CACHE
+    provider = holographic_min_trust(home)
+    return FEEDBACK_TRUST_FLOOR if provider is None else provider
 
 
 def trust_feedback_items(suppressed, rejected, fact_source_name):
@@ -2109,6 +2156,9 @@ def trust_feedback_items(suppressed, rejected, fact_source_name):
             "fact_id": s["fact_id"],
             "content": s["content"][:200],
             "trust": round(trust, 2),
+            # The store's own floor, in the item itself: the precheck hands the agent the items,
+            # not `gates`, so a floor kept only there never reached the nightly prompt.
+            "floor": round(floor, 2),
             "rejected_at": when,
             "rejected_reason": reason[:160],
             "why": (f"rejected by a human{' on ' + when if when else ''}, but the store still "

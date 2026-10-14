@@ -3,6 +3,38 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.2 — 2026-10-14
+
+A Codex CLI review of 2.7.1's provider-floor change found eight defects. Every one was confirmed in the
+code and is fixed; each has a test that fails on 2.7.1 (the new tests give 10 failures against 2.7.1 and
+none against 2.7.2).
+
+### Fixed
+
+- **The floor never reached the agent.** The gate script hands the agent the sections' items, not
+  `gates`, so the prompt's pointer to `gates.feedback_trust_floor` led nowhere and `SKILL.md` still said
+  "below 0.3". Every `trust_feedback` item now carries its `floor`, and the prompt and `SKILL.md` point
+  at it.
+- **A nested key read as the setting.** When PyYAML had parsed `config.yaml` but the key was not a direct
+  child of `hermes-memory-store`, the reader fell through to the line scanner, which found
+  `hermes-memory-store.diagnostics.min_trust_threshold` (and nested `embeddings` / `mirror_memory_writes`
+  in `--check`). A parsed file's answer is now final; the scanner runs only without PyYAML and reads
+  direct children only. This also applies to `db_path`, `scope` and `cron_writes`.
+- **The scanner skipped valid YAML.** Without PyYAML a last line with no trailing newline and a one-line
+  flow mapping (`hermes-memory-store: {scope: chat, min_trust_threshold: 0.4}`) were not read, so a
+  configured floor silently became the default. Both are read now.
+- **The floor was cached for the whole process.** A module-level cache was shared by every home and every
+  run, so a second run — or a run for another home — got the first one's floor. No cache now: two config
+  reads per run.
+- **A bad `feedback_cap` reset an explicit floor**, so an override of 0.2 turned into the provider's 0.9.
+  The two settings are parsed separately, and a floor outside 0..1 counts as no override.
+- **`--check` named the wrong floor** — "trust_feedback uses that floor" even when `dreaming.json`
+  overrode it. It now names the override.
+- **A `config.yaml` that is not UTF-8 crashed `--check`** (`UnicodeDecodeError`). It now reads as "no
+  config".
+
+**Tests:** 447 (was 438).
+
 ## 2.7.1 — 2026-10-14
 
 Checked against holographic **0.14.3** (the pass was paired with 0.13.0). The store's `facts` table
