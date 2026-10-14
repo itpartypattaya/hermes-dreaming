@@ -168,8 +168,17 @@ in each of them (`references/scoring.md`, "Every language").
    part of the write budget and not news for the report. No `keywords` parameter on `fact_store`
    (an older provider), or the store answers "read-only" (holographic older than 0.8.0 refuses writes
    from cron jobs) → skip the section silently. The section exists only with
-   `keywords.enabled` in `dreaming.json` (turn it on with holographic ≥ 0.6.1), at most
-   `keywords.cap` facts a night (10).
+   `keywords.enabled` in `dreaming.json` (turn it on with holographic ≥ 0.6.1 — 0.6.0 stamped a fact
+   "changed now" when it got keywords; since then an `update` carrying only `keywords` keeps the
+   fact's age), at most `keywords.cap` facts a night (10).
+
+   Keywords and **search by meaning** (holographic ≥ 0.14, optional and online) do different jobs:
+   meaning reaches a paraphrase that shares no words, but only while the embeddings endpoint
+   answers; keywords live in the store and work offline, and a store with them needed meaning for
+   almost nothing. The pass itself reads words either way — vectors are the provider's business and
+   never reach this JSON. The provider can also name the gap on its own: `fact_store` `enrich`
+   lists facts without keywords (the most recalled first, as this section does) and `stats`
+   counts them as `without_keywords`.
 7c. **Forgotten facts are cleaned by code, not by you.** After `forget`, the store keeps only a
    tombstone (the id). The next pass — or the `dream-forget-sweep.py` gate — removes that id from
    `cache/dream.json`, the reject list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0;

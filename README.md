@@ -40,6 +40,10 @@ memory; the agent applies its proposals through the regular `memory` tool and re
   does not contain only through its keywords — synonyms, other roots, translations. Facts without
   them are listed a few a night (`keywords_needed`) with a ready `fact_store update` call, and the
   extraction run gives keywords right when it adds a fact. Housekeeping: it never wakes the model.
+  Keywords and the provider's optional **search by meaning** (holographic ≥ 0.14) do different jobs:
+  meaning reaches a paraphrase that shares no words, but only while its endpoint answers; keywords
+  live in the store and work offline. The pass reads words either way — vectors are the provider's
+  business and never reach its JSON.
 - **A diary** (`memories/DREAMS.md`) with provenance for every candidate.
 
 ## Every item gets an outcome

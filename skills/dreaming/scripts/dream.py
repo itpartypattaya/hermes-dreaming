@@ -129,9 +129,15 @@ DEFAULT_CONFIG = {
     # the dream, not the retrieval. `trust_feedback` offers the agent the one
     # call that fixes that (`fact_feedback unhelpful`, -0.10 trust; below
     # `feedback_trust_floor` the fact leaves search and prefetch).
+    # The floor is the PROVIDER's, not ours: holographic recalls nothing below
+    # its `min_trust_threshold` (its own default 0.3, and its meaning search
+    # applies the same floor). Set here only to override it — unset, the pass
+    # reads the provider's value, so a store tuned to 0.5 is not offered facts
+    # retrieval already ignores, and the nightly report names the real number.
     "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
               "promotion_cooldown_days": 3,
-              "feedback_trust_floor": 0.3, "feedback_cap": 5,
+              # None = ask the provider (its `min_trust_threshold`), else 0.3.
+              "feedback_trust_floor": None, "feedback_cap": 5,
               "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
               # A §-entry that survived a "still relevant?" question — kept as is
               # past md_ask_cooldown_days, or rewritten in place — counts as
@@ -378,6 +384,23 @@ CHAT_STORE_DIRS = {"user": "holographic-users", "chat": "holographic-chats", "th
 FACT_ID_RE = re.compile(r"(?:[A-Za-z0-9_.-]+#)?\d+")
 
 
+def holographic_min_trust(home=None):
+    """`plugins.hermes-memory-store.min_trust_threshold` as a float, or None.
+
+    The trust below which holographic stops recalling a fact at all — words,
+    structure and meaning alike. Unset, unreadable or not a number → None, and
+    the caller keeps its own default: a config we cannot parse must not silently
+    turn `trust_feedback` into "offer everything"."""
+    raw = _hermes_plugin_setting("min_trust_threshold", home)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if 0.0 <= value <= 1.0 else None
+
+
 def holographic_scope(home=None):
     """`plugins.hermes-memory-store.scope` of Hermes config.yaml, lower case; "profile" when unset."""
     return (_hermes_plugin_setting("scope", home) or "profile").strip().lower()
@@ -616,6 +639,7 @@ def configure(cfg):
     global PINNED_MARKERS, PROBES, REJECT_REASK_DAYS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
     global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
     global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, KEYWORDS_ENABLED, KEYWORDS_CAP
+    global FEEDBACK_FLOOR_EXPLICIT, _FEEDBACK_FLOOR_CACHE
     CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
     # from Hermes' own config.yaml, so here it is simply used.
@@ -632,11 +656,19 @@ def configure(cfg):
                                       int(gates.get("md_confirmed_cooldown_days", 90)), int)
     PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
                                    int(gates.get("promotion_cooldown_days", 3)), int)
+    raw_floor = gates.get("feedback_trust_floor")
     try:
-        FEEDBACK_TRUST_FLOOR = float(gates.get("feedback_trust_floor", 0.3))
+        FEEDBACK_TRUST_FLOOR = 0.3 if raw_floor is None else float(raw_floor)
         FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
     except (TypeError, ValueError):
-        FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP = 0.3, 5
+        FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, raw_floor = 0.3, 5, None
+    # Whether the floor above is a deliberate override. Unset, `feedback_floor()`
+    # asks the provider instead of guessing (resolved lazily: one config read per
+    # run, and only for the holographic source).
+    FEEDBACK_FLOOR_EXPLICIT = raw_floor is not None
+    # Reset on every configure(): also the initial value, since this module
+    # configures itself on import.
+    _FEEDBACK_FLOOR_CACHE = None
     kw = cfg.get("keywords") if isinstance(cfg.get("keywords"), dict) else {}
     KEYWORDS_ENABLED = kw.get("enabled") is True
     try:
@@ -2029,22 +2061,43 @@ def _fact_fingerprint(content):
     return hashlib.md5(_norm(content).encode("utf-8")).hexdigest()[:16]
 
 
+def feedback_floor(fact_source_name=None, home=None):
+    """The trust below which the provider stops recalling a fact.
+
+    Explicit `gates.feedback_trust_floor` wins; otherwise the holographic
+    provider's own `min_trust_threshold`; otherwise 0.3 (its default, and the
+    value every earlier version of this pass assumed). Cached for the run: the
+    answer comes from a config file that does not change under us."""
+    global _FEEDBACK_FLOOR_CACHE
+    if FEEDBACK_FLOOR_EXPLICIT:
+        return FEEDBACK_TRUST_FLOOR
+    source = fact_source_name if fact_source_name is not None else fact_source()
+    if source != "holographic":
+        return FEEDBACK_TRUST_FLOOR
+    if _FEEDBACK_FLOOR_CACHE is None:
+        provider = holographic_min_trust(home)
+        _FEEDBACK_FLOOR_CACHE = FEEDBACK_TRUST_FLOOR if provider is None else provider
+    return _FEEDBACK_FLOOR_CACHE
+
+
 def trust_feedback_items(suppressed, rejected, fact_source_name):
     """Rejected facts that the store still treats as trustworthy.
 
     `dream-reject.py` closes a question for the DREAM; the store knows nothing
     about it, so with the holographic provider the same fact keeps arriving in
-    ordinary turns through prefetch (it only drops out below trust 0.3). The one
+    ordinary turns through prefetch (it only drops out below the store's own
+    floor — `feedback_floor()`, the provider's `min_trust_threshold`). The one
     call that teaches retrieval is `fact_feedback(action="unhelpful")` — the
     agent has it in the nightly session; the pass itself never writes the store.
     Only for the holographic source: nobody else has that tool."""
     if fact_source_name != "holographic":
         return []
+    floor = feedback_floor(fact_source_name)
     out = []
     for s in suppressed:
         trust = s.get("trust_score")
         trust = 0.5 if trust is None else float(trust)
-        if trust < FEEDBACK_TRUST_FLOOR:
+        if trust < floor:
             continue                      # уже ниже порога — prefetch его не поднимет
         reason, when = "", ""
         fingerprint = _fact_fingerprint(s["content"])
@@ -3454,7 +3507,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "window_days": window_days, "corr_window_days": corr_days, "md_decay_days": md_decay_days,
         "weights": WEIGHTS,
         "gates": {"min_score": MIN_SCORE, "min_mentions": MIN_MENTIONS,
-                  "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful"},
+                  "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful",
+                  # The store's own recall floor (provider `min_trust_threshold` unless
+                  # overridden here): what `trust_feedback` has to push a fact below.
+                  "feedback_trust_floor": feedback_floor()},
         "stats": {"facts": len(facts), "new_facts_reviewed": len(new_facts),
                   # holographic >= 0.8.0: the store takes change / end / correct / forget (SKILL.md, step 7).
                   "fact_history": fact_history_supported(),

@@ -97,5 +97,110 @@ class StoreScopeTests(DreamFixture):
         self.assertFalse(state.exists())
 
 
+class ProviderTrustFloorTests(DreamFixture):
+    """`trust_feedback` has to measure by the floor the provider itself measures by.
+
+    holographic recalls nothing below its `min_trust_threshold` — not by words, not
+    structurally, not by meaning (0.14: `by_meaning(..., min_trust=...)`). That
+    threshold is configurable, while the pass and the prompt used to name a
+    hard-coded 0.3: on a store tuned to 0.5 the section offered facts retrieval
+    already ignored.
+    """
+
+    FACT = "Марина ходит на утренние тренировки по вторникам в зале у дома"
+
+    def setUp(self):
+        super().setUp()
+        self._cfg = dream.CONFIG
+        dream.configure(dict(dream.CONFIG, fact_source="holographic"))
+
+    def tearDown(self):
+        dream.configure(self._cfg)
+        super().tearDown()
+
+    def _config(self, body):
+        (self.home / "config.yaml").write_text(CONFIG.format(body=body), encoding="utf-8")
+
+    def _items(self, trust):
+        suppressed = [{"fact_id": 7, "content": self.FACT, "trust_score": trust}]
+        return dream.trust_feedback_items(suppressed, {}, "holographic")
+
+    def test_provider_floor_is_used_when_ours_is_unset(self):
+        self._config("    min_trust_threshold: 0.5\n")
+        self.assertEqual(dream.feedback_floor("holographic", str(self.home)), 0.5)
+
+    def test_a_fact_below_the_provider_floor_is_not_offered(self):
+        self._config("    min_trust_threshold: 0.5\n")
+        dream.HOME = str(self.home)
+        dream._FEEDBACK_FLOOR_CACHE = None
+        self.assertEqual(self._items(0.4), [], "below the floor recall will not surface it anyway")
+        dream._FEEDBACK_FLOOR_CACHE = None
+        self.assertEqual(len(self._items(0.6)), 1)
+
+    def test_our_explicit_value_wins_over_the_provider(self):
+        self._config("    min_trust_threshold: 0.5\n")
+        dream.configure(dict(dream.CONFIG, fact_source="holographic",
+                             gates=dict(dream.CONFIG["gates"], feedback_trust_floor=0.2)))
+        self.assertEqual(dream.feedback_floor("holographic", str(self.home)), 0.2)
+
+    def test_other_sources_keep_our_default(self):
+        self._config("    min_trust_threshold: 0.9\n")
+        self.assertEqual(dream.feedback_floor("sqlite", str(self.home)), 0.3)
+
+    def test_unparsable_provider_value_falls_back_to_our_default(self):
+        """A config we failed to read must not turn the section into "offer everything"."""
+        for body in ("    min_trust_threshold: abc\n", "    min_trust_threshold: 1.5\n",
+                     "    min_trust_threshold:\n", "    scope: profile\n"):
+            with self.subTest(body=body.strip()):
+                self._config(body)
+                self.assertIsNone(dream.holographic_min_trust(str(self.home)))
+                dream._FEEDBACK_FLOOR_CACHE = None
+                self.assertEqual(dream.feedback_floor("holographic", str(self.home)), 0.3)
+
+    def test_the_report_names_the_effective_floor(self):
+        self._config("    min_trust_threshold: 0.45\n")
+        dream.HOME = str(self.home)
+        dream._FEEDBACK_FLOOR_CACHE = None
+        result = dream.run(14, 60, 60, str(self.mem_md))
+        self.assertEqual(result["gates"]["feedback_trust_floor"], 0.45)
+
+
+class HolographicSettingsCheckTests(DreamFixture):
+    """`install.py --check` on the holographic 0.14 settings: search by meaning, memory mirror."""
+
+    def _check(self, body):
+        from test_install import install
+        (self.home / "config.yaml").write_text(CONFIG.format(body=body), encoding="utf-8")
+        (self.home / "dreaming.json").write_text(json.dumps({"fact_source": "holographic"}),
+                                                 encoding="utf-8")
+        mod = install._load_dream(self.home, self.home / "dreaming.json")
+        report = install.Report()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install._check_holographic_settings(self.home, mod, report)
+        return out.getvalue(), report
+
+    def test_search_by_meaning_is_named_as_the_provider_s_business(self):
+        out, report = self._check('    embeddings: "on"\n')
+        self.assertIn("search by meaning is on", out)
+        self.assertIn("reads words only", out)
+        self.assertEqual(report.warn_n, 0, "information, not a problem")
+
+    def test_memory_mirror_is_a_warning(self):
+        out, report = self._check("    mirror_memory_writes: true\n")
+        self.assertIn("mirror_memory_writes", out)
+        self.assertIn("promotions come back as new facts", out)
+        self.assertGreaterEqual(report.warn_n, 1)
+
+    def test_a_non_default_floor_is_named(self):
+        out, _ = self._check("    min_trust_threshold: 0.5\n")
+        self.assertIn("min_trust_threshold is 0.5", out)
+
+    def test_defaults_stay_quiet(self):
+        out, report = self._check('    embeddings: "off"\n    mirror_memory_writes: false\n')
+        self.assertEqual(out.strip(), "")
+        self.assertEqual(report.warn_n, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

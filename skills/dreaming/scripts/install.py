@@ -160,6 +160,27 @@ def _check_holographic_version(home, r):
         r.ok(f"holographic {found.group(1)}.{found.group(2)}: cron jobs may write facts; forgotten facts are swept")
 
 
+def _check_holographic_settings(home, dream, r):
+    """Two provider settings the dream has to say something about (holographic >= 0.14).
+
+    Neither breaks the pass; both change what a reader of the nightly report should expect,
+    and `mirror_memory_writes` makes the pass feed itself."""
+    embeddings = str(dream._hermes_plugin_setting("embeddings", home) or "").strip().lower()
+    if embeddings in ("on", "true", "yes", "1"):
+        r.ok("holographic search by meaning is on — the pass itself still reads words only "
+             "(vectors are the provider's business); keywords stay the offline path when the "
+             "embeddings endpoint is unreachable")
+    mirror = str(dream._hermes_plugin_setting("mirror_memory_writes", home) or "").strip().lower()
+    if mirror in ("true", "yes", "1", "on"):
+        r.warn("holographic mirror_memory_writes is true — every memory entry becomes a fact, so "
+               "the pass's own promotions come back as new facts (and prefetch injects what the "
+               "system prompt already holds in full). The provider's default is false")
+    floor = dream.holographic_min_trust(home)
+    if floor is not None and abs(floor - 0.3) > 1e-9:
+        r.ok(f"holographic min_trust_threshold is {floor:g} — trust_feedback uses that floor, "
+             "not the 0.3 default")
+
+
 def check_fact_source(home, dream, r):
     try:
         source = dream.fact_source()
@@ -212,6 +233,7 @@ def check_fact_source(home, dream, r):
         note = dream.fact_store_note(home)
         if note:
             r.warn(note)
+        _check_holographic_settings(home, dream, r)
 
 
 def _load_install_cron(home):

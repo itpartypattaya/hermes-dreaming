@@ -3,6 +3,38 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.1 — 2026-10-14
+
+Checked against holographic **0.14.3** (the pass was paired with 0.13.0). The store's `facts` table
+is unchanged, history and tombstones were already supported, and the provider's new search by
+meaning applies the same trust floor to recall (`by_meaning(..., min_trust=…)`), so `trust_feedback`
+still takes a rejected fact out of ordinary turns. Two things of ours were wrong.
+
+### Fixed
+
+- **The recall floor is the provider's, not a constant of ours.** holographic recalls nothing below
+  its `min_trust_threshold` — words, structure and meaning alike — and that threshold is
+  configurable (its default is 0.3). The pass and the nightly prompt named a hard-coded 0.3, so on
+  a store tuned to 0.5 the `trust_feedback` section offered facts retrieval already ignored and the
+  report named the wrong number. The floor is now the explicit `gates.feedback_trust_floor`, else
+  the provider's value, else 0.3; the config default became the sentinel `null` ("ask the
+  provider"). A provider config that cannot be parsed falls back to 0.3 rather than "offer
+  everything". The effective floor travels in the payload's `gates`, and the prompt points at it
+  instead of a number.
+
+### Added
+
+- **`install.py --check` knows the 0.14 settings.** `embeddings: on` → one line saying the pass
+  itself still reads words only and that keywords remain the offline path when the endpoint is
+  unreachable; `mirror_memory_writes: true` → a warning, because then the pass's own promotions come
+  back as new facts and prefetch injects what the system prompt already holds in full (the
+  provider's default is false); a non-default `min_trust_threshold` is named.
+- Documentation: what keywords and search by meaning each do, and that the provider can name the
+  gap itself — `fact_store enrich` lists facts without keywords, `stats` counts them as
+  `without_keywords`.
+
+**Tests:** 438 (was 428).
+
 ## 2.7.0 — 2026-10-13
 
 From a review of what people report about agent memory (bugs and requests on GitHub, mem0, Graphiti).
