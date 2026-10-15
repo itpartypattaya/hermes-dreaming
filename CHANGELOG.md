@@ -3,6 +3,26 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.8.0 — 2026-10-15
+
+### Added
+
+- **`confirm` — facts people said again.** holographic 0.15.0 records who stands behind a fact (the person said it,
+  confirmed it, or the agent inferred it) and counts confirmations through `fact_feedback(action="confirmed")`. The
+  nightly pass now offers the facts of the main store that people in trusted chats said again on at least two
+  different days, by messages that hold most of the fact's words (60 % of its stems) and do not negate it —
+  naming the topic is not saying it again. Measured on a live family store (58 facts, 178 human messages in the
+  window), counting facts only: the corroboration rule alone (two shared stems or one rare one) would have
+  offered 26 — a chat names a child and her school every day; 20 % coverage, 15; 30 %, 3; 35 % and up, none. So
+  it is rare by design, and the dry run says how many it would offer. The agent calls
+  `fact_feedback confirmed` once per item: trust +0.05 (at most once a night per fact, once per person), and a
+  conclusion the agent stored as `inferred` counts as confirmed. At most 10 a night; a fact the store counted a
+  confirmation of in the last 30 days rests; chat-store facts get no call. Like `trust_feedback`, it rides along when
+  the agent is awake and never wakes it. With a store that has no confirmations table (holographic before 0.15.0)
+  the section is empty. On holographic's own store the agent added 22 facts in four months and never the same text
+  twice, so this pass, not repetition, is where confirmations come from. Negation is read as the conflict check
+  reads it, by the same word form — best effort.
+
 ## 2.7.6 — 2026-10-15
 
 A narrow Codex CLI review of the 2.7.2 → 2.7.5 diff (gpt-6.1-sol) found six issues, each confirmed by a

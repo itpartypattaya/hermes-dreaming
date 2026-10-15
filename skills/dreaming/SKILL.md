@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.7.6
+version: 2.8.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
@@ -186,6 +186,18 @@ in each of them (`references/scoring.md`, "Every language").
    `cache/dream.json`, the reject list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0;
    older lines through `cache/dream-diary-index.json`) and the dream cron logs. Do not quote a
    forgotten fact in the report.
+7d. **`confirm` — people said it again.** holographic ≥ 0.15.0 records who stands behind a fact and
+   counts confirmations. Each item is a fact of the main store that people in trusted chats said
+   again on at least two different days, by messages that hold most of its words (60 % of its stems)
+   and do not negate it (naming the topic is not saying it again; negation is read as the conflict
+   check reads it, by the same word form — best effort). Rare by design: on a live family store of
+   58 facts the looser "mentions the topic" rule offered 26, this one none. For each, call
+   `fact_feedback` with `action="confirmed"` and that `fact_id` —
+   one call per item, nothing else: trust +0.05, at most once a night per fact, and a conclusion the
+   agent stored as `inferred` counts as confirmed. A fact the store counted a confirmation of in the
+   last 30 days is not offered; at most 10 a night. No `confirmed` action on `fact_feedback` (an older
+   provider) → skip the section silently; the section is empty anyway when the store has no
+   confirmations table. In the report: one line with the count, no ids.
 8. **Memory pressure.** The char limit gates writes silently. Tidy the named file: merge close
    entries with one `replace` (anchor copied verbatim from `current_entries`), drop entries that
    only restate the system prompt (routing tables, persona rules, skill triggers). Keep what exists

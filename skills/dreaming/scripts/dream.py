@@ -2301,6 +2301,70 @@ def trust_feedback_items(suppressed, rejected, fact_source_name):
     return out
 
 
+# Confirmations (holographic >= 0.15.0): facts people keep saying, on CONFIRM_MIN_DAYS different days at least, by
+# messages that do not negate them — offered to `fact_feedback(action="confirmed")`, at most CONFIRM_CAP a night. One
+# mention is a topic, not an agreement; "Илья не переехал" mentions the fact it denies, so a message whose polarity
+# differs from the fact's never counts. A fact the store already counts a confirmation of within CONFIRM_REST_DAYS
+# rests.
+CONFIRM_MIN_DAYS = 2
+CONFIRM_CAP = 10
+CONFIRM_REST_DAYS = 30
+# Said again, not merely talked about: the message holds at least this share of the fact's own word stems. The
+# corroboration rule (two shared stems, or one rare one) is right for "is this fact alive?" and too loose here — a
+# family chat names a child and her school every day.
+CONFIRM_MIN_COVERAGE = 0.6
+
+
+def recent_confirmations(db, rest_days=CONFIRM_REST_DAYS):
+    """Fact ids the store counts a confirmation of within *rest_days*; None when the store has no
+    `fact_confirmations` table (holographic older than 0.15.0: no `confirmed` call to offer). Read-only."""
+    if not db or not os.path.exists(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fact_confirmations'"
+                                ).fetchone():
+                return None
+            return {r[0] for r in conn.execute(
+                "SELECT DISTINCT fact_id FROM fact_confirmations WHERE julianday('now') - julianday(confirmed_at) < ?",
+                (rest_days,))}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def confirm_items(safe, messages, by_store, fact_source_name, db=None):
+    """Facts of the main store that people said again on different days (see CONFIRM_MIN_DAYS). Only for the
+    holographic source with the confirmations table; chat-store facts get no call (a cron session cannot reach a
+    chat's database). The pass itself never writes the store."""
+    if fact_source_name != "holographic":
+        return []
+    rested = recent_confirmations(db or fact_store_path())
+    if rested is None:
+        return []
+    out = []
+    for s in safe:
+        if s.get("store") or s.get("unsafe") or s["fact_id"] in rested \
+                or (s.get("meta") or {}).get("ref_days", 0) < CONFIRM_MIN_DAYS:
+            continue
+        tokens = sig_tokens(s["content"])
+        stems = _stems(tokens)
+        if not stems:
+            continue
+        days = {m["day"] for m in messages_for(s, messages, by_store)
+                if corroborate(tokens, [m])[0]
+                and len(stems & _stems(m["tokens"])) / len(stems) >= CONFIRM_MIN_COVERAGE
+                and not polarity_differs(s["content"], m["content"])}
+        if len(days) >= CONFIRM_MIN_DAYS:
+            out.append({"fact_id": s["fact_id"], "content": s["content"][:200], "days": len(days),
+                        "fingerprint": _fact_fingerprint(s["content"]),
+                        "call": {"tool": "fact_feedback", "action": "confirmed", "fact_id": s["fact_id"]}})
+    out.sort(key=lambda i: (-i["days"], i["fact_id"]))
+    return out
+
+
 def keywords_needed_items(safe, fact_source_name):
     """Facts the store keeps without keywords, the most recalled first.
 
@@ -3203,7 +3267,7 @@ def _revert_unacked(seen, state_db):
             continue
         for k in keys or []:
             # Ride-along sections are reopened silently: on a night the gate kept shut nobody was meant to answer.
-            if bucket.pop(k, None) is not None and bucket_name not in ("trust_feedback", "keywords_needed"):
+            if bucket.pop(k, None) is not None and bucket_name not in ("trust_feedback", "keywords_needed", "confirm"):
                 dropped += 1
     reask = set(pending.get("asked") or [])
     if dropped or reask:
@@ -3527,6 +3591,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     seen_promotions = seen.setdefault("promotions", {})
     seen_feedback = seen.setdefault("trust_feedback", {})
     seen_keywords = seen.setdefault("keywords_needed", {})
+    seen_confirm = seen.setdefault("confirm", {})
     # A write waiting for approval is not in memory yet, but it IS the answer to
     # the candidate that produced it: offering it again every night only grows
     # the queue. The staged texts are treated as a second memory file — the same
@@ -3675,6 +3740,11 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     keywords_fresh = unseen(keywords_pending, seen_keywords, now, key=_feedback_key)
     keywords_needed = keywords_fresh[:KEYWORDS_CAP]
 
+    # Facts people said again on different days (holographic >= 0.15.0): a confirmation is worth giving while the
+    # agent is awake, never a reason to wake it.
+    confirm_pending = confirm_items(safe, all_messages, by_store, fact_source())
+    confirm = unseen(confirm_pending, seen_confirm, now, key=_feedback_key)[:CONFIRM_CAP]
+
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
                        staged_removals=staged_removals,
                        reask=reask_md)
@@ -3688,6 +3758,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         mark_seen(published_promotions, seen_promotions, now)
         mark_seen(feedback, seen_feedback, now, key=_feedback_key)
         mark_seen(keywords_needed, seen_keywords, now, key=_feedback_key)
+        mark_seen(confirm, seen_confirm, now, key=_feedback_key)
         mark_seen(published_decays, seen_fact_decays, now)
         mark_seen(published_conflicts, seen_conflicts, now)
         for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
@@ -3711,7 +3782,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                      # here a night the gate kept shut still rested them for the whole cooldown (Codex review
                      # of 2.7.2).
                      "trust_feedback": [_feedback_key(i) for i in feedback],
-                     "keywords_needed": [_feedback_key(i) for i in keywords_needed]},
+                     "keywords_needed": [_feedback_key(i) for i in keywords_needed],
+                     "confirm": [_feedback_key(i) for i in confirm]},
             "asked": [d["key"] for d in md_dec if d.get("key")],
         }
         try:
@@ -3774,6 +3846,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   # Tonight's slice and the whole backlog of facts without keywords.
                   "keywords_needed": len(keywords_needed),
                   "keywords_missing": len(keywords_pending),
+                  "confirm": len(confirm),
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
@@ -3792,6 +3865,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "trust_feedback": feedback,
         # Not actionable either: keywords are worth adding while awake.
         "keywords_needed": keywords_needed,
+        # Not actionable either: people said these again on different days.
+        "confirm": confirm,
         "fact_decays": [_pub(s) for s in decays[:PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,
@@ -4617,6 +4692,7 @@ def dry_run_summary(result, source):
     facts("new facts to review", result.get("new_facts") or [])
     facts("conflicts (same subject, different numbers or negation)", result.get("conflicts") or [])
     facts("facts that look unused", result.get("fact_decays") or [])
+    lines.append(f"facts people said again on different days (to confirm): {len(result.get('confirm') or [])}")
     md = result.get("md_decays") or []
     lines.append('memory entries to ask "still relevant?": ' + str(len(md)))
     for d in md[:8]:
