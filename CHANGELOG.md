@@ -3,6 +3,35 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.7.6 — 2026-10-15
+
+A narrow Codex CLI review of the 2.7.2 → 2.7.5 diff (gpt-6.1-sol) found six issues, each confirmed by a
+reproduction; all are fixed, each with a regression test. With 2.7.6 a live install's decisions on its 58
+facts and the secret screening of a month of its messages are still the same as with 2.7.2.
+
+### Fixed
+
+- **A secret entry leaked through a conflict's numbers.** The text of an entry holding a secret or an
+  instruction was replaced by a placeholder, but its numbers went out as `memory_numbers` (a PIN among
+  them), and its negated words as `memory_negations`. Such a conflict now carries the placeholder,
+  `replace_unsafe: true` and the candidate's side only; the prompt says to ask, never to replace it.
+- **A Cyrillic password after a dash passed.** Any Cyrillic letter in the value made it "a word", so
+  "changed the password — Кот2024!" was no secret. With Cyrillic in it, a value is a credential when a
+  digit is glued to a letter; "40-минутный" and "кв.123" stay words.
+- **A verbatim substring skipped the negation check.** A fact standing whole inside an entry that says
+  "not" ("use Telegram for alerts" in "do not use Telegram for alerts") counted as already written, and
+  its conflict was dropped with it. The negation check now runs first.
+- **A negation lost its object.** "Likes peanuts but not almonds" against "likes almonds but not
+  peanuts" was a duplicate: both negate "likes". A word one text says both ways is now compared together
+  with the word after it.
+- **The forget sweep took a kept fact by its beginning.** The sweep matched fact items by the hashes of
+  their first 85 characters, so a kept fact sharing them with a forgotten one left `promotions` every
+  night. Items are matched by the fingerprint of the full text (already in the diary index); the prefix
+  hashes stay for memory entries and previews, whose full text is not known.
+- **`dream-reject.py --hermes-home`.** The reject command locked `$HERMES_HOME` (or `~/.hermes`) even
+  when the dream ran with `--hermes-home`; it takes the same flag now, for the lock, the config and the
+  fact store.
+
 ## 2.7.5 — 2026-10-15
 
 An Antigravity CLI review of the 2.7.2 → 2.7.4 diff (Gemini 3.8 Flash, with the test suite and its own

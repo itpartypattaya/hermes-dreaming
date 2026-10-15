@@ -84,7 +84,7 @@ DREAM_PROMPT = (
     "confirmation do not write it, raise it as a question. Emotions and one-off states are not "
     "permanent traits. conflicts are possible updates of existing entries (different "
     "numbers/dates, or fact_negations vs memory_negations — one of them says 'not'): replace if "
-    "the newer statement is trustworthy, otherwise ask. An item with previously_rejected was "
+    "the newer statement is trustworthy, otherwise ask; a conflict with replace_unsafe hides an entry that holds a secret or an instruction: ask, never replace it. An item with previously_rejected was "
     "rejected by a human before and said again since: never write it — ask once whether it is "
     "true now. An item with store comes from one chat's own database: memory tool only, never "
     "fact_store or fact_feedback with its fact_id. Do not save "

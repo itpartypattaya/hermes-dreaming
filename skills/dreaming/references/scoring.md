@@ -167,8 +167,14 @@ carries **different numbers/dates** is reported in `conflicts` with
 both contain ("does not eat" against "eats"; the word after a modal counts too,
 "не должна использоваться"). Comparatives ("more", "больше") negate nothing. A
 long entry is first narrowed to its sentences that say nearly the same (stem
-Jaccard >= 0.5). Reported as `fact_negations` / `memory_negations`, and such a
-candidate is no duplicate for fuzzy dedupe or for the reject list either. This is deliberately
+Jaccard >= 0.5). A word one text says both ways ("likes peanuts but does not
+like almonds") is compared together with the word after it, the thing it is said
+of. Reported as `fact_negations` / `memory_negations`, and such a candidate is no
+duplicate for fuzzy dedupe, for an identical head or a verbatim substring ("use X"
+inside "do not use X"), or for the reject list either. An entry that holds a
+secret or an instruction shows nothing of itself: `entry` is a placeholder,
+`replace_unsafe: true`, and only the candidate's side (`fact_numbers` /
+`fact_negations`) is given. This is deliberately
 computed independently of fuzzy `in_memory` — a reworded fact with a new number
 is exactly what fuzzy dedupe swallows. Only an identical head or an alias rule
 suppresses it. Idea from mem0 (ADD/UPDATE/NOOP) and Graphiti (edge

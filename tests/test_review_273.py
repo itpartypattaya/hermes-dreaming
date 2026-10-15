@@ -365,6 +365,82 @@ class RejectWriteTests(unittest.TestCase):
                 self.assertEqual(len(json.load(f)), 1)
 
 
+class CodexReview275Tests(unittest.TestCase):
+    """A narrow Codex CLI review of the 2.7.2 → 2.7.5 diff (gpt-6.1-sol, 2026-10-15): six findings, each
+    confirmed by a reproduction. The fingerprint scrub (no. 5) is in test_forget_sweep.py."""
+
+    def test_an_unsafe_entry_shows_no_numbers_in_a_conflict(self):
+        """No. 1: the text of an entry with a password was hidden, the password itself went out as
+        `memory_numbers`."""
+        hits = dream.find_conflicts("Марина водит машину Toyota Camry модели 2025 года",
+                                    "Марина водит машину Toyota Camry модели 2024 года; пароль: 483726")
+        self.assertEqual(hits, [{"entry": dream.ENTRY_REDACTED, "replace_unsafe": True, "fact_numbers": ["2025"]}])
+        self.assertNotIn("483726", json.dumps(hits))
+        hits = dream.find_conflicts("Марина водит машину Toyota Camry",
+                                    "Марина не водит машину Toyota Camry; пароль от неё: розовыйслон")
+        self.assertEqual(hits, [{"entry": dream.ENTRY_REDACTED, "replace_unsafe": True, "fact_negations": []}])
+
+    def test_a_cyrillic_password_after_a_dash(self):
+        """No. 2: any Cyrillic in the value made it "a word", so a password after a dash passed."""
+        for text in ("Сменил пароль — Розовыйслон123!", "Сменил пароль - Кот2024!"):
+            self.assertEqual(dream.classify_unsafe(text), "secret", text)
+        for text in ("Сбросил пароль от Zoom — 40-минутный лимит остался",
+                     "Забыл пароль от домофона — кв.123 не открывает",
+                     "Поменял пароль от роутера — 5GHz сеть перезагрузилась"):
+            self.assertIsNone(dream.classify_unsafe(text), text)
+
+    def test_a_verbatim_substring_with_not_is_no_duplicate(self):
+        """No. 3: a fact standing whole inside an entry with "не" counted as written before the negation
+        check ran."""
+        fact = "Использовать Telegram для рабочих уведомлений команды"
+        memory = "Не использовать Telegram для рабочих уведомлений команды"
+        self.assertFalse(dream.exact_or_alias_in_memory(fact, memory))
+        self.assertFalse(dream.already_in_memory(fact, memory))
+        self.assertEqual(len(dream.find_conflicts(fact, memory)), 1)
+        self.assertTrue(dream.already_in_memory(fact, "Решили: " + fact))
+
+    def test_a_word_said_both_ways_keeps_its_object(self):
+        """No. 4: "likes peanuts but not almonds" against the reverse — both sides negate the same word."""
+        self.assertEqual(dream.polarity_flip("Олег любит арахис, но не любит миндаль",
+                                             "Олег не любит арахис, но любит миндаль"),
+                         (["не любит миндаль"], ["не любит арахис"]))
+        self.assertFalse(dream.already_in_memory("Олег любит арахис, но не любит миндаль",
+                                                 "Олег не любит арахис, но любит миндаль"))
+        self.assertIsNone(dream.polarity_flip("Олег любит арахис, но не любит миндаль",
+                                              "Олег не любит миндаль"))
+        self.assertIsNone(dream.polarity_flip("Олег любит арахис, но не любит миндаль",
+                                              "Олег любит арахис и не любит миндаль"))
+
+    def test_reject_takes_the_lock_of_the_given_home(self):
+        """No. 6: with the dream on `--hermes-home`, the reject list took the lock of ~/.hermes."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "cache", "dream-rejected.json")
+            real = reject._dream()
+            homes = []
+
+            @contextlib.contextmanager
+            def lock(home, wait=True):
+                homes.append(home)
+                yield True
+
+            class Spy:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+            spy = Spy()
+            spy._sweep_lock = lock
+            saved_dream, saved_home = reject._dream, reject.HOME
+            reject._dream = lambda: spy
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(reject.main(["--hermes-home", tmp, "--state", state,
+                                                  "--content", "Ветка 9 больше не нужна"]), 0)
+            finally:
+                reject._dream, reject.HOME = saved_dream, saved_home
+            self.assertEqual(homes, [os.path.abspath(tmp)])
+            self.assertEqual(spy.HOME, os.path.abspath(tmp))
+
+
 class MetadataTests(unittest.TestCase):
     def test_skill_version_matches_the_plugin(self):
         manifest = ROOT.parents[1] / "plugin.json"

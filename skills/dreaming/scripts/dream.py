@@ -1826,6 +1826,10 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
 # `conflicts` as a possible update. Only negations count — comparatives
 # ("больше", "more") are significant for the store-duplicate check but negate
 # nothing ("drinks more coffee" is no flip of "drinks coffee"; review of 2.7.4).
+# When a text says the same word both ways ("любит арахис, но не любит
+# миндаль"), the word alone cannot tell the sides apart: such a word is
+# compared together with the word after it, the thing it is said of (Codex
+# review of 2.7.5).
 NEGATION_WORDS = {w.replace("ё", "е") for w in """не нет без ни никогда нельзя
 not no never nor neither none nothing nobody without cannot
 doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn
@@ -1844,19 +1848,49 @@ def _plain_words(text):
     return _WORD_RE.findall(_norm(text).replace("ё", "е"))
 
 
-def _negated(words):
-    """{stem: "не ест"} — the first real word after each negation (other negations and 1–2 letter words
-    skipped), and the next one as well when the first is a modal."""
-    out = {}
+def _real_word(words, start):
+    """Index of the first real word from *start* (negations and 1–2 letter words skipped), or None."""
+    for j in range(start, len(words)):
+        if words[j] not in NEGATION_WORDS and len(words[j]) >= 3:
+            return j
+    return None
+
+
+def _negations(words):
+    """[(index, stem, "не ест")] — the first real word after each negation, and the next one as well when the
+    first is a modal."""
+    out = []
     for i, w in enumerate(words):
         if w not in NEGATION_WORDS:
             continue
-        for nxt in words[i + 1:]:
-            if nxt in NEGATION_WORDS or len(nxt) < 3:
-                continue
-            out.setdefault(_stem(nxt), f"{w} {nxt}")
-            if nxt not in _MODALS:
+        j = _real_word(words, i + 1)
+        while j is not None:
+            out.append((j, _stem(words[j]), f"{w} {words[j]}"))
+            if words[j] not in _MODALS:
                 break
+            j = _real_word(words, j + 1)
+    return out
+
+
+def _two_way(words, negs):
+    """Stems this text says both negated and plain."""
+    at = {j for j, _, _ in negs}
+    return {s for _, s, _ in negs} & {_stem(w) for k, w in enumerate(words) if k not in at and len(w) >= 3}
+
+
+def _negated(words, both, two_way):
+    """{key: "не ест"} for the negated words both texts contain; a word said both ways is keyed together with
+    the word after it."""
+    out = {}
+    for j, s, phrase in _negations(words):
+        if s not in both:
+            continue
+        if s in two_way:
+            k = _real_word(words, j + 1)
+            obj = words[k] if k is not None else ""
+            out.setdefault(f"{s} {_stem(obj) if obj else ''}", f"{phrase} {obj}".strip())
+        else:
+            out.setdefault(s, phrase)
     return out
 
 
@@ -1871,8 +1905,8 @@ def polarity_flip(content, chunk):
             return None
     mine, theirs = _plain_words(content), _plain_words(". ".join(sentences))
     both = {_stem(w) for w in mine} & {_stem(w) for w in theirs}
-    a = {k: v for k, v in _negated(mine).items() if k in both}
-    b = {k: v for k, v in _negated(theirs).items() if k in both}
+    two_way = _two_way(mine, _negations(mine)) | _two_way(theirs, _negations(theirs))
+    a, b = _negated(mine, both, two_way), _negated(theirs, both, two_way)
     if set(a) == set(b):
         return None
     return sorted(a.values()), sorted(b.values())
@@ -1905,9 +1939,11 @@ def exact_or_alias_in_memory(content, memory_text):
             chunk_norm = _norm(chunk)
             if head not in chunk_norm:
                 continue
+            if polarity_differs(content, chunk):
+                continue  # "use X" inside "do not use X" is a flip, not a copy (Codex review of 2.7.5)
             if norm in chunk_norm:
                 return True
-            if not (_numbers(content) <= _numbers(chunk)) or polarity_differs(content, chunk):
+            if not (_numbers(content) <= _numbers(chunk)):
                 continue
             chunk_stems = _stems(sig_tokens(chunk))
             if (not item_stems
@@ -2105,16 +2141,21 @@ def find_conflicts(content, memory_text):
         overlap = len(shared) / min(len(item_stems), len(chunk_stems))
         if len(shared) < CONFLICT_MIN_SHARED or overlap < CONFLICT_MIN_OVERLAP:
             continue
+        # An entry holding a secret or an instruction shows nothing of itself: its numbers and negated words
+        # are its text too (a PIN went out as memory_numbers; Codex review of 2.7.5).
+        hidden = {"entry": ENTRY_REDACTED, "replace_unsafe": True} if classify_unsafe(chunk) else None
         flip = polarity_flip(content, chunk)
         if flip:
-            out.append({"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
+            out.append(dict(hidden, fact_negations=flip[0]) if hidden else
+                       {"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
                         "fact_negations": flip[0], "memory_negations": flip[1]})
             continue
         if not item_nums:
             continue
         chunk_nums = _numbers(chunk)
         if chunk_nums and chunk_nums != item_nums and not (item_nums <= chunk_nums):
-            out.append({"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
+            out.append(dict(hidden, fact_numbers=sorted(item_nums - chunk_nums)) if hidden else
+                       {"entry": _safe_preview(chunk, 160, ENTRY_REDACTED),
                         "fact_numbers": sorted(item_nums - chunk_nums),
                         "memory_numbers": sorted(chunk_nums - item_nums)})
     return out
@@ -2677,19 +2718,24 @@ PASSWORD_MARKER_RE = re.compile(
 # пароль: розовыйслон"). After a dash a verb of change in the marker's own
 # sentence makes it an event — "сменила пароль от Wi-Fi — новый знает только
 # она", "сбросил пароль от Zoom — 40-минутный лимит остался" — unless the value
-# looks like a credential: six or more characters, no Cyrillic, a digit or a
-# symbol ("— Secret123!"). Codex review of 2.7.2 and review of 2.7.4.
+# looks like a credential: six or more characters and a digit or a symbol
+# ("— Secret123!"); with Cyrillic in it, a digit glued to a letter
+# ("— Кот2024!"), because "40-минутный" and "кв.123" are words, not
+# passwords. Codex review of 2.7.2, review of 2.7.4, Codex review of 2.7.5.
 PASSWORD_EVENT_RE = re.compile(
     r"(?:смен\w+|помен\w+|обнов\w+|сброс\w+|забыл\w*|changed|rotated|reset|forgot)",
     re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"[.!?\n]")
 _CREDENTIAL_VALUE_RE = re.compile(r"[\d!@#$%^&*_+=~|\\/<>{}\[\]]")
 _CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+_GLUED_DIGIT_RE = re.compile(r"[^\W\d_]\d|\d[^\W\d_]")
 
 
 def _looks_like_credential(value):
     value = value.rstrip(".,;")
-    return len(value) >= 6 and not _CYRILLIC_RE.search(value) and bool(_CREDENTIAL_VALUE_RE.search(value))
+    if len(value) < 6 or not _CREDENTIAL_VALUE_RE.search(value):
+        return False
+    return not _CYRILLIC_RE.search(value) or bool(_GLUED_DIGIT_RE.search(value))
 
 
 def _password_marker_unsafe(text):
@@ -4229,16 +4275,30 @@ def _carries_forgotten(text, hashes):
     return False
 
 
-def _scrub_copies(node, hashes):
+def _is_forgotten_item(item, hashes, fingerprints):
+    """A payload item (it has `content`) that IS a forgotten fact. Its full fingerprint decides: two facts may
+    share their first 85 characters — all the preview hashes keep — and differ in the end ("…to Telegram" /
+    "…by email"; Codex review of 2.7.5). A text no longer than a preview is matched by its hashes, and so is
+    every item while no fingerprint was recorded (tombstones swept before 2.4)."""
+    content = item.get("content")
+    if not isinstance(content, str):
+        return False
+    if (item.get("fingerprint") or _fact_fingerprint(content)) in fingerprints:
+        return True
+    return (len(content.strip()) <= 85 or not fingerprints) and _carries_forgotten(content, hashes)
+
+
+def _scrub_copies(node, hashes, fingerprints=frozenset(), _item=False):
     """Copies of forgotten facts that ride WITHOUT their fact_id — a memory entry shown as another candidate's
     `nearest_entry`, a "still relevant?" entry, a conflict's entry, a bare string in a list. `_drop_fact_items`
     only knew items by id, and these stayed in the payload (Codex review of 2.7.2). A `nearest_entry` goes as a
-    whole: its anchor without the text is a blind replace."""
+    whole: its anchor without the text is a blind replace. A kept item's own `content` is its fact, already
+    judged by `_is_forgotten_item`."""
     removed = 0
     if isinstance(node, dict):
         for key, value in list(node.items()):
-            if key == "diary":
-                continue  # line rules of its own (_scrub_strings)
+            if key == "diary" or (_item and key == "content"):
+                continue  # line rules of its own (_scrub_strings); a kept fact's own text
             if isinstance(value, str):
                 if value != FORGOTTEN_COPY and _carries_forgotten(value, hashes):
                     node[key] = FORGOTTEN_COPY
@@ -4248,7 +4308,7 @@ def _scrub_copies(node, hashes):
                 node[key] = {"entry": FORGOTTEN_COPY, "replace_unsafe": True}
                 removed += 1
             else:
-                removed += _scrub_copies(value, hashes)
+                removed += _scrub_copies(value, hashes, fingerprints)
     elif isinstance(node, list):
         keep = []
         for value in node:
@@ -4256,13 +4316,14 @@ def _scrub_copies(node, hashes):
                 if value != FORGOTTEN_COPY and _carries_forgotten(value, hashes):
                     value = FORGOTTEN_COPY
                     removed += 1
-            elif isinstance(value, dict) and _carries_forgotten(value.get("content"), hashes):
+            elif isinstance(value, dict) and _is_forgotten_item(value, hashes, fingerprints):
                 # An item whose own text is the forgotten fact goes with it: a placeholder left in
                 # `promotions` kept the gate open and offered "[removed: …]" for memory (review of 2.7.4).
                 removed += 1
                 continue
             else:
-                removed += _scrub_copies(value, hashes)
+                removed += _scrub_copies(value, hashes, fingerprints,
+                                         isinstance(value, dict) and isinstance(value.get("content"), str))
             keep.append(value)
         node[:] = keep
     return removed
@@ -4270,6 +4331,10 @@ def _scrub_copies(node, hashes):
 
 def _preview_set(index):
     return {h for rec in index.values() for h in (rec or {}).get("previews", [])}
+
+
+def _fingerprint_set(index):
+    return {fp for rec in index.values() for fp in (rec or {}).get("fingerprints", [])}
 
 
 def scrub_result(result):
@@ -4280,7 +4345,7 @@ def scrub_result(result):
         return 0
     index = forgotten_diary_index(ids)
     return (_drop_fact_items(result, ids) + _scrub_strings(result, ids, index)
-            + _scrub_copies(result, _preview_set(index)))
+            + _scrub_copies(result, _preview_set(index), _fingerprint_set(index)))
 
 
 def _dream_job_dirs(home):
@@ -4381,7 +4446,7 @@ def forget_sweep(db=None, home=None):
     payload = _json_file(payload_path, {})
     if payload:
         summary["payload"] = (_drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
-                              + _scrub_copies(payload, _preview_set(index)))
+                              + _scrub_copies(payload, _preview_set(index), fingerprints))
         if summary["payload"]:
             _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -4469,17 +4534,18 @@ def forget_sweep(db=None, home=None):
 
 
 def forgotten_diary_index(ids):
-    """{fact_id: {"previews": [...]}} for *ids*: from the sweep state once swept, else from the diary index —
-    what scrub_diary_text needs to clean another copy of the diary (a backup) of those facts."""
+    """{fact_id: {"previews": [...], "fingerprints": [...]}} for *ids*: from the sweep state once swept, else from
+    the diary index — what scrub_diary_text needs to clean another copy of the diary (a backup) of those facts."""
     index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
     index = _json_file(index_path, {}) if index_path else {}
     swept = (_json_file(state_path, {}) if state_path else {}).get("swept") or {}
     out = {}
     for i in (str(x) for x in ids):
-        previews = set(((swept.get(i) if isinstance(swept.get(i), dict) else None) or {}).get("previews") or [])
-        previews |= set((index.get(i) or {}).get("previews") or [])
-        out[i] = {"previews": sorted(previews)}
+        done = (swept.get(i) if isinstance(swept.get(i), dict) else None) or {}
+        previews = set(done.get("previews") or []) | set((index.get(i) or {}).get("previews") or [])
+        fingerprints = set(done.get("fingerprints") or []) | set((index.get(i) or {}).get("fingerprints") or [])
+        out[i] = {"previews": sorted(previews), "fingerprints": sorted(fingerprints)}
     return out
 
 

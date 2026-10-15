@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.7.5
+version: 2.7.6
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
@@ -68,7 +68,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `previously_rejected` on an item | a human rejected this fact half a year ago or more and it was said again since: ask whether it is true now (quote the old reason); never write it without a yes |
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
-| `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask |
+| `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never replace |
 | `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |
 | `memory_pressure` | consolidate the file it names before adding anything |
@@ -236,7 +236,8 @@ in each of them (`references/scoring.md`, "Every language").
   raising the gates.
 - **The memory tool cannot touch the fact store.** Without `fact_history`, `dream-reject.py` is the
   only way to silence a fact, and it writes only `cache/dream-rejected.json` (text fingerprint; a
-  secret's text is never stored). `quarantined` facts are closed the same way. With it, `end` /
+  secret's text is never stored). When the dream runs with `--hermes-home`, give `dream-reject.py` the same
+  `--hermes-home`: the config, the fact store and the state lock are that home's. `quarantined` facts are closed the same way. With it, `end` /
   `correct` / `forget` go through `fact_store` (step 7).
 - **`forget` is final and wide.** It deletes the fact with its history and, through the sweep, this
   skill's copies. Hermes's own session log still holds the messages the fact came from, and a git

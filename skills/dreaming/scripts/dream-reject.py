@@ -131,6 +131,9 @@ def main(argv=None):
     ap.add_argument("--content", help="fact text (when it is no longer in the DB)")
     ap.add_argument("--reason", default="", help="why rejected — for the record")
     ap.add_argument("--state", default=None)
+    ap.add_argument("--hermes-home", default=None,
+                    help="the Hermes home the dream ran with (default $HERMES_HOME or ~/.hermes): its "
+                         "config, fact store, report and state lock")
     ap.add_argument("--list", action="store_true", help="show the reject list")
     ap.add_argument("--undo", help="lift a rejection by record key or fact_id")
     ap.add_argument("--from-report", nargs="?", const="", metavar="JSON",
@@ -138,6 +141,12 @@ def main(argv=None):
                          "cache/dream.json, or the path given). Use right after a manual "
                          "memory cleanup: what you dropped comes back as a promotion")
     args = ap.parse_args(argv)
+    if args.hermes_home:
+        # The lock, the config and the fact store must be the dream's: a reject run for another home took
+        # ~/.hermes's lock while the dream held its own (Codex review of 2.7.5).
+        global HOME
+        HOME = os.path.abspath(os.path.expanduser(args.hermes_home))
+        _dream().HOME = HOME
     if args.list:
         return _run(ap, args)
     # Read, change, write under the lock the nightly pass and the forget gate hold while they rewrite the

@@ -335,6 +335,22 @@ class ForgetSweep(unittest.TestCase):
         payload = json.loads(self.path("cache/dream.json").read_text(encoding="utf-8"))
         self.assertEqual([p["fact_id"] for p in payload["promotions"]], [1])
 
+    def test_a_shared_beginning_does_not_take_a_kept_fact(self):
+        """Codex review of 2.7.5: a forgotten and a kept fact sharing their first 85 characters took the kept
+        one out of `promotions`, its own fact_id and a different ending notwithstanding. The full text's
+        fingerprint decides now."""
+        head = "Еженедельный отчёт команды по продажам и маркетингу отправлять каждую пятницу вечером "
+        forgotten, kept = head + "в Telegram", head + "по email"
+        hashes, prints = set(dream._preview_hashes(forgotten)), {dream._fact_fingerprint(forgotten)}
+        node = {"promotions": [{"fact_id": 2, "content": kept}, {"fact_id": 7, "content": forgotten}],
+                "trust_feedback": [{"fact_id": 8, "content": forgotten[:50],
+                                    "fingerprint": dream._fact_fingerprint(forgotten)}],
+                "md_decays": [{"entry": forgotten}]}
+        self.assertEqual(dream._scrub_copies(node, hashes, prints), 3)
+        self.assertEqual(node["promotions"], [{"fact_id": 2, "content": kept}])
+        self.assertEqual(node["trust_feedback"], [])
+        self.assertEqual(node["md_decays"], [{"entry": dream.FORGOTTEN_COPY}])
+
     def test_extraction_logs_are_found_old_and_new(self):
         """#5: `existing_facts` were bare strings, so an extraction log was never found by id."""
         dream.forget_sweep(db=str(self.db))
