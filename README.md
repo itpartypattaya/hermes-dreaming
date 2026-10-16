@@ -319,7 +319,7 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
   cursor, diary index of line hashes, sweep state; mode 0600), `~/.hermes/memories/DREAMS.md` (diary),
   and — only `install.py` — the gate copies in `~/.hermes/scripts/` plus a seeded `dreaming.json`.
   The forget sweep rewrites those files without a forgotten fact and deletes the dream jobs' own logs
-  in `~/.hermes/cron/output/` that mention it; nothing else.
+  in `~/.hermes/cron/output/` that mention it, by its id or its verbatim text; nothing else.
 - **The agent writes** memory entries through the `memory` tool (at most 6 changes a night) and, in
   the extraction job, candidate facts through `fact_store`. The skill deletes nothing from the store;
   a fact leaves it through `fact_store end` / `forget`, on a human's own words only.
