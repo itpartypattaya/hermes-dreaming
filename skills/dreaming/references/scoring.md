@@ -144,7 +144,9 @@ Every fact passes `classify_unsafe` before any output list:
   goes to the full JSON. A door key is not a credential (2.9.1): "перешли ключ
   от дачи / квартиры / машины / гаража…" is no request to send a secret, while
   a key "от почты", "от личного кабинета", "от API" or a bare "ключ" stays
-  suspicious.
+  suspicious; between «от» and the thing only words describing it ("от нашей
+  виллы", "от почтового ящика" — not "от почты в офисе", 2.9.2). A broken or
+  incomplete copy of the screen is skipped with a warning, never fatal.
 
 **Reject list** (`cache/dream-rejected.json`, `dream-reject.py`) matches by
 text — fingerprint or stemmed containment in both directions (a short human

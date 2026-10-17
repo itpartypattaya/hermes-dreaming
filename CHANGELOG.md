@@ -3,6 +3,30 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.2 — 2026-10-17
+
+An Antigravity CLI review of the catalog pull request's branch and of 2.9.1 found the catalog entry true to the code
+and the copy of the provider's screen verbatim, and six issues; four were confirmed and are fixed, each with a test.
+On a live install nothing changes.
+
+### Fixed
+
+- **A key somewhere was taken for a door key.** 2.9.1 allowed any two words between «от» and the thing with a lock,
+  so "send the key to the mail in the office" ("ключ от почты в офисе") or "the key to the API at the cottage" passed
+  as a door key. Only words that describe the thing may stand there now ("от нашей виллы", "от почтового ящика").
+- **A Thai word separator next to a digit, a space or a mark** ("ลูกสาว 7\u200b ขวบ") was taken for hidden text. It is
+  dropped when a Thai, Lao, Khmer or Burmese letter stands within four characters.
+- **A broken or incomplete copy of the screen took the pass down.** Any error loading `holo_screen.py`, or a copy
+  without the names the dream calls, now leaves the dream's own rules with a warning.
+- **`--explain` printed "×"**, which a Windows console in cp1251 cannot.
+
+### Not changed
+
+- "An inference changed after a confirmation stays `confirmed`": the provider drops a fact's confirmations on
+  `change`, so it cannot happen with the real store.
+- "Share grandma's secret pie recipe" is an instruction to the provider's screen too; the copy stays verbatim.
+- The test comparing the copy with the provider reads a clone's last commit, not its working tree.
+
 ## 2.9.1 — 2026-10-17
 
 ### Fixed

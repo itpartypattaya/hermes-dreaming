@@ -2884,15 +2884,18 @@ INJECTION_RE = re.compile(
 # to send a secret to both screens ("перешли … ключ"). The word before «от» + something with a lock is replaced
 # before the instruction checks, not the secret ones (2.9.1). Only things with a lock: «ключ от почты», «от личного
 # кабинета», «от API», a bare «ключ» stay suspicious.
-def _load_holo_screen():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holo_screen.py")
+def _load_holo_screen(path=None):
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "holo_screen.py")
     try:
         spec = importlib.util.spec_from_file_location("_dream_holo_screen", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        missing = [n for n in ("_recall_problem", "_secret_in", "_RE_CREDENTIALS") if not hasattr(mod, n)]
+        if missing:
+            raise ImportError(f"no {', '.join(missing)}")
         return mod
-    except (OSError, ImportError, SyntaxError, re.error) as exc:
-        print(f"[dream] warn: {path} not loaded ({exc}) — secrets and instructions screened by the dream's own "
+    except Exception as exc:  # noqa: BLE001 — a broken copy must not take the pass down (review of 2.9.1)
+        print(f"[dream] warn: {path} not loaded ({exc!r}) — secrets and instructions screened by the dream's own "
               f"rules only", file=sys.stderr)
         return None
 
@@ -2901,10 +2904,26 @@ HOLO_SCREEN = _load_holo_screen()
 _EMOJI_JOINER_RE = re.compile(r"(?<=[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F])\u200D(?=[\U0001F000-\U0001FAFF\u2600-\u27BF])")
 _FLAG_TAGS_RE = re.compile(r"(?<=\U0001F3F4)[\U000E0030-\U000E0039\U000E0061-\U000E007A]{2,6}\U000E007F")
 _NO_SPACE_SCRIPTS = "\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF"  # Thai, Lao, Burmese, Khmer
-_WORD_SEPARATOR_RE = re.compile(f"(?<=[{_NO_SPACE_SCRIPTS}])\u200B(?=[{_NO_SPACE_SCRIPTS}])")
+_NO_SPACE_LETTER_RE = re.compile(f"[{_NO_SPACE_SCRIPTS}]")
+
+
+def _strip_word_separators(text):
+    """The zero-width space these scripts separate words with, also next to a digit, a space or a mark ("ลูกสาว
+    7\\u200b ขวบ", "ไปตลาด\\u200b, ซื้อปลา"; review of 2.9.1): dropped when a letter of them stands within four
+    characters. Elsewhere it stays hidden text."""
+    if "\u200b" not in text:
+        return text
+    return "".join(c for i, c in enumerate(text)
+                   if c != "\u200b" or not _NO_SPACE_LETTER_RE.search(text, max(0, i - 4), i + 5))
+
+
 _LATIN_RE = re.compile(r"[A-Za-z]")
+# Between «от» and the thing only words that describe it — "от нашей виллы", "от почтового ящика", "от Дашиной
+# машины" — never another noun: "ключ от почты в офисе", "ключ от API на даче" name a digital key and a place
+# (review of 2.9.1).
+_DESCRIBING = r"(?:[а-яё-]*(?:ого|его|ой|ей|ых|их|ую|юю|ая|яя|ое|ее|ые|ие|ий|ый|ом|ем|им|ым|ина|иной|иного|ова|овой|ового)|его|её|ее|их)"
 _DOOR_KEY_RE = re.compile(
-    r"\bключ(?:и|а|у|ом|ей|ами|ах)?(?=\s+от\s+(?:[\w-]+\s+){0,2}?"
+    r"\bключ(?:и|а|у|ом|ей|ами|ах)?(?=\s+от\s+(?:" + _DESCRIBING + r"\s+){0,2}?"
     r"(?:дач|квартир|дом(?:а|у|е|ом)?\b|домофон|машин|авто(?:мобил)?|гараж|двер|подъезд|калитк|ворот|сара[яеюй]"
     r"|подвал|кладов|офис|комнат|шкаф|ящик|сейф|зам(?:ок|к)|велосипед|байк|мотоцикл|скутер|номер|вилл|кондо"
     r"|бассейн))", re.IGNORECASE)
@@ -2929,7 +2948,7 @@ def _told_change(text, match):
 def _screened_text(text):
     """The text the provider's screen judges: emoji joiners, flag tags and word separators out, and the value of a
     told change (_told_change) blanked."""
-    text = _WORD_SEPARATOR_RE.sub("", _FLAG_TAGS_RE.sub("", _EMOJI_JOINER_RE.sub("", text)))
+    text = _strip_word_separators(_FLAG_TAGS_RE.sub("", _EMOJI_JOINER_RE.sub("", text)))
     told = sorted({m.span("value") for rx in HOLO_SCREEN._RE_CREDENTIALS for m in rx.finditer(text)
                    if _told_change(text, m)}, reverse=True)
     for start, end in told:
@@ -4747,7 +4766,7 @@ def explain(fact_id, mem_md, corr_days):
     print(f"fact {fact_id}: {f['content'][:200]}")
     print(f"score {score} (gate {MIN_SCORE}); weights {WEIGHTS}")
     for k, v in sig.items():
-        print(f"  {k:20s} {v:5.3f} × {WEIGHTS[k]:.2f} = {v * WEIGHTS[k]:.3f}")
+        print(f"  {k:20s} {v:5.3f} * {WEIGHTS[k]:.2f} = {v * WEIGHTS[k]:.3f}")
     print(f"  mentions {meta['mentions']} in {meta['ref_days']} day(s); retrievals {meta['rc']}; "
           f"days_old {meta['days_old']}")
     for e in meta.get("evidence") or []:
