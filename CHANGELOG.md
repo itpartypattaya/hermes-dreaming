@@ -3,6 +3,13 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.4 — 2026-10-17
+
+The copy of the holographic provider's screen is taken from holographic 0.17.3 (`13ecfbf`). The copy 2.9.3 took
+from 0.17.2 used a possessive quantifier (`\w*+`), which Python reads from 3.11 on: on Python 3.9 and 3.10 it did not
+load, and the dream screened secrets and instructions by its own rules only, with a warning (CI caught it). 0.17.3
+matches the same texts without it; nothing else changes.
+
 ## 2.9.3 — 2026-10-17
 
 The copy of the holographic provider's screen (`scripts/holo_screen.py`) is taken again from holographic 0.17.2

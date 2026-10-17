@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.17.2 (`77a93d4`), `__init__.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.17.3 (`13ecfbf`), `__init__.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.17.2"
-SOURCE_COMMIT = "77a93d4"
+SOURCE_VERSION = "0.17.3"
+SOURCE_COMMIT = "13ecfbf"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -277,8 +277,8 @@ _ENV_OBJ = r"(?<![$%{])" + _EDGE_START + r"(?:" + _ENV_SECRET_NAME + r")" + _EDG
 # 0.17.2, Codex: word forms alone let "секретную фразу восстановления" through). A credential word joined to a name by
 # a hyphen still asks to send it ("send credentials-backup.json", "перешли токен-бота"): a request to send a credential
 # file is refused, whatever the file is called.
-_RU_CREDENTIAL = (r"парол\w*+|секрет(?:а|у|ом|е|ы|ов|ам|ами|ах)?(?!\w)|токен(?!изат|изац)\w*+"
-                  r"|ключ(?:а|у|ом|е|и|ей|ам|ами|ах)?(?!\w)|ключик\w*+|уч[её]тн\w*\s+(?:данн|запис)\w*"
+_RU_CREDENTIAL = (r"парол\w*|секрет(?:а|у|ом|е|ы|ов|ам|ами|ах)?(?!\w)|токен(?!изат|изац)\w*"
+                  r"|ключ(?:а|у|ом|е|и|ей|ам|ами|ах)?(?!\w)|ключик\w*|уч[её]тн\w*\s+(?:данн|запис)\w*"
                   r"|секретн\w*\s+(?:фраз|слов|ключ|код|данн|комбинаци|строк|номер|вопрос|ответ|пин)\w*|секретик\w*"
                   r"|(?:сид|seed)[\s-]?фраз\w*|фраз\w*\s+восстановлени\w*|мнемоническ\w*\s+фраз\w*"
                   r"|пин[\s-]?код\w*|пин(?:а|ом|у)?\s+(?:от|для|к)(?!\w)|код\w*\s+(?:подтверждени|доступ|из\s+смс)\w*")
@@ -303,7 +303,9 @@ _RE_EXFILTRATION = re.compile("|".join((
     r"(?<![$%{])" + _alternatives(r"[şs]ifre\w*|parola\w*|anahtar\w*|tokens?|" + _ENV_SECRET_NAME, r"(?!)")
     + r".{0,40}"
     + _alternatives(r"g[öo]nder(?:in|iniz)?|payla[şs](?:[ıi]n)?|ilet(?:in)?|yay[ıi]nla(?:y[ıi]n)?", r"(?!)"),
-    r"(?:отправ|перешл|покаж|раскрой|выложи|скин)\w*+.{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
+    # the whole verb, then the rest: "\w*(?!\w)" gives nothing back to ".{0,40}", as "\w*+" would; possessive
+    # quantifiers need Python 3.11, and the dream (hermes-dreaming) runs a copy of this screen on 3.9 (0.17.3)
+    r"(?:отправ|перешл|покаж|раскрой|выложи|скин)\w*(?!\w).{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
     r"(?:отправь|отправьте|перешли|перешлите|покажи|покажите|раскрой|раскройте|выложи|выложите|скинь|скиньте)"
     r"(?!\w).{0,40}" + _ENV_OBJ,
     _ZH_SEND + r".{0,40}(?:" + _CREDENTIAL_NAMES["zh"] + r"|助记词|助記詞|" + _ENV_OBJ + r")",
