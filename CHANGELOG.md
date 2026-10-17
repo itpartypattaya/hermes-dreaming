@@ -3,6 +3,17 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.1 — 2026-10-17
+
+### Fixed
+
+- **A door key is not a credential.** Both screens — the dream's own and the holographic provider's — read "перешли
+  Даше ключ от дачи" (send Dasha the cottage key) or "покажи ключ от квартиры соседке" as a request to send a
+  secret, and quarantined the fact or message as an injection. A key to something with a lock (a house, a flat, a
+  car, a garage, a door, a safe…) is now replaced before the instruction checks; the secret checks still read the
+  text as it is. A key to e-mail, an account, an API or a bare "ключ" stays suspicious. No change on a live
+  install's facts, memory entries or messages.
+
 ## 2.9.0 — 2026-10-17
 
 For holographic 0.15–0.17. The plan and the code were each reviewed in Codex CLI (gpt-6.1-sol); every finding was

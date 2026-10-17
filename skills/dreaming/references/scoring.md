@@ -141,7 +141,10 @@ Every fact passes `classify_unsafe` before any output list:
   a password); a zero-width joiner inside an emoji, the tags of a subdivision
   flag, and the zero-width space between words of Thai, Lao, Khmer or Burmese. A
   secret by either screen wins over an instruction: an instruction's preview
-  goes to the full JSON.
+  goes to the full JSON. A door key is not a credential (2.9.1): "перешли ключ
+  от дачи / квартиры / машины / гаража…" is no request to send a secret, while
+  a key "от почты", "от личного кабинета", "от API" or a bare "ключ" stays
+  suspicious.
 
 **Reject list** (`cache/dream-rejected.json`, `dream-reject.py`) matches by
 text — fingerprint or stemmed containment in both directions (a short human

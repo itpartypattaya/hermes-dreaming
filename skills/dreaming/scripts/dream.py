@@ -2880,6 +2880,10 @@ INJECTION_RE = re.compile(
 # - a zero-width joiner inside an emoji (👩‍💻), the tags of a subdivision flag (🏴 + tags) and the zero-width space
 #   that separates words in Thai, Lao, Khmer and Burmese: how these are written, not hidden text.
 # A secret wins over an instruction: an injection carries a preview into the full JSON (Codex review of 2.9.0).
+# A door key is not a credential: "перешли Даше ключ от дачи", "покажи ключ от квартиры соседке" read as a request
+# to send a secret to both screens ("перешли … ключ"). The word before «от» + something with a lock is replaced
+# before the instruction checks, not the secret ones (2.9.1). Only things with a lock: «ключ от почты», «от личного
+# кабинета», «от API», a bare «ключ» stay suspicious.
 def _load_holo_screen():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holo_screen.py")
     try:
@@ -2899,6 +2903,11 @@ _FLAG_TAGS_RE = re.compile(r"(?<=\U0001F3F4)[\U000E0030-\U000E0039\U000E0061-\U0
 _NO_SPACE_SCRIPTS = "\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF"  # Thai, Lao, Burmese, Khmer
 _WORD_SEPARATOR_RE = re.compile(f"(?<=[{_NO_SPACE_SCRIPTS}])\u200B(?=[{_NO_SPACE_SCRIPTS}])")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_DOOR_KEY_RE = re.compile(
+    r"\bключ(?:и|а|у|ом|ей|ами|ах)?(?=\s+от\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:дач|квартир|дом(?:а|у|е|ом)?\b|домофон|машин|авто(?:мобил)?|гараж|двер|подъезд|калитк|ворот|сара[яеюй]"
+    r"|подвал|кладов|офис|комнат|шкаф|ящик|сейф|зам(?:ок|к)|велосипед|байк|мотоцикл|скутер|номер|вилл|кондо"
+    r"|бассейн))", re.IGNORECASE)
 _LETTER_RE = re.compile(r"[^\W\d_]")
 
 
@@ -2940,9 +2949,9 @@ def classify_unsafe(content):
     screened = _screened_text(text) if HOLO_SCREEN is not None else None
     if screened is not None and HOLO_SCREEN._secret_in(screened):
         return "secret"
-    if INJECTION_RE.search(text):
+    if INJECTION_RE.search(_DOOR_KEY_RE.sub("вещь", text)):
         return "injection"
-    if screened is not None and HOLO_SCREEN._recall_problem(screened):
+    if screened is not None and HOLO_SCREEN._recall_problem(_DOOR_KEY_RE.sub("вещь", screened)):
         return "injection"  # not a credential: _secret_in covers those
     return None
 
