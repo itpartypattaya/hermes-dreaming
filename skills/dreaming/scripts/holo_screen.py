@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.17.0 (`5411122`), `__init__.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.17.2 (`77a93d4`), `__init__.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.17.0"
-SOURCE_COMMIT = "5411122"
+SOURCE_VERSION = "0.17.2"
+SOURCE_COMMIT = "77a93d4"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -272,6 +272,18 @@ _ZH_SEND = r"(?:发送|發送|发给|發給|分享|泄露|洩露|透露|贴出|�
 _ENV_OBJ = r"(?<![$%{])" + _EDGE_START + r"(?:" + _ENV_SECRET_NAME + r")" + _EDGE_END
 
 
+# Russian credential words as words, not stems: "секретарю", "ключевые цифры", "учётная политика", "токенизатор" are no
+# secrets (0.17.2); "учётные данные", "учётная запись", "секретная фраза", "фраза восстановления", "ключик" are (review
+# 0.17.2, Codex: word forms alone let "секретную фразу восстановления" through). A credential word joined to a name by
+# a hyphen still asks to send it ("send credentials-backup.json", "перешли токен-бота"): a request to send a credential
+# file is refused, whatever the file is called.
+_RU_CREDENTIAL = (r"парол\w*+|секрет(?:а|у|ом|е|ы|ов|ам|ами|ах)?(?!\w)|токен(?!изат|изац)\w*+"
+                  r"|ключ(?:а|у|ом|е|и|ей|ам|ами|ах)?(?!\w)|ключик\w*+|уч[её]тн\w*\s+(?:данн|запис)\w*"
+                  r"|секретн\w*\s+(?:фраз|слов|ключ|код|данн|комбинаци|строк|номер|вопрос|ответ|пин)\w*|секретик\w*"
+                  r"|(?:сид|seed)[\s-]?фраз\w*|фраз\w*\s+восстановлени\w*|мнемоническ\w*\s+фраз\w*"
+                  r"|пин[\s-]?код\w*|пин(?:а|ом|у)?\s+(?:от|для|к)(?!\w)|код\w*\s+(?:подтверждени|доступ|из\s+смс)\w*")
+
+
 _RE_EXFILTRATION = re.compile("|".join((
     _alternatives(r"send|share|reveal|post|upload|forward|email|leak|paste"
                   r"|env[íi]a(?:r|le|lo)?|env[íi]e|comparte|compartir|compartilhe|compartilha|partilhe|revela|revele"
@@ -291,7 +303,7 @@ _RE_EXFILTRATION = re.compile("|".join((
     r"(?<![$%{])" + _alternatives(r"[şs]ifre\w*|parola\w*|anahtar\w*|tokens?|" + _ENV_SECRET_NAME, r"(?!)")
     + r".{0,40}"
     + _alternatives(r"g[öo]nder(?:in|iniz)?|payla[şs](?:[ıi]n)?|ilet(?:in)?|yay[ıi]nla(?:y[ıi]n)?", r"(?!)"),
-    r"(?:отправ|перешл|покаж|раскрой|выложи)\w*.{0,40}(?:парол|секрет|токен|ключ|учётн|учетн)",
+    r"(?:отправ|перешл|покаж|раскрой|выложи|скин)\w*+.{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
     r"(?:отправь|отправьте|перешли|перешлите|покажи|покажите|раскрой|раскройте|выложи|выложите|скинь|скиньте)"
     r"(?!\w).{0,40}" + _ENV_OBJ,
     _ZH_SEND + r".{0,40}(?:" + _CREDENTIAL_NAMES["zh"] + r"|助记词|助記詞|" + _ENV_OBJ + r")",
@@ -343,11 +355,11 @@ _RE_CREDENTIALS = tuple(re.compile(
     # plain separator: ":", "=" or "is". Not a particle (Korean 이, Japanese は, Chinese 是): after a few more words it
     # is too common to mean the value follows ("비밀번호 변경이 2024년…").
     # Not a word that tells about passwords rather than which one: "My password manager is 1Password", "Password
-    # rotation: every-90-days" (review 2026-10-16).
+    # rotation: every-90-days" (review 2026-10-16). "==" compares, it does not assign: "token-saver==1.2" (0.17.2).
     re.compile(
         r"(?P<word>" + _CREDENTIAL_WORD + r")(?!\s+(?:" + _ABOUT_PASSWORDS + r")(?!\w))"
-        r"(?:(?:\s+[^\s:=：＝]+){1,2}?|[^\s:=：＝]{1,12}?)\s*(?:"
-        + _alternatives(r"is|es|est|ist|é|è|adalah|yaitu", r"คือ|هو|هي") + r"|[:=：＝])\s*" + _OPEN_QUOTE
+        r"(?P<label>(?:\s+[^\s:=：＝]+){1,2}?|[^\s:=：＝]{1,12}?)\s*(?:"
+        + _alternatives(r"is|es|est|ist|é|è|adalah|yaitu", r"คือ|هو|هي") + r"|[:：＝]|=(?!=))\s*" + _OPEN_QUOTE
         + r"?(?!//)(?P<value>\S{4,})",
         re.IGNORECASE),)
 
@@ -420,9 +432,17 @@ def _holds_a_secret(match: re.Match) -> bool:
     if _a_count(match):
         return False
     word = match.group("word").strip()
+    sep = match.groupdict().get("sep")
     # a dash is how prose introduces something ("GEMINI_API_KEY — the key of the free tier:"), not an assignment
-    assigned = "sep" in match.re.groupindex and bool(match.group("sep").strip(" \t\n—–-"))
+    assigned = sep is not None and bool(sep.strip(" \t\n—–-"))
     value = match.group("value")
+    if sep == "-" and _names_a_thing(value):
+        return False  # one name, the word joined to the rest by a hyphen: "token-saver-stats.jsonl" (0.17.2, issue #6)
+    if sep is None and _RE_HYPHENATED.fullmatch(_value(value)):
+        # "Password wifi: correct-horse": the fifth pattern ends in ":", "=" or "is", and two hyphenated words after it
+        # are a passphrase, as after "password:" (review 0.17.2, Antigravity). A date there stays when, not which
+        # ("пароль сменили: 15.10.2026"), and a path where ("API keys are stored in: /etc/secrets").
+        assigned = True
     if _RE_ENV_NAME.fullmatch(word):
         if _is_reference(_value(value), assigned):
             return False
@@ -445,7 +465,7 @@ def _is_reference(value: str, assigned: bool = True) -> bool:
 def _a_count(match: re.Match) -> bool:
     """A whole number after "token(s)": how many, not which (_RE_COUNTED)."""
     return bool(_RE_COUNTED.fullmatch(match.group("word").strip())) \
-        and _value(match.group("value")).replace(",", "").replace("_", "").isdigit()
+        and bool(re.fullmatch(r"\d[\d,_]*|\d{1,4}(?:[.,]\d{1,2})?[kKmMкКмМ]", _value(match.group("value"))))  # "128k", "128к" (0.17.2)
 
 
 def _value(token: str) -> str:
@@ -456,6 +476,55 @@ def _value(token: str) -> str:
 # Two words joined by a hyphen are a word ("пароль Wi-Fi", "e-mail"), not a password with a symbol in it; three and
 # more are a passphrase ("correct-horse-battery") (0.15.1).
 _RE_HYPHENATED = re.compile(r"[^\W\d_]+-[^\W\d_]+")
+
+
+# What names a thing rather than holds a secret, when a credential word is only the start of one name joined to the
+# rest by a hyphen (issue #6 by vlat0101: "token-saver-stats.jsonl" was the token "saver-stats.jsonl", and nine facts
+# about a plugin called token-saver were never recalled; 0.17.2): a file name with a known extension, a path too
+# ("plugins/token-saver/filters/web.yaml"), a host name under a common top-level domain ("password-reset.example.com"),
+# a package with a version of two parts and more
+# ("token-saver==1.2", "token-saver@1.2.3"; not after ":": "admin:1234" may be a login and its password, and
+# "wifi:192.168.1.1" an address). Any dot is not enough:
+# "password-Qwerty.123" stays a password. A credential word that stands alone is followed by its value, whatever it
+# looks like: "password Summer2026.txt", "password MyName@gmail.com" (review 0.17.2, Codex), so "the token counter.py
+# module" stays refused too. The cost, chosen: "password-hunter2.txt" is not caught.
+# No one-letter extension ("password-Secret2026.r") and none of a key's own files (.key, .pem, .env, .p12…): a value
+# that ends so may be the secret (review 0.17.2, Antigravity).
+_FILE_EXTENSIONS = (
+    "py|pyi|ipynb|js|mjs|cjs|ts|tsx|jsx|vue|svelte|sh|bash|zsh|fish|ps1|psm1|bat|cmd|rb|go|rs|java|kt|kts|swift"
+    "|cc|cpp|hpp|cs|php|pl|lua|scala|sql|json|jsonl|ndjson|yaml|yml|toml|ini|cfg|conf|xml|html|htm|css|scss|sass"
+    "|less|md|mdx|rst|txt|log|csv|tsv|pdf|docx?|xlsx?|pptx?|odt|ods|png|jpe?g|gif|svg|webp|ico|mp3|mp4|wav|ogg|webm"
+    "|mov|zip|tar|gz|tgz|bz2|xz|7z|rar|db|sqlite3?|lock|service|timer|plist|gradle|tf|hcl|proto|graphql|gql"
+    "|bak|tmp|patch|diff")
+
+
+_RE_FILE_NAME = re.compile(r"[\w.~/\\@+-]*\.(?i:" + _FILE_EXTENSIONS + r")")
+
+
+# A variable named for a file ("SSL_KEY_FILE=server.key") may name a key's own file too.
+_RE_KEY_FILE_NAME = re.compile(r"[\w.~/\\@+-]*\.(?i:key|pem|crt|cer|csr|pub|p12|pfx|jks|gpg|asc|env)")
+
+
+# Three labels and more ("reset.example.com"): "letmein.co", "love.it" may be passwords (review 0.17.2, Antigravity).
+_RE_HOST_NAME = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2,}(?:com|net|org|io|dev|app|ai|co|me|info|biz|xyz|cloud|tech|site"
+    r"|online|local|internal|lan|home|test|example|ru|su|de|uk|us|eu|fr|es|it|nl|pl|tr|id|in|br|pt|jp|kr|cn|tw|hk|th"
+    r"|vn|ua|kz|by|ca|au|ch|at|se|no|fi|dk|cz|il|ae|sg|my|ph|mx|ar)(?::\d{1,5})?")
+
+
+# Not after ":" ("password-wifi:192.168.1.1" is no image tag) and of three parts at most (review 0.17.2, Codex).
+_RE_VERSIONED = re.compile(r"[a-z0-9][a-z0-9._/-]*(?:@|==|>=|<=|~=)v?\d{1,4}(?:\.\d{1,4}){1,2}(?:[-+][a-z0-9.]+)?")
+
+
+def _names_a_thing(value: str) -> bool:
+    """A file, a host or a versioned package, not a secret (see _RE_FILE_NAME); a possessive is off. A file name with
+    "@" in it, or with a capital and a digit, is shaped like a password ("password-P@ssw0rd2026.txt",
+    "password-Secret2026.conf"), and an e-mail address after "password-" may be a login (review 0.17.2, Antigravity)."""
+    value = re.sub(r"`?['’]s$", "", _value(value)).strip(_VALUE_EDGE)
+    if _RE_FILE_NAME.fullmatch(value):
+        stem = value.rsplit(".", 1)[0]
+        return "@" not in stem and not (any(c.isupper() for c in stem) and any(c.isdigit() for c in stem))
+    return any(rx.fullmatch(value) for rx in (_RE_HOST_NAME, _RE_VERSIONED))
 
 
 # A placeholder for a value, not the value: "***", "xxxx", "sk-...", "<your key>", "{token}", "{YOUR_API_KEY}",
@@ -545,7 +614,8 @@ def _recall_problem(content: str) -> str | None:
 # Authorization header — and a long encoded blob keep a message or a fact at home. Best effort, by pattern (review
 # 2026-10-14). These are not refused as facts: "MAX_TOKENS=128000" is a setting, not a secret.
 _RE_SECRET_SHAPE = re.compile(
-    _EDGE_START + r"[A-Z0-9_]{0,64}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]{0,63}\s*[:=：＝]\s*(?P<assigned>\S{6,})"
+    _EDGE_START + r"(?P<name>[A-Z0-9_]{0,64}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)[A-Z0-9_]{0,63})\s*[:=：＝]\s*"
+    r"(?P<assigned>\S{6,})"
     r"|" + _EDGE_START + r"(?i:bearer|basic)\s+(?=[A-Za-z._~-]*[0-9+/=])[A-Za-z0-9._~+/=-]{12,}")  # a token has a digit, + / ="
 
 
@@ -557,10 +627,13 @@ def _secret_in(text: str) -> bool:
 def _placeholder_assignment(match: re.Match) -> bool:
     """An assignment of a placeholder, a reference, a count or a file ("OPENAI_API_KEY=${OPENAI_API_KEY}",
     "…=[REDACTED]", "MAX_TOKENS=128000", "SSL_KEY_FILE=/etc/ssl/server.key") holds no secret and may be sent like
-    any text (reviews 2026-10-16)."""
+    any text (reviews 2026-10-16); a file name too when the variable says it holds one ("SSL_KEY_FILE=server.key",
+    "API_KEY_PATH=keys/prod.json"; 0.17.2). Not any path: "PASSWORD=Abc123/Def456.key" (review 0.17.2, Codex)."""
     assigned = match.group("assigned")
     if not assigned:
         return False
     value = assigned.strip(_VALUE_EDGE + "[]{}")
+    names_a_file = re.search(r"_(?:FILE|FILES|FILENAME|PATH|DIR)$", match.group("name") or "")
     return bool(_RE_PLACEHOLDER.fullmatch(assigned) or _RE_PLACEHOLDER.fullmatch(value) or _is_reference(value)
-                or value.replace(",", "").replace("_", "").isdigit() or _RE_FILE_POINTER.fullmatch(value))
+                or value.replace(",", "").replace("_", "").isdigit() or _RE_FILE_POINTER.fullmatch(value)
+                or (names_a_file and (_RE_FILE_NAME.fullmatch(value) or _RE_KEY_FILE_NAME.fullmatch(value))))

@@ -3,6 +3,20 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.3 — 2026-10-17
+
+The copy of the holographic provider's screen (`scripts/holo_screen.py`) is taken again from holographic 0.17.2
+(`77a93d4`), by `tools/vendor_screen.py`; nothing else changes.
+
+### Changed
+
+- **A name that begins with a credential word is no credential** (holographic issue #6): `token-saver-stats.jsonl`,
+  `plugins/token-saver/filters/web.yaml`, `password-reset.example.com`, `token-saver==1.2` no longer keep a fact or a
+  message out of the dream as a secret. A credential word that stands alone keeps its value whatever it looks like.
+- **Russian requests to send a credential match words, not stems**: "Отправь секретарю справку", "Покажи ключевые
+  цифры" are no instruction to the assistant; "секретная фраза", "фраза восстановления", "пин-код", "скинь ключ API"
+  are. "Password wifi: correct-horse" is a value.
+
 ## 2.9.2 — 2026-10-17
 
 An Antigravity CLI review of the catalog pull request's branch and of 2.9.1 found the catalog entry true to the code
