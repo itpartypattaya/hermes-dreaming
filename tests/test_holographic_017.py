@@ -75,10 +75,16 @@ class VendoredScreenTests(unittest.TestCase):
         self.assertIsNotNone(dream.HOLO_SCREEN, "the dream loads the copy next to it")
 
 
+# Made-up strings in the shape of a Telegram bot token and of an AWS temporary key, joined at run time: written
+# whole, GitHub secret scanning reports them as leaked secrets (alerts 1 and 2, 2026-10-17).
+_BOT_TOKEN = "1234567890" + ":" + "AAHdqTcvCH1vGWJxf" + "SeofSAs0K5PALDsaw0"
+_AWS_TEMP_KEY = "ASIA" + "IOSFODNN7EXAMPLE"
+
+
 class ScreenTests(unittest.TestCase):
     SECRETS = (
-        "Бот: https://api.telegram.org/bot1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0/sendMessage",
-        "AWS temp key ASIAIOSFODNN7EXAMPLE",
+        f"Бот: https://api.telegram.org/bot{_BOT_TOKEN}/sendMessage",
+        f"AWS temp key {_AWS_TEMP_KEY}",
         "STRIPE_SECRET=whsec_abcdef0123456789abcdef",
         "база: postgres://app:Sup3rS3cret@db.example.com:5432/app",
         "ftp://user:qwerty123@files.example.com",
@@ -220,7 +226,7 @@ class OriginTests(_Holographic):
 
 class LeakTests(_Holographic):
     def test_a_secret_from_a_message_or_a_fact_reaches_no_field(self):
-        token = "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0"
+        token = _BOT_TOKEN
         self.add_fact(f"Бот семьи шлёт через https://api.telegram.org/bot{token}/sendMessage", trust=0.9, rc=3,
                       helpful=2)
         self.add_fact("Марина предпочитает утренние тренировки по вторникам", trust=0.9, rc=2, helpful=2)
