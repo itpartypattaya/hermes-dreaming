@@ -15,7 +15,8 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 
 ## How it works
 
-![One night: inputs, the deterministic pass, the wake gate and the only LLM turn](docs/overview.png)
+![One night: inputs, the deterministic pass with the screen, the wake gate and the agent's turn; the weekly extraction
+and the forget sweep beside it](docs/overview.png)
 
 - **Corroboration from real conversations.** A fact counts only if humans mention it on distinct
   days. Cron prompts, compaction banners, URLs, untrusted chats and the agent's own threads never
@@ -34,7 +35,8 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 - **A wake gate.** On a quiet night the cron job prints `{"wakeAgent": false}` and the model never
   starts. A memory file close to its char limit counts as work (`memory_pressure`) — the limit gates
   writes silently, so otherwise nobody notices until facts stop being recorded.
-- **A loss guard.** If a large share of memory disappears overnight, the next report says so.
+- **A loss guard.** If a large share of memory disappears overnight, or a long entry loses half of itself, the
+  next report says so.
 - **Feedback to retrieval.** A fact you rejected keeps its trust in the fact store, so the
   provider's prefetch goes on offering it. Such facts are listed with a ready
   `fact_feedback(unhelpful)` call, so a rejection teaches retrieval too.
@@ -58,9 +60,10 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 
 ![A candidate is written, rejected or comes back; a memory entry is removed or confirmed](docs/lifecycle.png)
 
-Nothing is asked forever. A promotion is either written or put on the reject list (a human's
-"outdated" closes it for good, matched by text). New facts, conflicts and decay questions are shown at
-most once per 14 days. A memory entry that survived a "still relevant?" question — kept, or rewritten
+Nothing is asked forever. A promotion is either written or put on the reject list (matched by text;
+`dream-reject.py --undo` lifts a rejection, and a fact people said again after 180 days comes back as a
+question, `reject_reask_days`); with no outcome it comes back in 3 days. New facts, conflicts and decay
+questions are shown at most once per 14 days. A memory entry that survived a "still relevant?" question — kept, or rewritten
 in place with a fresh date — counts as confirmed and rests for 90 days. Cooldowns start only when
 the agent actually answered: a night that failed halfway re-shows the same items.
 
@@ -107,7 +110,7 @@ python3 ~/.hermes/plugins/hermes-dreaming/skills/dreaming/scripts/install.py
 ```
 
 Hermes runs cron scripts only from `~/.hermes/scripts/` (a symlink is refused), so the installer
-copies the two gates there, seeds `~/.hermes/dreaming.json` from the example, does a dry run on
+copies the three gates there, seeds `~/.hermes/dreaming.json` from the example, does a dry run on
 throw-away copies of the state, and checks the fact source and the core. It is idempotent;
 `install.py --check` verifies without changing anything — run it after every update, since the copies
 in `scripts/` can drift from the skill.
@@ -116,12 +119,15 @@ in `scripts/` can drift from the skill.
 == hermes-dreaming installer ==
   ✓ dream-precheck.py in place and identical to the skill copy
   ✓ dream-extract-precheck.py in place and identical to the skill copy
+  ✓ dream-forget-sweep.py in place and identical to the skill copy
   ✓ config /home/you/.hermes/dreaming.json is valid JSON
   ✓ dry run: fact source: holographic · facts: 0 · human messages in window: 0
   ✓ core gives cron jobs memory natively (Hermes >= 0.21) — the extraction job can use fact_store
   ✓ memory provider 'holographic', fact store present (/home/you/.hermes/memory_store.db)
+  ✓ holographic 0.17: cron jobs may write facts; forgotten facts are swept
+  ✓ the fact store keeps origins and confirmations — items carry `origin`, the confirm section is on
 
-== 6 ok, 0 warning(s), 0 problem(s) ==
+== 9 ok, 0 warning(s), 0 problem(s) ==
 ```
 
 **3. Edit the config** — the part nobody can do for you:
@@ -145,11 +151,11 @@ alerts, assistant bridges, machine-generated cards — under `excluded_threads`.
 The CLI has no flag for `enabled_toolsets`, and `cron/jobs.json` is live scheduler state, so job
 creation goes through the Hermes Python API. The jobs get the plugin skill's qualified name
 (`agent-plugin-hermes-dreaming-<hash>:dreaming`) straight from Hermes' plugin registry, so the plugin
-must be enabled first; both gates likewise prefer the plugin's copy of `dream.py`. Existing jobs are
+must be enabled first; all three gates likewise prefer the plugin's copy of `dream.py`. Existing jobs are
 skipped; one that loads another skill than this install provides is reported, and `--rebind` points
 it at the right one in place. Use
 `--deliver telegram:<chat_id>:<thread_id>` to receive the report in a chat and
-`--extract-schedule ""` to install the dream alone. A third, `no_agent` job (`--sweep-schedule`,
+`--extract-schedule ""` to leave the extraction out. A third, `no_agent` job (`--sweep-schedule`,
 every 15 minutes) cleans the dream's copies of facts the store has forgotten — no model, empty
 output unless it removed something; `--sweep-schedule ""` skips it. The extraction job is cheap to run weekly — a
 nightly run mostly answers `[SILENT]` on a small household.
@@ -262,6 +268,7 @@ python3 $S/dream.py --explain 42              # why fact 42 scored like that
 python3 $S/dream.py --forget-sweep            # clean the copies of facts the store has forgotten
 python3 $S/dream-reject.py 42 --reason "thread was closed"
 python3 $S/dream-reject.py --list             # what is muted, and how old
+python3 $S/dream-reject.py --undo 42          # lift a rejection (by its key or the fact's id)
 python3 $S/dream-reject.py --from-report --reason "duplicates the system prompt"   # after a manual cleanup
 ```
 
@@ -271,7 +278,7 @@ Cleaning durable memory by hand? Reject what you dropped: the facts stay in the 
 ### Verify it end to end
 
 ```bash
-hermes cron list                          # both jobs present and enabled
+hermes cron list                          # the three jobs present and enabled
 hermes cron run <dream job id>            # one real run
 tail -20 ~/.hermes/memories/DREAMS.md     # a section for today
 ```
@@ -316,16 +323,21 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
 
 - **Network:** none. **LLM calls:** none from the scripts; the only model turn is the agent in the
   cron session, with your model and your tools.
-- **Reads:** `state.db` (sessions and messages, opened read-only), the fact store (read-only), the
-  memory files.
-- **Script writes:** `~/.hermes/cache/dream*.json` (cooldowns, reject list, snapshot, extraction
-  cursor, diary index of line hashes, sweep state; mode 0600), `~/.hermes/memories/DREAMS.md` (diary),
-  and — only `install.py` — the gate copies in `~/.hermes/scripts/` plus a seeded `dreaming.json`.
+- **Reads:** `state.db` (sessions and messages, opened read-only), the fact store (read-only, per-user
+  and per-chat stores too), the memory files, `dreaming.json` and `config.yaml`, the approval queue
+  (`pending/memory`), `scripts/holo_screen.py`; the forget sweep also `cron/jobs.json` and the dream jobs' logs.
+- **Script writes:** `~/.hermes/cache/dream*.json` (the night's payload `dream.json`, cooldowns, questions,
+  reject list, snapshot, extraction cursor, diary index of line hashes, sweep state; mode 0600) and a lock
+  file, `~/.hermes/memories/DREAMS.md` (diary; after 90 nights the older sections move to
+  `DREAMS.md.archive.md`), and — only `install.py` — the three gate copies in `~/.hermes/scripts/` (0755)
+  plus a seeded `dreaming.json`.
   The forget sweep rewrites those files without a forgotten fact and deletes the dream jobs' own logs
   in `~/.hermes/cron/output/` that mention it, by its id or its verbatim text; nothing else.
-- **The agent writes** memory entries through the `memory` tool (at most 6 changes a night) and, in
-  the extraction job, candidate facts through `fact_store`. The skill deletes nothing from the store;
-  a fact leaves it through `fact_store end` / `forget`, on a human's own words only.
+- **The agent writes** memory entries through the `memory` tool (at most 6 changes a night, of them at
+  most 3 new); in the extraction job, candidate facts through `fact_store add`; keywords through
+  `fact_store update`; trust through `fact_feedback` (`unhelpful` for a rejected fact, `confirmed`). The
+  skill deletes nothing from the store; a fact changes or leaves it through `fact_store end` / `change` /
+  `correct` / `forget`, on a human's own words only.
 - Message and fact contents are treated as data, never as instructions. Facts, the evidence quoted
   next to them, the messages the extraction job hands over and the "still relevant?" previews are
   all screened for credentials and injection directives; a hit is quarantined (a secret's text is

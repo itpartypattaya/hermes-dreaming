@@ -33,7 +33,7 @@ in each of them (`references/scoring.md`, "Every language").
 
 - The `memory` tool (the nightly job declares the `memory` toolset). `terminal` exists only in a
   manual session — the scripts below cannot run inside the nightly job.
-- The two gates installed in `~/.hermes/scripts/` and a config `~/.hermes/dreaming.json`:
+- The three gates installed in `~/.hermes/scripts/` and a config `~/.hermes/dreaming.json`:
   `python3 "${HERMES_SKILL_DIR}/scripts/install.py"` (README: installation).
 - A fact source: the Hermes `holographic` memory provider (default), `sqlite` / `jsonl` export,
   or `none` (memory files only). Extraction works with `holographic` only (`fact_store` tool).

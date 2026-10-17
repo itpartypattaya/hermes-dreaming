@@ -1,9 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700">
   <style>
     text { font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace; }
+    .title { fill: #ffffff; font-size: 20px; font-weight: 700; }
+    .subtitle { fill: #94a3b8; font-size: 12px; }
     .name { fill: #ffffff; font-size: 12px; font-weight: 600; }
     .sub { fill: #94a3b8; font-size: 9.5px; }
     .tiny { fill: #94a3b8; font-size: 9px; }
+    .warn { fill: #fb7185; font-size: 9px; }
     .lane { font-size: 10px; font-weight: 600; letter-spacing: 1px; }
   </style>
   <defs>
@@ -11,109 +14,150 @@
       <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
     </pattern>
     <marker id="a-slate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
-    <marker id="a-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/></marker>
-    <marker id="a-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/></marker>
-    <marker id="a-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/></marker>
+    <marker id="a-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/></marker>
     <marker id="a-violet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa"/></marker>
+    <marker id="a-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/></marker>
+    <marker id="a-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/></marker>
   </defs>
 
-  <rect width="1200" height="620" fill="#0f172a"/>
-  <rect width="1200" height="620" fill="url(#grid)"/>
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
 
-  <!-- lanes -->
-  <rect x="30" y="100" width="1140" height="220" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
-  <text x="44" y="120" class="lane" fill="#34d399">A CANDIDATE FACT</text>
-  <rect x="30" y="345" width="1140" height="250" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
-  <text x="44" y="365" class="lane" fill="#a78bfa">A MEMORY ENTRY</text>
+  <text x="40" y="52" class="title">Where every item ends up</text>
+  <text x="40" y="76" class="subtitle">each candidate and question gets an outcome — nothing is asked forever</text>
 
-  <!-- lane A arrows -->
-  <line x1="230" y1="188" x2="298" y2="188" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-emerald)"/>
-  <text x="236" y="180" class="tiny">corroborated</text>
-  <line x1="480" y1="188" x2="543" y2="188" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-emerald)"/>
-  <path d="M 610 150 L 610 140 L 758 140" fill="none" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#a-violet)"/>
-  <text x="620" y="133" class="tiny">write</text>
-  <line x1="675" y1="194" x2="758" y2="194" stroke="#fb7185" stroke-width="1.2" marker-end="url(#a-rose)"/>
-  <text x="684" y="186" class="tiny">reject</text>
-  <path d="M 610 226 L 610 272 L 390 272 L 390 218" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-rose)"/>
-  <text x="408" y="290" fill="#fb7185" font-size="9">no outcome → back tomorrow (there is no third option)</text>
+  <!-- ===== candidate fact lane ===== -->
+  <rect x="30" y="100" width="1140" height="300" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="44" y="118" class="lane" fill="#34d399">A CANDIDATE FACT</text>
 
-  <!-- lane A components -->
-  <rect x="50" y="160" width="180" height="56" rx="6" fill="#0f172a"/>
-  <rect x="50" y="160" width="180" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="140" y="184" class="name" text-anchor="middle">fact store</text>
-  <text x="140" y="202" class="sub" text-anchor="middle">extracted or mirrored</text>
+  <rect x="50" y="160" width="180" height="62" rx="6" fill="#0f172a"/>
+  <rect x="50" y="160" width="180" height="62" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="140" y="183" class="name" text-anchor="middle">fact store</text>
+  <text x="140" y="200" class="sub" text-anchor="middle">extracted, mirrored, said</text>
+  <text x="140" y="213" class="sub" text-anchor="middle">or inferred</text>
 
-  <rect x="300" y="160" width="180" height="56" rx="6" fill="#0f172a"/>
-  <rect x="300" y="160" width="180" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="390" y="184" class="name" text-anchor="middle">promotion</text>
-  <text x="390" y="202" class="sub" text-anchor="middle">proposed to the agent</text>
+  <line x1="230" y1="191" x2="298" y2="191" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <text x="236" y="184" class="tiny">corroborated</text>
 
-  <g transform="translate(610, 188)">
-    <polygon points="0,-38 65,0 0,38 -65,0" fill="#0f172a"/>
-    <polygon points="0,-38 65,0 0,38 -65,0" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
-    <text y="-2" class="name" text-anchor="middle">agent</text>
+  <rect x="300" y="152" width="190" height="78" rx="6" fill="#0f172a"/>
+  <rect x="300" y="152" width="190" height="78" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="395" y="175" class="name" text-anchor="middle">promotion</text>
+  <text x="395" y="192" class="sub" text-anchor="middle">score ≥ 0.55; said on 2 days,</text>
+  <text x="395" y="205" class="sub" text-anchor="middle">or 3 mentions, or used and</text>
+  <text x="395" y="218" class="sub" text-anchor="middle">found helpful</text>
+
+  <line x1="490" y1="191" x2="538" y2="191" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+
+  <g transform="translate(605, 191)">
+    <polygon points="0,-40 65,0 0,40 -65,0" fill="#0f172a"/>
+    <polygon points="0,-40 65,0 0,40 -65,0" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text y="-3" class="name" text-anchor="middle">agent</text>
     <text y="13" class="sub" text-anchor="middle">decides</text>
   </g>
 
-  <rect x="760" y="118" width="230" height="44" rx="6" fill="#0f172a"/>
-  <rect x="760" y="118" width="230" height="44" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="875" y="137" class="name" text-anchor="middle">in MEMORY / USER</text>
-  <text x="875" y="153" class="sub" text-anchor="middle">never proposed again</text>
+  <polyline points="605,151 605,138 768,138" fill="none" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#a-violet)"/>
+  <text x="620" y="132" class="tiny">write</text>
+  <rect x="770" y="116" width="220" height="56" rx="6" fill="#0f172a"/>
+  <rect x="770" y="116" width="220" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="880" y="138" class="name" text-anchor="middle">in MEMORY / USER</text>
+  <text x="880" y="155" class="sub" text-anchor="middle">not proposed while the entry is there</text>
 
-  <rect x="760" y="172" width="230" height="44" rx="6" fill="#0f172a"/>
-  <rect x="760" y="172" width="230" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="875" y="191" class="name" text-anchor="middle">reject list</text>
-  <text x="875" y="207" class="sub" text-anchor="middle">silenced by text · --undo lifts it</text>
+  <line x1="670" y1="191" x2="768" y2="208" stroke="#fb7185" stroke-width="1.2" marker-end="url(#a-rose)"/>
+  <text x="684" y="188" class="tiny">reject</text>
+  <rect x="770" y="186" width="220" height="70" rx="6" fill="#0f172a"/>
+  <rect x="770" y="186" width="220" height="70" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="880" y="208" class="name" text-anchor="middle">reject list</text>
+  <text x="880" y="225" class="sub" text-anchor="middle">by its text · --undo lifts it</text>
+  <text x="880" y="238" class="sub" text-anchor="middle">said again after 180 days:</text>
+  <text x="880" y="250" class="sub" text-anchor="middle">asked, never written</text>
 
-  <rect x="1010" y="140" width="150" height="76" rx="6" fill="#0f172a"/>
-  <rect x="1010" y="140" width="150" height="76" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="1085" y="160" class="name" text-anchor="middle" font-size="11">new facts,</text>
-  <text x="1085" y="175" class="name" text-anchor="middle" font-size="11">conflicts</text>
-  <text x="1085" y="192" class="sub" text-anchor="middle">"nothing here" is ok:</text>
-  <text x="1085" y="206" class="sub" text-anchor="middle">quiet for 14 days</text>
+  <polyline points="605,231 605,262 395,262 395,232" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-rose)"/>
+  <text x="430" y="278" class="warn">no outcome → back in 3 days (an unanswered night: the next night)</text>
 
-  <!-- lane B arrows -->
-  <line x1="230" y1="448" x2="298" y2="448" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#a-violet)"/>
-  <text x="236" y="440" class="tiny">silent 60 d</text>
-  <path d="M 360 420 L 360 398 L 440 398 L 440 418" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-rose)"/>
-  <text x="196" y="402" fill="#fb7185" font-size="9">no agent answer → asked again</text>
-  <path d="M 500 438 L 550 438 L 550 405 L 598 405" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#a-slate)"/>
-  <text x="503" y="431" class="tiny">outdated</text>
-  <path d="M 500 458 L 550 458 L 550 485 L 598 485" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-emerald)"/>
-  <text x="503" y="472" class="tiny">kept</text>
-  <path d="M 820 485 L 860 485 L 860 568 L 140 568 L 140 478" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-violet)"/>
-  <text x="380" y="561" class="tiny">90 days later it may be asked again</text>
+  <rect x="1010" y="116" width="150" height="140" rx="6" fill="#0f172a"/>
+  <rect x="1010" y="116" width="150" height="140" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="1085" y="138" class="name" text-anchor="middle">rides along</text>
+  <text x="1085" y="156" class="sub" text-anchor="middle">never wakes the agent</text>
+  <text x="1085" y="176" class="sub" text-anchor="middle">confirm: said again</text>
+  <text x="1085" y="189" class="sub" text-anchor="middle">on 2 days → +0.05,</text>
+  <text x="1085" y="202" class="sub" text-anchor="middle">rest 30 days</text>
+  <text x="1085" y="222" class="sub" text-anchor="middle">rejected, trusted →</text>
+  <text x="1085" y="235" class="sub" text-anchor="middle">unhelpful (−0.10)</text>
+  <text x="1085" y="248" class="sub" text-anchor="middle">no keywords → 3–8</text>
 
-  <!-- lane B components -->
-  <rect x="50" y="420" width="180" height="56" rx="6" fill="#0f172a"/>
-  <rect x="50" y="420" width="180" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="140" y="444" class="name" text-anchor="middle">memory entry</text>
-  <text x="140" y="462" class="sub" text-anchor="middle">MEMORY.md §</text>
-  <text x="150" y="504" class="tiny">pinned entries are never asked</text>
+  <rect x="50" y="300" width="250" height="80" rx="6" fill="#0f172a"/>
+  <rect x="50" y="300" width="250" height="80" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="175" y="322" class="name" text-anchor="middle">quarantine</text>
+  <text x="175" y="339" class="sub" text-anchor="middle">a secret or an instruction: wakes</text>
+  <text x="175" y="352" class="sub" text-anchor="middle">the agent, never shown; closed</text>
+  <text x="175" y="365" class="sub" text-anchor="middle">by the reject list</text>
 
-  <rect x="300" y="420" width="200" height="56" rx="6" fill="#0f172a"/>
-  <rect x="300" y="420" width="200" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
-  <text x="400" y="444" class="name" text-anchor="middle">"still relevant?"</text>
-  <text x="400" y="462" class="sub" text-anchor="middle">asked once · 14-day cooldown</text>
+  <rect x="320" y="300" width="250" height="80" rx="6" fill="#0f172a"/>
+  <rect x="320" y="300" width="250" height="80" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="445" y="322" class="name" text-anchor="middle">inferred</text>
+  <text x="445" y="339" class="sub" text-anchor="middle">a conclusion nobody confirmed:</text>
+  <text x="445" y="352" class="sub" text-anchor="middle">the agent asks, it does not write</text>
+  <text x="445" y="365" class="sub" text-anchor="middle">it as what it was told</text>
 
-  <rect x="600" y="380" width="220" height="50" rx="6" fill="#0f172a"/>
-  <rect x="600" y="380" width="220" height="50" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="710" y="401" class="name" text-anchor="middle">removed or replaced</text>
-  <text x="710" y="418" class="sub" text-anchor="middle">by the agent, on the human's word</text>
+  <rect x="590" y="300" width="270" height="80" rx="6" fill="#0f172a"/>
+  <rect x="590" y="300" width="270" height="80" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="725" y="322" class="name" text-anchor="middle">new facts, conflicts, decays</text>
+  <text x="725" y="339" class="sub" text-anchor="middle">shown once in 14 days; "nothing</text>
+  <text x="725" y="352" class="sub" text-anchor="middle">here" is fine · an event whose date</text>
+  <text x="725" y="365" class="sub" text-anchor="middle">has passed is only listed</text>
 
-  <rect x="600" y="460" width="220" height="50" rx="6" fill="#0f172a"/>
-  <rect x="600" y="460" width="220" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="710" y="481" class="name" text-anchor="middle">confirmed</text>
-  <text x="710" y="498" class="sub" text-anchor="middle">kept 14 days, or rewritten</text>
+  <rect x="880" y="300" width="280" height="80" rx="6" fill="#0f172a"/>
+  <rect x="880" y="300" width="280" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="1020" y="322" class="name" text-anchor="middle">forgotten in the store</text>
+  <text x="1020" y="339" class="sub" text-anchor="middle">the sweep (every 15 min) takes its</text>
+  <text x="1020" y="352" class="sub" text-anchor="middle">copies out of the caches, the reject</text>
+  <text x="1020" y="365" class="sub" text-anchor="middle">list, the diary and the job logs</text>
 
-  <rect x="900" y="420" width="250" height="76" rx="6" fill="#0f172a"/>
-  <rect x="900" y="420" width="250" height="76" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="1025" y="442" class="name" text-anchor="middle" font-size="11">a rewrite is the same entry</text>
-  <text x="1025" y="460" class="sub" text-anchor="middle">"As of 2026-09-23, …" inherits the</text>
-  <text x="1025" y="474" class="sub" text-anchor="middle">question's record by subject,</text>
-  <text x="1025" y="488" class="sub" text-anchor="middle">so it is not asked again tomorrow</text>
+  <!-- ===== memory entry lane ===== -->
+  <rect x="30" y="420" width="1140" height="250" rx="12" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="44" y="438" class="lane" fill="#a78bfa">A MEMORY ENTRY</text>
 
-  <!-- title -->
-  <text x="40" y="52" fill="#ffffff" font-size="20" font-weight="700">Where every item ends up</text>
-  <text x="40" y="76" fill="#94a3b8" font-size="12">each candidate and question gets an outcome — nothing is asked forever</text>
+  <rect x="50" y="480" width="180" height="58" rx="6" fill="#0f172a"/>
+  <rect x="50" y="480" width="180" height="58" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="140" y="503" class="name" text-anchor="middle">memory entry</text>
+  <text x="140" y="520" class="sub" text-anchor="middle">MEMORY.md §</text>
+
+  <line x1="230" y1="509" x2="298" y2="509" stroke="#a78bfa" stroke-width="1.2" marker-end="url(#a-violet)"/>
+  <text x="236" y="502" class="tiny">silent 60 d</text>
+
+  <rect x="300" y="480" width="200" height="58" rx="6" fill="#0f172a"/>
+  <rect x="300" y="480" width="200" height="58" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="400" y="503" class="name" text-anchor="middle">"still relevant?"</text>
+  <text x="400" y="520" class="sub" text-anchor="middle">asked once · 14-day cooldown</text>
+
+  <path d="M 360 480 L 360 460 L 440 460 L 440 478" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-rose)"/>
+  <text x="300" y="454" class="warn">no answer that night → asked again</text>
+
+  <polyline points="500,495 548,495 548,470 598,470" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#a-slate)"/>
+  <text x="506" y="488" class="tiny">outdated</text>
+  <rect x="600" y="446" width="260" height="56" rx="6" fill="#0f172a"/>
+  <rect x="600" y="446" width="260" height="56" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="730" y="467" class="name" text-anchor="middle">removed or replaced</text>
+  <text x="730" y="484" class="sub" text-anchor="middle">by the agent, on the human's word;</text>
+  <text x="730" y="496" class="sub" text-anchor="middle">a fact: end · change · correct · forget</text>
+
+  <polyline points="500,523 548,523 548,548 598,548" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <text x="506" y="540" class="tiny">kept</text>
+  <rect x="600" y="520" width="260" height="56" rx="6" fill="#0f172a"/>
+  <rect x="600" y="520" width="260" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="730" y="542" class="name" text-anchor="middle">confirmed</text>
+  <text x="730" y="559" class="sub" text-anchor="middle">kept 14 days, or rewritten</text>
+
+  <polyline points="860,548 900,548 900,630 140,630 140,540" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-violet)"/>
+  <text x="420" y="646" class="tiny">90 days later it may be asked again</text>
+  <text x="150" y="590" class="tiny">pinned entries (📌, [pinned]) are never asked;</text>
+  <text x="150" y="603" class="tiny">nor one whose change waits for approval</text>
+
+  <rect x="930" y="470" width="220" height="96" rx="6" fill="#0f172a"/>
+  <rect x="930" y="470" width="220" height="96" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="1040" y="492" class="name" text-anchor="middle">a rewrite is the same entry</text>
+  <text x="1040" y="510" class="sub" text-anchor="middle">"As of 2026-09-23, …" inherits</text>
+  <text x="1040" y="523" class="sub" text-anchor="middle">the question's record by subject,</text>
+  <text x="1040" y="536" class="sub" text-anchor="middle">so it is not asked again tomorrow;</text>
+  <text x="1040" y="549" class="sub" text-anchor="middle">USER.md is never asked about</text>
 </svg>
