@@ -234,6 +234,24 @@ class ExtractPrecheckTests(DreamFixture):
                          [m["text"] for m in first["messages"]])
         self.assertEqual(self._state()["attempts"], 1)
         self.assertIn("again", self.stderr)
+        # 2.9.0: a hand-over again says so — what was stored last time is in existing_facts, and adding it again
+        # would count as a person saying it again.
+        self.assertNotIn("attempt", first["window"])
+        self.assertEqual(second["window"]["attempt"], 2)
+
+    def test_a_retry_carries_what_the_unanswered_hand_over_stored(self):
+        """Code review of 2.9.0: with a cap on existing_facts, what the last attempt stored could be left out."""
+        self._four_messages()
+        self._main()
+        self.add_fact("Марина пьёт кофе без сахара", days_old=0)  # stored "by the last attempt"
+        for i in range(3):
+            self.add_fact(f"Более поздний факт номер {i} про чай", days_old=0)
+        state = extract.resolve_pending(dream, self._state(), 3)
+        self.assertTrue(state.get("retry_since"))
+        cfg = dict(self.cfg, extract=dict(self.cfg["extract"], existing_facts_cap=2))
+        payload, _, _ = extract.build_payload(dream, cfg, state, self._now())
+        texts = [f["text"] for f in payload["existing_facts"]]
+        self.assertIn("Марина пьёт кофе без сахара", texts, "the cap does not cut the last attempt's facts")
 
     def test_answered_hand_over_commits_the_cursor(self):
         self._four_messages()

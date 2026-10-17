@@ -122,6 +122,26 @@ Every fact passes `classify_unsafe` before any output list:
   its earlier rules, mentions of the system prompt, requests to show or send a
   key or the prompt, "save to memory that … is allowed", jailbreak phrasing;
   RU+EN. A 60-char preview goes to the full JSON only.
+- **the holographic provider's screen** (2.9.0, `scripts/holo_screen.py`) — after
+  the dream's own rules, the provider's: a credential with its value in its 18
+  languages ("Passwort:", "密码：", "şifre:"…), token shapes (a bot token inside a
+  Bot API address, `A[KS]IA…`, an address with a password `scheme://login:pass@`),
+  environment assignments (`STRIPE_SECRET=…`, not `MAX_TOKENS=128000` or
+  `${VAR}`), long encoded blobs → secret; instructions and requests to send a
+  secret in every language, chat-role markup, hidden characters, images →
+  injection. The provider refuses these when storing and recalling, but never
+  cleans what it already holds, nor people's messages — the dream carries both
+  into durable memory. It is a verbatim copy (`tools/vendor_screen.py`; MIT), as
+  the provider's module imports Hermes itself; a test compares it with the
+  provider's source when that is at hand. What it counts the dream does not: a
+  change of a password told after a dash when a word of the sentence follows in
+  a non-Latin script and the sentence goes on ("сбросил пароль от Zoom —
+  40-минутный лимит остался", the dream's rule since 2.7.5, narrowed in 2.9.0: a
+  short, all-digit or Latin value — "— abc1", "— 1234", "— step1 completed" — is
+  a password); a zero-width joiner inside an emoji, the tags of a subdivision
+  flag, and the zero-width space between words of Thai, Lao, Khmer or Burmese. A
+  secret by either screen wins over an instruction: an instruction's preview
+  goes to the full JSON.
 
 **Reject list** (`cache/dream-rejected.json`, `dream-reject.py`) matches by
 text — fingerprint or stemmed containment in both directions (a short human
@@ -190,6 +210,12 @@ Every published candidate is a small dossier, so the agent can act without
 re-deriving anything:
 
 - `why` — score plus corroboration in one line;
+- `origin` (holographic >= 0.15.0) — who stands behind the fact's current text:
+  `said`, `confirmed` (an inference or an unknown origin a person has confirmed
+  since reads as confirmed, as the provider shows it) or `inferred`; absent when
+  unknown (stored before 0.15.0, or a store the updated provider has not opened
+  yet). Read from `fact_versions` / `fact_confirmations` by a query of its own,
+  never added to the `facts` query. `change` takes it for the newer text;
 - `evidence` — up to 3 `{day, text}` pairs from **different** days: the actual
   human messages that corroborated the fact (provenance for the reviewer, the
   Generative-Agents "cite your sources" idea). A corroborating message that

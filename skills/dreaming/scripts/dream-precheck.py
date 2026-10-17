@@ -97,6 +97,9 @@ FACT_FIELDS = (
     # rejection to the agent as an ordinary promotion (Codex review of 2.7.2).
     "previously_rejected",
     "store",
+    # Who stands behind the fact (holographic >= 0.15.0): `change` takes it, and an unconfirmed inference is
+    # asked about rather than written (2.9.0).
+    "origin",
 )
 
 # Keys that wake the agent — only sections it can act upon. `themes` and
@@ -210,7 +213,8 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
         "trust_feedback": data.get("trust_feedback", []),
         # The same: facts people said again on different days -> fact_feedback confirmed (holographic >= 0.15.0).
         "confirm": [{"fact_id": c.get("fact_id"), "days": c.get("days"),
-                     "content": str(c.get("content") or "")[:max_content]} for c in data.get("confirm", [])],
+                     "content": str(c.get("content") or "")[:max_content],
+                     **({"origin": c["origin"]} if c.get("origin") else {})} for c in data.get("confirm", [])],
         # The same: facts without keywords, given while the agent is awake.
         "keywords_needed": [
             {"fact_id": k.get("fact_id"), "content": str(k.get("content") or "")[:max_content]}

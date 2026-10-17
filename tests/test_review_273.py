@@ -46,12 +46,15 @@ class PasswordEventTests(unittest.TestCase):
                      "Марина поменяла пароль от кабинета: розовыйслон",
                      "Пароль от сейфа – 77214"):
             self.assertEqual(dream.classify_unsafe(text), "secret", text)
-        for text in ("Поменял пароль от роутера — 5GHz сеть перезагрузилась",
-                     "Сбросил пароль от Zoom — 40-минутный лимит остался",
+        for text in ("Сбросил пароль от Zoom — 40-минутный лимит остался",
                      "Забыл пароль от домофона — кв.123 не открывает",
-                     "Changed password on server — step1 completed",
                      "Пароль от Wi-Fi сменили вчера вечером"):
             self.assertIsNone(dream.classify_unsafe(text), text)
+        # 2.9.0: a Latin value after a dash is a password now, even in a story about the change (holographic's
+        # screen; "— abc1" cannot be told from "— step1 completed", Codex code review of 2.9.0).
+        for text in ("Поменял пароль от роутера — 5GHz сеть перезагрузилась",
+                     "Changed password on server — step1 completed"):
+            self.assertEqual(dream.classify_unsafe(text), "secret", text)
 
 
 class PolarityTests(unittest.TestCase):
@@ -385,8 +388,7 @@ class CodexReview275Tests(unittest.TestCase):
         for text in ("Сменил пароль — Розовыйслон123!", "Сменил пароль - Кот2024!"):
             self.assertEqual(dream.classify_unsafe(text), "secret", text)
         for text in ("Сбросил пароль от Zoom — 40-минутный лимит остался",
-                     "Забыл пароль от домофона — кв.123 не открывает",
-                     "Поменял пароль от роутера — 5GHz сеть перезагрузилась"):
+                     "Забыл пароль от домофона — кв.123 не открывает"):
             self.assertIsNone(dream.classify_unsafe(text), text)
 
     def test_a_verbatim_substring_with_not_is_no_duplicate(self):

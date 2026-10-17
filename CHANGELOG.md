@@ -3,6 +3,47 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.0 — 2026-10-17
+
+For holographic 0.15–0.17. The plan and the code were each reviewed in Codex CLI (gpt-6.1-sol); every finding was
+checked by a reproduction. On a live install the decisions on its 58 facts and 66 memory entries are unchanged
+against 2.8.0; of 136 messages two change, both a newsletter carrying invisible watermark characters.
+
+### Added
+
+- **The provider's screen.** holographic 0.14.5–0.15.2 refuses to store or recall a credential in its 18 languages,
+  a token by its shape (a bot token inside a Bot API address, `A[KS]IA…`, an address with a password), an
+  environment assignment, an encoded blob, an instruction or a request to send a secret in any language, chat-role
+  markup, hidden characters and images — but it never cleans what it already holds, nor people's messages, and the
+  dream carries both into durable memory and its report. The dream missed 15 of 19 such shapes. It now runs the
+  provider's screen after its own rules: `scripts/holo_screen.py` is a verbatim copy of what `_recall_problem` and
+  `_secret_in` need (the provider's module imports Hermes itself), made by `tools/vendor_screen.py`, which refuses a
+  source it cannot copy whole; a test compares the copy with the provider's source when it is at hand. A secret by
+  either screen wins over an instruction (an instruction keeps a preview in the full JSON). Not taken over: a zero-width
+  joiner inside an emoji, the tags of a subdivision flag and the zero-width space between Thai, Lao, Khmer or Burmese
+  words.
+- **`origin`** (holographic >= 0.15.0). Items carry who stands behind the fact's current text — `said`, `confirmed`
+  or `inferred` — read from `fact_versions` / `fact_confirmations` by a query of its own (the `facts` query is
+  unchanged); an inference a person confirmed reads as `confirmed`, as the provider shows it. The wake gate keeps the
+  field. The prompt: `change` on a conflict takes the newer statement's own origin (none when it has none); an
+  unconfirmed inference is asked about, not written.
+- **The extraction job gives `origin`**: `said` for what the sender says about themselves or their world, `inferred`
+  for a conclusion. An `add` of a stored text counts as the person saying it again, so the job never re-adds one; a
+  chunk handed over again is marked `window.attempt`, and the facts the unanswered hand-over stored travel in
+  `existing_facts` whatever its cap.
+- **`install.py --check`** says whether the store keeps origins and confirmations — by the file's schema, not the
+  plugin's version (the columns appear on a writer's open).
+
+### Changed
+
+- **The told-change rule of 2.7.5 is narrower.** A change of a password told after a dash stays no secret only when
+  a word in a non-Latin script follows and the sentence goes on ("сбросил пароль от Zoom — 40-минутный лимит
+  остался"). A short, all-digit or Latin value is a password: "— abc1", "— 1234", "— 5GHz сеть…", "— step1
+  completed".
+- **No `forget` to tidy up.** Neither cron job forgets a fact to deduplicate, whatever an `add` hint suggests: a
+  forget is final and rewrites every copy, backups included. "That was wrong" with nothing true left is a question
+  first, not a forget.
+
 ## 2.8.0 — 2026-10-15
 
 ### Added

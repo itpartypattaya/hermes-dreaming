@@ -25,7 +25,9 @@ timezone, diary heading, …) lives in a JSON config — see `load_config()` and
 from __future__ import annotations
 import argparse
 import contextlib
+import functools
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -1147,13 +1149,39 @@ def _load_holographic(db):
     rows = []
     c = _conn(db)
     try:
+        origins = _fact_origins(c)
         for r in c.execute("select " + ",".join(FACT_FIELDS) + " from facts"):
             row = dict(zip(FACT_FIELDS, r))
             row["tags"], row["keywords"] = split_keywords(row.get("tags"))
+            if origins.get(row["fact_id"]):
+                row["origin"] = origins[row["fact_id"]]
             rows.append(row)
     finally:
         c.close()  # the sqlite3 context manager commits but does NOT close
     return rows
+
+
+ORIGINS = ("said", "confirmed", "inferred")
+
+
+def _fact_origins(conn):
+    """{fact_id: origin} (holographic >= 0.15.0): who stands behind a fact's current text — `said` (a person said
+    it), `confirmed`, `inferred` (an agent's conclusion). An inference or an unknown origin a person confirmed since
+    reads as `confirmed`, as the provider shows it. Unknown (stored before 0.15.0, or an older schema: the column
+    and the table appear on a writer's open) is left out. Read-only; never part of the `facts` query, which the
+    provider keeps stable for this reader."""
+    if "src_origin" not in _table_columns(conn, "fact_versions"):
+        return {}
+    try:
+        out = {fid: o for fid, o in conn.execute(
+            "SELECT fact_id, src_origin FROM fact_versions WHERE status = 'current'") if o in ORIGINS}
+        if _table_columns(conn, "fact_confirmations"):
+            for (fid,) in conn.execute("SELECT DISTINCT fact_id FROM fact_confirmations"):
+                if out.get(fid) in (None, "inferred"):
+                    out[fid] = "confirmed"
+        return out
+    except sqlite3.Error:
+        return {}
 
 
 KEYWORDS_MARK = "keywords: "
@@ -2359,6 +2387,7 @@ def confirm_items(safe, messages, by_store, fact_source_name, db=None):
                 and not polarity_differs(s["content"], m["content"])}
         if len(days) >= CONFIRM_MIN_DAYS:
             out.append({"fact_id": s["fact_id"], "content": s["content"][:200], "days": len(days),
+                        **({"origin": s["origin"]} if s.get("origin") else {}),
                         "fingerprint": _fact_fingerprint(s["content"]),
                         "call": {"tool": "fact_feedback", "action": "confirmed", "fact_id": s["fact_id"]}})
     out.sort(key=lambda i: (-i["days"], i["fact_id"]))
@@ -2838,16 +2867,83 @@ INJECTION_RE = re.compile(
     re.IGNORECASE)
 
 
+# The holographic provider's own screen (scripts/holo_screen.py, a verbatim copy made by tools/vendor_screen.py):
+# credentials in its 18 languages, token shapes (a bot token inside a Bot API address, A[KS]IA…, an address with a
+# password), environment assignments, encoded blobs, instructions and requests to send secrets in every language,
+# chat-role markup, hidden characters, images. The provider refuses these when storing and recalling, but never
+# cleans what it already holds, nor people's messages — and the dream carries both into durable memory and its
+# report (2.9.0). Two things it counts the dream does not:
+# - a change of a password told after a dash, where what follows is a word of the sentence, not a value ("сбросил
+#   пароль от Zoom — 40-минутный лимит остался", "забыл пароль от домофона — кв.123 не открывает"): the dream's
+#   rule since 2.7.5, narrowed in 2.9.0 to a word in a non-Latin script with the sentence going on after it — a
+#   short or Latin value ("— abc1", "— 1234", "— step1 …") is taken for a password (Codex review of 2.9.0);
+# - a zero-width joiner inside an emoji (👩‍💻), the tags of a subdivision flag (🏴 + tags) and the zero-width space
+#   that separates words in Thai, Lao, Khmer and Burmese: how these are written, not hidden text.
+# A secret wins over an instruction: an injection carries a preview into the full JSON (Codex review of 2.9.0).
+def _load_holo_screen():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holo_screen.py")
+    try:
+        spec = importlib.util.spec_from_file_location("_dream_holo_screen", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except (OSError, ImportError, SyntaxError, re.error) as exc:
+        print(f"[dream] warn: {path} not loaded ({exc}) — secrets and instructions screened by the dream's own "
+              f"rules only", file=sys.stderr)
+        return None
+
+
+HOLO_SCREEN = _load_holo_screen()
+_EMOJI_JOINER_RE = re.compile(r"(?<=[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F])\u200D(?=[\U0001F000-\U0001FAFF\u2600-\u27BF])")
+_FLAG_TAGS_RE = re.compile(r"(?<=\U0001F3F4)[\U000E0030-\U000E0039\U000E0061-\U000E007A]{2,6}\U000E007F")
+_NO_SPACE_SCRIPTS = "\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF"  # Thai, Lao, Burmese, Khmer
+_WORD_SEPARATOR_RE = re.compile(f"(?<=[{_NO_SPACE_SCRIPTS}])\u200B(?=[{_NO_SPACE_SCRIPTS}])")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+_LETTER_RE = re.compile(r"[^\W\d_]")
+
+
+def _told_change(text, match):
+    """The dream's rule: a credential word, a dash, then a word of the sentence, not a value — in a non-Latin
+    script, nothing of a credential's shape, the sentence going on after it — in a sentence about changing it."""
+    if "sep" not in match.re.groupindex or match.group("sep").strip(" \t\"'«“„‚`「『") not in ("—", "–", "-"):
+        return False
+    value = match.group("value").rstrip(".,;:!?")
+    if not _LETTER_RE.search(value) or _LATIN_RE.search(value) or _looks_like_credential(value):
+        return False
+    rest = _SENTENCE_END_RE.split(text[match.end("value"):], 1)[0]
+    if not _LETTER_RE.search(rest):
+        return False
+    ends = [m.end() for m in _SENTENCE_END_RE.finditer(text, 0, match.start())]
+    return bool(PASSWORD_EVENT_RE.search(text[(ends[-1] if ends else 0):match.end()]))
+
+
+def _screened_text(text):
+    """The text the provider's screen judges: emoji joiners, flag tags and word separators out, and the value of a
+    told change (_told_change) blanked."""
+    text = _WORD_SEPARATOR_RE.sub("", _FLAG_TAGS_RE.sub("", _EMOJI_JOINER_RE.sub("", text)))
+    told = sorted({m.span("value") for rx in HOLO_SCREEN._RE_CREDENTIALS for m in rx.finditer(text)
+                   if _told_change(text, m)}, reverse=True)
+    for start, end in told:
+        text = text[:start] + "…" + text[end:]
+    return text
+
+
+@functools.lru_cache(maxsize=8192)
 def classify_unsafe(content):
     """'secret' | 'injection' | None. Conservative quarantine: exclusion from
-    auto-promotion with a note in the report, never deletion."""
+    auto-promotion with a note in the report, never deletion. The dream's own
+    rules and the holographic provider's screen (see _load_holo_screen); a
+    secret by either wins over an instruction."""
     text = content or ""
-    if SECRET_RE.search(text):
+    if SECRET_RE.search(text) or _password_marker_unsafe(text):
         return "secret"
-    if _password_marker_unsafe(text):
+    screened = _screened_text(text) if HOLO_SCREEN is not None else None
+    if screened is not None and HOLO_SCREEN._secret_in(screened):
         return "secret"
     if INJECTION_RE.search(text):
         return "injection"
+    if screened is not None and HOLO_SCREEN._recall_problem(screened):
+        return "injection"  # not a credential: _secret_in covers those
     return None
 
 
@@ -3927,7 +4023,8 @@ def _pub_base(s):
             "why": _why(s),
             "in_memory": s.get("in_memory", False),
             "ephemeral": is_ephemeral_fact(s["content"]),
-            "user_profile_hint": user_profile_hint(s)}
+            "user_profile_hint": user_profile_hint(s),
+            **({"origin": s["origin"]} if s.get("origin") else {})}
 
 
 # ---------------------------------------------------------------------------

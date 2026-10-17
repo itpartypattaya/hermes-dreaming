@@ -27,7 +27,9 @@ memory; the agent applies its proposals through the regular `memory` tool and re
   directions; a candidate that repeats an entry with *different numbers* is a possible update
   (`conflicts`), not a duplicate. Every candidate carries the nearest entry, which file it lives in
   and a verbatim `old_text` anchor for `memory replace`.
-- **Screening.** Secrets and prompt-injection are quarantined, dated events expire (dates
+- **Screening.** Secrets and prompt-injection are quarantined — by the dream's own rules and by the holographic
+  provider's screen (credentials in its 18 languages, token shapes, environment assignments, instructions in any
+  language), which the provider applies only to what it stores and recalls next — dated events expire (dates
   and event words in 15 languages, from «14 de noviembre» to 11月14日), near-identical facts in the store reach the agent once.
 - **A wake gate.** On a quiet night the cron job prints `{"wakeAgent": false}` and the model never
   starts. A memory file close to its char limit counts as work (`memory_pressure`) — the limit gates
@@ -40,7 +42,8 @@ memory; the agent applies its proposals through the regular `memory` tool and re
   hold most of its words and do not negate it — is listed with a ready `fact_feedback(confirmed)` call: its trust
   rises a little, and the agent's own conclusion counts as confirmed. Naming the topic is not saying it again, so
   this is rare by design (none of 58 facts on a live family store; the loose rule would have offered 26). It never
-  wakes the model.
+  wakes the model. Items also carry the fact's `origin` — `said`, `confirmed` or `inferred` (an agent's conclusion
+  nobody confirmed, asked about rather than written).
 - **Keywords for search** (opt-in, holographic ≥ 0.6.1). The fact store finds a fact by words it
   does not contain only through its keywords — synonyms, other roots, translations. Facts without
   them are listed a few a night (`keywords_needed`) with a ready `fact_store update` call, and the
@@ -329,7 +332,8 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
   published nowhere, an injection keeps a 60-char preview in the full JSON only).
   **The screening is a regex filter, not a guarantee:** it knows the common key shapes
   (`sk-`, `gsk_`, `ntn_`, `gho_`, AWS, Google, Slack, Telegram, JWT, PEM), credential markers in
-  Russian and English, and the injection phrasings the core's own cron scanner looks for — a
+  Russian and English, and the injection phrasings the core's own cron scanner looks for, plus the
+  holographic provider's screen (`scripts/holo_screen.py`, a verbatim copy, MIT) — a
   wording nobody has seen yet can still get through. Keep the approval gate on if that matters.
   No tools, hooks, middleware or environment variables are registered.
 
@@ -340,6 +344,7 @@ plugin.json                          Agent Plugins v1 manifest
 skills/dreaming/
   SKILL.md                           agent instructions
   scripts/dream.py                   the pass (never writes memory)
+  scripts/holo_screen.py             the holographic provider's screen, a verbatim copy
   scripts/dream-precheck.py          nightly wake gate        → ~/.hermes/scripts/
   scripts/dream-extract-precheck.py  extraction gate          → ~/.hermes/scripts/
   scripts/dream-forget-sweep.py      no_agent forget sweep    → ~/.hermes/scripts/
@@ -349,6 +354,7 @@ skills/dreaming/
   references/scoring.md              signals, gates, sections, state files
   references/cron-memory.md          what cron sessions may touch
   examples/                          config and cron job examples
+  tools/vendor_screen.py             makes holo_screen.py from the provider's source
 tests/                               stdlib unittest, synthetic data, no network
 docs/                                README images (SVG sources in docs/src/)
 ```

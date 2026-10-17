@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.8.0
+version: 2.9.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
@@ -68,6 +68,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `previously_rejected` on an item | a human rejected this fact half a year ago or more and it was said again since: ask whether it is true now (quote the old reason); never write it without a yes |
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
+| `origin` on an item | who stands behind the fact (holographic ≥ 0.15.0): `said`, `confirmed`, `inferred` (an agent's conclusion nobody confirmed — write it only when its evidence is the person's own words, else ask); no field = unknown |
 | `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never replace |
 | `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |
@@ -138,6 +139,10 @@ in each of them (`references/scoring.md`, "Every language").
    `replace` when the newer statement is trustworthy, otherwise ask, and write or reject by the
    answer. With `stats.fact_history: true`, when the older statement is also a fact of the store,
    `fact_store change {fact_id: <older>, content: <newer>}` keeps its history instead of a second fact.
+   Give `change` the newer statement's `origin` (holographic ≥ 0.15.0) — the candidate's own `origin`
+   when it has one, none when it has none: matching words do not make it `said`. Never `forget` a fact
+   to tidy up or deduplicate, whatever a tool's hint suggests: `forget` follows a human's "forget it"
+   only, and it rewrites what keeps the fact (backups included).
 7. **Decay questions.** `fact_decays` and `md_decays` are questions, not deletion candidates. The
    human's answer is closed by substance. With `stats.fact_history: true` (holographic >= 0.8.0) a
    **fact** is closed through the store, which keeps its history:
@@ -145,7 +150,7 @@ in each of them (`references/scoring.md`, "Every language").
      date): it leaves the store's present and every dream section, so no reject is needed;
    - "it changed" → `fact_store change {fact_id, content}` with the new state;
    - "that was wrong" → `fact_store correct {fact_id, content}` with the right text; a fact with nothing
-     true left in it → `forget`;
+     true left in it → ask whether to forget it, and `forget` only on a yes;
    - "forget it" → `fact_store forget {fact_id}` — final, the history goes too — **and** remove the
      memory entry that carries it (`memory` remove). Only on the human's words, never on your own.
 
@@ -216,7 +221,13 @@ in each of them (`references/scoring.md`, "Every language").
    statements into one person's fact; without `from`, name a person only if the text names them. At most 8 facts; zero is fine. When the JSON carries `keywords`, give each fact
    its 3–8 keywords right in the `add` (as in step 7b) — it then never joins the backlog. When a
    message says since when something holds ("moved on 1 September"), pass `valid_from` (YYYY-MM-DD);
-   never use the message date as the start. An `add` answered `past_version` or `forgotten` stored
+   never use the message date as the start. Give each `add` an `origin` (holographic ≥ 0.15.0): `said`
+   when the sender says it about themselves or their own world in their own message, `inferred` when it
+   is your conclusion from several messages or from context. Never add a text `existing_facts` already
+   holds, in any wording: an `add` of a stored text counts as the person saying it again. `window.attempt`
+   means the chunk was handed over before without an answer — what was stored then is in
+   `existing_facts`. Never `forget` in this run, even when an `add` hints at it: leave both facts, the
+   dream raises duplicates with a human. An `add` answered `past_version` or `forgotten` stored
    nothing on purpose (an old state, or something the human asked to forget) — move on. **Always answer** — one line (count and window)
    or `[SILENT]`: the answer is what marks those messages processed.
 10. **Report** — for a human, in their language, at most 6 short lines: only facts actually added or updated, only the

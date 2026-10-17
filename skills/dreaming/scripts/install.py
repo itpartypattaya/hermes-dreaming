@@ -160,6 +160,28 @@ def _check_holographic_version(home, r):
         r.ok(f"holographic {found.group(1)}.{found.group(2)}: cron jobs may write facts; forgotten facts are swept")
 
 
+def _check_holographic_origins(path, r):
+    """Whether the store itself keeps who stands behind a fact and confirmations (holographic >= 0.15.0). The file
+    is what counts, not the plugin's version: the columns appear on a writer's open, so a store an updated plugin
+    has not opened yet has none (Codex review of the 2.9.0 plan). Read-only."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            origin = any(row[1] == "src_origin" for row in conn.execute("PRAGMA table_info(fact_versions)"))
+            confirmations = bool(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fact_confirmations'").fetchone())
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return
+    if origin and confirmations:
+        r.ok("the fact store keeps origins and confirmations — items carry `origin`, the confirm section is on")
+    else:
+        r.ok("the fact store keeps no origins or confirmations yet (holographic older than 0.15.0, or not opened "
+             "by it since the update) — no `origin` on items, the confirm section stays silent")
+
+
 def _check_holographic_settings(home, dream, r):
     """Two provider settings the dream has to say something about (holographic >= 0.14).
 
@@ -230,6 +252,7 @@ def check_fact_source(home, dream, r):
     elif os.path.exists(path):
         r.ok(f"memory provider 'holographic', fact store present ({path})")
         _check_holographic_version(home, r)
+        _check_holographic_origins(path, r)
     else:
         r.warn(f"memory provider 'holographic', but no {path} yet — the pass treats it as empty; "
                "the file appears with the first stored fact")
