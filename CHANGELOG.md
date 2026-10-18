@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.5 — 2026-10-18
+
+The copy of the holographic provider's screen is taken from holographic 0.17.4 (`827c639`): three texts from a live
+store are no longer read as a credential with its value — `pins` as a verb ("the report module pins LEDGER =
+_PROD_LEDGER"), two hyphenated words after a closing bracket ("input tokens) = token-accounting bug") and a folder
+after a credential word joined by a hyphen ("~/.hermes/token-saver-ccr/"). `password Summer2026.txt` and every other
+case stay refused. It still loads on Python 3.9; nothing else changes.
+
 ## 2.9.4 — 2026-10-17
 
 The copy of the holographic provider's screen is taken from holographic 0.17.3 (`13ecfbf`). The copy 2.9.3 took

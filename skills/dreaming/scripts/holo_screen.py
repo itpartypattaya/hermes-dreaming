@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.17.3 (`13ecfbf`), `__init__.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.17.4 (`827c639`), `__init__.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.17.3"
-SOURCE_COMMIT = "13ecfbf"
+SOURCE_VERSION = "0.17.4"
+SOURCE_COMMIT = "827c639"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -438,12 +438,19 @@ def _holds_a_secret(match: re.Match) -> bool:
     # a dash is how prose introduces something ("GEMINI_API_KEY — the key of the free tier:"), not an assignment
     assigned = sep is not None and bool(sep.strip(" \t\n—–-"))
     value = match.group("value")
-    if sep == "-" and _names_a_thing(value):
+    if sep == "-" and _names_a_thing(value, folders=True):
         return False  # one name, the word joined to the rest by a hyphen: "token-saver-stats.jsonl" (0.17.2, issue #6)
-    if sep is None and _RE_HYPHENATED.fullmatch(_value(value)):
+    if sep is None and word in ("pins", "Pins") and re.match(r"\s+[^\s(]", match.group("label")):
+        # a word after it, "pins" is the verb: "the module pins LEDGER = _PROD_LEDGER"; a PIN with what it is for is
+        # singular or written in capitals ("PIN card: 4821", "PINs card: 4821"), and "pins-wifi:", "pins (prod) ="
+        # stay (0.17.4, issue #6)
+        return False
+    if sep is None and _RE_HYPHENATED.fullmatch(_value(value)) and re.search(r"\w", match.group("label")):
         # "Password wifi: correct-horse": the fifth pattern ends in ":", "=" or "is", and two hyphenated words after it
         # are a passphrase, as after "password:" (review 0.17.2, Antigravity). A date there stays when, not which
-        # ("пароль сменили: 15.10.2026"), and a path where ("API keys are stored in: /etc/secrets").
+        # ("пароль сменили: 15.10.2026"), and a path where ("API keys are stored in: /etc/secrets"). Not after a
+        # closing bracket, which ends the words around the name rather than says what it is for: "input tokens) =
+        # token-accounting bug" is prose; "(password): Qwerty123" is still a password (0.17.4, issue #6).
         assigned = True
     if _RE_ENV_NAME.fullmatch(word):
         if _is_reference(_value(value), assigned):
@@ -518,13 +525,19 @@ _RE_HOST_NAME = re.compile(
 _RE_VERSIONED = re.compile(r"[a-z0-9][a-z0-9._/-]*(?:@|==|>=|<=|~=)v?\d{1,4}(?:\.\d{1,4}){1,2}(?:[-+][a-z0-9.]+)?")
 
 
-def _names_a_thing(value: str) -> bool:
+# A folder: parts of a path that end in a separator ("saver-ccr/", "saver/cache/").
+_RE_FOLDER_NAME = re.compile(r"[\w.~+-]+(?:[/\\][\w.~+-]+)*[/\\]")
+
+
+def _names_a_thing(value: str, folders: bool = False) -> bool:
     """A file, a host or a versioned package, not a secret (see _RE_FILE_NAME); a possessive is off. A file name with
     "@" in it, or with a capital and a digit, is shaped like a password ("password-P@ssw0rd2026.txt",
-    "password-Secret2026.conf"), and an e-mail address after "password-" may be a login (review 0.17.2, Antigravity)."""
+    "password-Secret2026.conf"), and an e-mail address after "password-" may be a login (review 0.17.2, Antigravity).
+    *folders*: a path that ends in "/" or "\\" names a folder, held to the same shape ("~/.hermes/token-saver-ccr/";
+    0.17.4, issue #6) — only after "word-", where the word is the start of the name."""
     value = re.sub(r"`?['’]s$", "", _value(value)).strip(_VALUE_EDGE)
-    if _RE_FILE_NAME.fullmatch(value):
-        stem = value.rsplit(".", 1)[0]
+    if _RE_FILE_NAME.fullmatch(value) or (folders and _RE_FOLDER_NAME.fullmatch(value)):
+        stem = value.rsplit(".", 1)[0] if _RE_FILE_NAME.fullmatch(value) else value
         return "@" not in stem and not (any(c.isupper() for c in stem) and any(c.isdigit() for c in stem))
     return any(rx.fullmatch(value) for rx in (_RE_HOST_NAME, _RE_VERSIONED))
 
