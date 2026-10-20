@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.8 — 2026-10-20
+
+A fourth review of the config reader, by another model, found valid YAML that the 2.9.7 fallback read with
+confidence and wrongly. That fallback is used without PyYAML. With PyYAML, as in Hermes' own interpreter and so in
+the scheduled jobs, nothing changes. Each form below now leaves its block unread, like everything 2.9.7 does not
+take:
+- **A value on the line after its key.** In `db_path:` over `  /data/facts.db`, the value is the next line. 2.9.7
+  read it as null, and the pass went to the default database. The same happened to `scope`, `cron_writes`,
+  `write_approval`, the char limits and `timezone`. A nested mapping or a list under a key is still read as before.
+- **Flow keys YAML gives a meaning.** These are `? key`, a tagged, anchored or aliased key, and a merge `<<`. In
+  `{provider: holographic, ? provider: none}`, YAML keeps `none`. 2.9.7 kept `holographic` and let the extraction
+  gate open. A quoted `"<<"` is an ordinary key.
+- **Two BOMs at the start of the file.** YAML drops only one, and the second becomes part of the first key. 2.9.7
+  dropped both and found a `memory:` YAML does not see.
+- **NEL, LS or PS line breaks** (U+0085, U+2028, U+2029). A plain value folded over one keeps the character, not a
+  space, so 2.9.7 named another file.
+
+Also:
+- **A config.yaml that cannot be opened is unread.** Before, a file that could not even be looked up could pass
+  for a missing one, and a missing one means the defaults.
+- **The README says what a plain `python3` without PyYAML reads.** It also says to run the scripts by hand with
+  Hermes' interpreter.
+- **What 2.9.7 said about "no facts" was broader than the code.** Only an unread store block stops the facts, and
+  `$DREAM_FACT_STORE` names the store as `fact_store_path` does. An unread `memory:` block alone shuts the
+  extraction gate (no provider) and drops the char limits from config.yaml, but the store is read.
+
 ## 2.9.7 — 2026-10-20
 
 The rest of issue #2: the holographic plugin's settings were read by the same block regex, and `timezone` not at

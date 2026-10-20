@@ -978,6 +978,80 @@ class PluginBlockTests(unittest.TestCase):
                                                                ("memory",))["write_approval"]))
         self.assertFalse(dream._a_char_limit(0.5) or dream._a_char_limit("5000 "))
 
+    def test_the_fourth_review_cases(self):
+        """Fourth review of the 2.9.7 branch (Codex): a value on the line after its key read as null (the default
+        database), flow keys YAML gives a meaning (`? key`, a tag, an anchor, an alias, a merge `<<`), two BOMs, and a
+        Unicode line break folded into a space. Each is unread now."""
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        store = ("plugins", "hermes-memory-store")
+        unsure = {
+            "path on the next line": ("plugins:\n  hermes-memory-store:\n    db_path:\n      /right.db\n", store),
+            "cron_writes on the next line": ("plugins:\n  hermes-memory-store:\n    cron_writes:\n      false\n",
+                                             store),
+            "quoted value on the next line": ('memory:\n  provider:\n    "holographic"\n', ("memory",)),
+            "timezone on the next line": ("timezone:\n  Europe/Lisbon\n", ()),
+            "explicit key": ("memory: {provider: holographic, ? provider: none}\n", ("memory",)),
+            "tagged key": ("memory: {provider: holographic, !!str provider: none}\n", ("memory",)),
+            "anchored key": ("plugins: {hermes-memory-store: {&k cron_writes: false}}\n", store),
+            "aliased key": ("plugins: {hermes-memory-store: {&k cron_writes: true, *k: false}}\n", store),
+            "merge key": ("plugins: {hermes-memory-store: {<<: {db_path: /right.db, cron_writes: false}}}\n", store),
+            "two BOMs": ("﻿﻿memory: {provider: holographic}\n", ("memory",)),
+            "LS in a folded path": ("plugins:\n  hermes-memory-store:\n    db_path: /data/one       two.db\n", store),
+            "PS in a folded path": ("plugins:\n  hermes-memory-store:\n    db_path: /data/one       two.db\n", store),
+            "NEL": ("memory:\n  provider: holographic\x85", ("memory",)),
+        }
+        for name, (text, path) in unsure.items():
+            with self.subTest(case=name):
+                self.assertIsNone(dream._scan_block(text, path))
+        # still read, as PyYAML reads them: one BOM, a nested mapping or a list under a setting, a quoted `"<<"` key
+        read = {
+            "one BOM": ("﻿memory: {provider: holographic}\n", ("memory",), {"provider": "holographic"}),
+            "a mapping under a setting": ("memory:\n  provider: holographic\n  other:\n    value: x\n", ("memory",),
+                                          {"provider": "holographic", "other": None}),
+            "a list under a setting": ("memory:\n  provider: holographic\n  other:\n    - x\n", ("memory",),
+                                       {"provider": "holographic", "other": None}),
+            "quoted merge-like key": ('memory: {provider: holographic, "<<": x}\n', ("memory",),
+                                      {"provider": "holographic", "<<": "x"}),
+        }
+        for name, (text, path, want) in read.items():
+            with self.subTest(case=name):
+                self.assertEqual(dream._scan_block(text, path), want)
+                if yaml is not None:
+                    node = yaml.safe_load(text)
+                    for key in path:
+                        node = node[key]
+                    self.assertEqual({k: v for k, v in node.items() if not isinstance(v, (dict, list))},
+                                     {k: v for k, v in want.items() if v is not None})
+        # a file that cannot be opened is unread, even when the look-up of it fails too
+        from unittest import mock
+        with mock.patch("builtins.open", side_effect=PermissionError), \
+                mock.patch.object(dream.os.path, "exists", return_value=False):
+            self.assertIsNone(dream._hermes_config_text("/nowhere"))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(dream._hermes_config_text(tmp), "")
+
+    def test_an_unread_memory_block_alone_still_reads_the_store(self):
+        """Only an unread store block stops the facts: an unread `memory:` shuts the extraction gate (no provider)
+        and drops the char limits, while the store's own settings are read (fourth review of the 2.9.7 branch)."""
+        from unittest import mock
+        text = "memory: !!map {provider: holographic}\nplugins:\n  hermes-memory-store:\n    db_path: /right.db\n"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp), \
+                mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}), \
+                mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
+            Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
+            self.assertEqual(dream.hermes_config_unread(tmp), ("memory",))
+            self.assertEqual(dream.hermes_memory_settings(tmp), {})
+            self.assertTrue(dream.fact_store_path(tmp).endswith("right.db"))
+            self.assertIsNone(dream.fact_store_note(tmp))
+            Path(tmp, "config.yaml").write_text("plugins:\n  hermes-memory-store: !!map {db_path: /x.db}\n",
+                                                encoding="utf-8")
+            with mock.patch.dict(os.environ, {"DREAM_FACT_STORE": "/named.db"}):
+                self.assertTrue(dream.fact_store_path(tmp).endswith("named.db"))
+                self.assertIn("reads the store fact_store_path names", dream.fact_store_note(tmp) or "")
+
     def test_an_unreadable_config_is_not_a_missing_one(self):
         """Third review of the 2.9.7 branch (Codex): a non-UTF-8 byte made config.yaml read as "no config", and the
         pass went to the default database. A store named in dreaming.json is read, and the note says so."""

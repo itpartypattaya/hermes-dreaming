@@ -272,15 +272,15 @@ def _hermes_config_text(home=None):
     """Hermes config.yaml as text; "" when there is none, None when it is there but cannot be read (not UTF-8, no
     permission). The two differ: no file is a fresh install with the defaults, an unreadable one is a config this
     pass cannot see, and its settings count as unread (third review of the 2.9.7 branch, Codex: a stray non-UTF-8
-    byte in a comment pointed the pass at the default database)."""
-    path = os.path.join(home or HOME, "config.yaml")
+    byte in a comment pointed the pass at the default database). Only FileNotFoundError is "none": a file that
+    cannot even be looked at may not say it exists (fourth review of the 2.9.7 branch, Codex)."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(os.path.join(home or HOME, "config.yaml"), encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return ""
     except (OSError, UnicodeDecodeError):
-        return None if os.path.exists(path) else ""
+        return None
 
 
 def _hermes_config_parsed(home=None):
@@ -408,6 +408,8 @@ _YAML_HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 # How deep a one-line flow (`{a: [b, {c: d}]}`) is followed before it counts as unread: past it, recursion would
 # reach Python's limit (review of the 2.9.7 branch, Codex: a 1,100-deep list crashed the config load).
 _FLOW_DEPTH = 64
+# How a plain flow key may not start: `?` (explicit key), `!` (tag), `&` (anchor), `*` (alias) and YAML's indicators
+_NOT_A_PLAIN_KEY = ("?", "!", "&", "*", "|", ">", "%", "@", "`")
 
 
 def _quoted(text, start):
@@ -562,8 +564,11 @@ def _flow(text, i=0, depth=0):
                         # review of the 2.9.7 branch, Codex)
                         raise _Unsure
                     key, i = text[i:j].strip(" \t"), j
-                    if not key:
-                        raise _Unsure  # `{: none}`: a key YAML refuses (third review of the 2.9.7 branch, Codex)
+                    if not key or key[:1] in _NOT_A_PLAIN_KEY or key == "<<":
+                        # `{: none}`, an explicit `? key`, a tagged, anchored or aliased key, a merge `<<`: YAML reads
+                        # them otherwise, and a second `? provider: none` overrode the first (fourth review of the
+                        # 2.9.7 branch, Codex)
+                        raise _Unsure
                 while i < len(text) and text[i] in " \t":
                     i += 1
                 if i >= len(text) or text[i] != ":":
@@ -670,7 +675,14 @@ def _scan_block_or_raise(text, path):
                 raise _Unsure
             result[entry[1]] = value
 
-    for line in _YAML_LINES.split(text.lstrip("﻿")):
+    if text[:1] == "\ufeff":
+        # one BOM, as YAML: a second one is part of the first key (fourth review of the 2.9.7 branch, Codex)
+        text = text[1:]
+    if any(c in text for c in ("\x85", "\u2028", "\u2029")):
+        # NEL, LS, PS break lines in YAML, but a plain scalar folded over one keeps it, not a space — another db_path
+        # (fourth review of the 2.9.7 branch, Codex). Rare enough to leave the file unread.
+        raise _Unsure
+    for line in _YAML_LINES.split(text):
         # YAML's whitespace is space and tab: NBSP and the other Unicode spaces are text to it, and stripping them
         # moved keys and changed values (third review of the 2.9.7 branch, Codex)
         body = line.strip(" \t")
@@ -739,6 +751,10 @@ def _scan_block_or_raise(text, path):
             raise _Unsure
         hit = _KEY_RE.match(line, indent)
         if not hit:
+            if stack and tuple(entry[1] for entry in stack[:-1]) == path and not stack[-1][6]:
+                # the value of a direct child of `path` on the next line: `db_path:` over `  right.db` is right.db,
+                # not null — and null meant the default database (fourth review of the 2.9.7 branch, Codex)
+                raise _Unsure
             if not stack and body.startswith("{"):
                 # the whole document as one flow mapping: `{timezone: UTC, memory: {provider: x}}`
                 value = _scalar(body)

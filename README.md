@@ -275,6 +275,17 @@ python3 $S/dream-reject.py --from-report --reason "duplicates the system prompt"
 Cleaning durable memory by hand? Reject what you dropped: the facts stay in the store, flip to
 `in_memory: false`, and the next pass would propose them right back.
 
+A plain `python3` may have no PyYAML. The scripts then read config.yaml with a narrow reader of their own. It
+covers block `key: value` lines, comments and one-line `{…}`, and it does not guess. If it cannot read the
+`memory:` block or the holographic plugin's block for sure, that block counts as unread:
+- the pass reads no facts unless `fact_store_path` names the store;
+- extraction stays off;
+- the report and `install.py --check` say why.
+
+Forms it leaves unread include a `{…}` over several lines, a value on the line after its key, tags, anchors and
+block scalars (`|`). To read such a config, run the scripts with Hermes' interpreter
+(`~/.hermes/hermes-agent/venv/bin/python`, which has PyYAML). The scheduled jobs always use it.
+
 ### Verify it end to end
 
 ```bash

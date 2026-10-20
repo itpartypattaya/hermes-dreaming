@@ -413,8 +413,11 @@ else a narrow scanner) → `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~`
 and relative paths expand the way the provider expands them. The pass, the
 extraction gate and `dream-reject.py` all go through it. When `config.yaml` is
 there but cannot be read, or the scanner cannot read the store's block for sure
-(`hermes_config_unread`), there is no default: the path is None, the pass reads
-no facts and no tombstones, and `fact_store_note` says why (2.9.7).
+(`hermes_config_unread`), there is no default: unless `$DREAM_FACT_STORE` or
+`fact_store_path` names the store, the path is None, the pass reads no facts and
+no tombstones, and `fact_store_note` says why (2.9.7). An unread `memory:` block
+alone does not stop the facts: it shuts the extraction gate (no provider) and
+drops the char limits taken from config.yaml (2.9.8).
 
 **Extraction cursor** (`cache/dream-extract-state.json`) is `(since_ts,
 since_id)`: rows can share a timestamp, and a chunk cut between two of them
