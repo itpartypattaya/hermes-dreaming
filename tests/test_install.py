@@ -730,16 +730,16 @@ PLUGINS = {
 # `memory: |` text, the document as one flow mapping. None: the scanner cannot read the block for sure
 # (`memory: |`) and says so instead of reading it as empty (second review of the 2.9.7 branch).
 REVIEW_297 = {
-    'comments': ('timezone: Asia/Bangkok\nmemory: # a\n# x\n  provider: holographic\n    # x\n  memory_char_limit: 5000\nplugins: # x\n# x\n  hermes-memory-store:\n  # x\n    db_path: /data/a.db\n# x\n    scope: chat\n',
-        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Asia/Bangkok')),
+    'comments': ('timezone: Europe/Lisbon\nmemory: # a\n# x\n  provider: holographic\n    # x\n  memory_char_limit: 5000\nplugins: # x\n# x\n  hermes-memory-store:\n  # x\n    db_path: /data/a.db\n# x\n    scope: chat\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Europe/Lisbon')),
     'siblings_nested': ('extra:\n  memory:\n    provider: wrong\nplugins:\n  x:\n    hermes-memory-store:\n      db_path: /wrong.db\n  hermes-memory-store:\n    db_path: /right.db\n  y:\n    scope: wrong\nmemory:\n  provider: holographic\nafter:\n  memory:\n    provider: wrong\n',
         ({'provider': 'holographic'}, {'db_path': '/right.db'}, None)),
-    'list_plugins': ('plugins:\n  - name: x\n    hermes-memory-store:\n      db_path: /wrong.db\ntimezone: Asia/Bangkok\n',
-        ({}, {}, 'Asia/Bangkok')),
-    'quoted_space': ('\ufeff"memory" :\n  "provider" : holographic\n  memory_char_limit : 5000\n"plugins" :\n  "hermes-memory-store" :\n    "scope" : chat\n"timezone" : Asia/Bangkok\n',
-        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'scope': 'chat'}, 'Asia/Bangkok')),
-    'document': ('---\ntimezone: Asia/Bangkok\nmemory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n    scope: chat\n...\n',
-        ({'provider': 'holographic'}, {'scope': 'chat'}, 'Asia/Bangkok')),
+    'list_plugins': ('plugins:\n  - name: x\n    hermes-memory-store:\n      db_path: /wrong.db\ntimezone: Europe/Lisbon\n',
+        ({}, {}, 'Europe/Lisbon')),
+    'quoted_space': ('\ufeff"memory" :\n  "provider" : holographic\n  memory_char_limit : 5000\n"plugins" :\n  "hermes-memory-store" :\n    "scope" : chat\n"timezone" : Europe/Lisbon\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'scope': 'chat'}, 'Europe/Lisbon')),
+    'document': ('---\ntimezone: Europe/Lisbon\nmemory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n    scope: chat\n...\n',
+        ({'provider': 'holographic'}, {'scope': 'chat'}, 'Europe/Lisbon')),
     'flow_hash': ('memory: {provider: "holo #graphic", memory_char_limit: 5000}\nplugins:\n  hermes-memory-store: {db_path: "/data/a #b.db", scope: chat, cron_writes: false}\n',
         ({'memory_char_limit': 5000, 'provider': 'holo #graphic'}, {'db_path': '/data/a #b.db', 'scope': 'chat', 'cron_writes': False}, None)),
     'flow_comma': ('memory: {provider: holographic, extra: "a,b", memory_char_limit: 5000}\nplugins:\n  hermes-memory-store: {db_path: "/data/a,b.db", scope: chat, cron_writes: false}\n',
@@ -748,8 +748,8 @@ REVIEW_297 = {
         ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'scope': 'chat', 'cron_writes': False}, None)),
     'flow_parent': ('plugins: {hermes-memory-store: {db_path: /data/a.db, scope: chat}}\n',
         ({}, {'db_path': '/data/a.db', 'scope': 'chat'}, None)),
-    'root_flow': ('{timezone: Asia/Bangkok, memory: {provider: holographic}}\n',
-        ({'provider': 'holographic'}, {}, 'Asia/Bangkok')),
+    'root_flow': ('{timezone: Europe/Lisbon, memory: {provider: holographic}}\n',
+        ({'provider': 'holographic'}, {}, 'Europe/Lisbon')),
     'parent_replaced': ('plugins:\n  hermes-memory-store:\n    db_path: /old.db\n    scope: chat\n    min_trust_threshold: 0.9\nplugins:\n  other: {}\n',
         ({}, {}, None)),
     'parent_null': ('plugins:\n  hermes-memory-store:\n    scope: chat\nplugins: null\n',
@@ -758,8 +758,8 @@ REVIEW_297 = {
         (None, None, None)),
     'dash': ('memory:\n  memory_char_limit: -5\nplugins:\n  hermes-memory-store:\n    db_path: -facts.db\n    min_trust_threshold: -0.4\n',
         ({'memory_char_limit': -5}, {'db_path': '-facts.db', 'min_trust_threshold': -0.4}, None)),
-    'CRLF': ('timezone: Asia/Bangkok\r\nmemory: # a\r\n# x\r\n  provider: holographic\r\n    # x\r\n  memory_char_limit: 5000\r\nplugins: # x\r\n# x\r\n  hermes-memory-store:\r\n  # x\r\n    db_path: /data/a.db\r\n# x\r\n    scope: chat\r\n',
-        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Asia/Bangkok')),
+    'CRLF': ('timezone: Europe/Lisbon\r\nmemory: # a\r\n# x\r\n  provider: holographic\r\n    # x\r\n  memory_char_limit: 5000\r\nplugins: # x\r\n# x\r\n  hermes-memory-store:\r\n  # x\r\n    db_path: /data/a.db\r\n# x\r\n    scope: chat\r\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Europe/Lisbon')),
 }
 
 
@@ -1022,11 +1022,11 @@ class PluginBlockTests(unittest.TestCase):
     def test_timezone_is_read_without_pyyaml(self):
         """Before 2.9.7 `timezone` had no fallback: without PyYAML the pass ran on UTC."""
         from unittest import mock
-        text = "# Hermes\ntimezone: Asia/Bangkok  # home\nmemory:\n  provider: holographic\n"
+        text = "# Hermes\ntimezone: Europe/Lisbon  # home\nmemory:\n  provider: holographic\n"
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
             with mock.patch.dict(sys.modules, {"yaml": None}):
-                self.assertEqual(dream._hermes_config(tmp).get("timezone"), "Asia/Bangkok")
+                self.assertEqual(dream._hermes_config(tmp).get("timezone"), "Europe/Lisbon")
                 self.assertIsNone(dream._hermes_config(tmp).get("memory"))     # a nested block is not read here
 
     def test_the_core_check_says_only_what_it_finds(self):
