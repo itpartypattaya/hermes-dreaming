@@ -256,8 +256,11 @@ def main():
         # session, so the model would be handed up to 200 messages it cannot
         # store — and the cursor would move past them for good (external
         # review, 2026-10-07).
+        # Only a provider read as holographic opens the gate: one not found — no `memory:`, a second
+        # `memory:` without it, a value the scanner cannot read — is no fact_store tool either (review of
+        # 2.9.6, Codex: "provider is not None" let an empty answer through).
         provider = dream.hermes_memory_settings().get("provider")
-        if provider is not None and str(provider).strip() != "holographic":
+        if provider is None or str(provider).strip() != "holographic":
             print(f"[dream-extract] memory.provider={provider or 'not set'}: no fact_store tool in "
                   "the session — extraction skipped, the cursor stays where it is", file=sys.stderr)
             print(json.dumps({"wakeAgent": False}))

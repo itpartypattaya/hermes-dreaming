@@ -244,11 +244,19 @@ def load_config(path=None):
         limits = {name: int(value) for name, value in
                   (("memories/MEMORY.md", hermes_mem.get("memory_char_limit")),
                    ("memories/USER.md", hermes_mem.get("user_char_limit")))
-                  if isinstance(value, (int, float)) and int(value) > 0}
+                  if _a_char_limit(value)}
         if limits:
             merged["memory_char_limits"] = limits
             print(f"[dream] note: char limits taken from config.yaml: {limits}", file=sys.stderr)
     return merged
+
+
+def _a_char_limit(value):
+    """A memory char limit worth taking from config.yaml: a positive finite number. Not a bool — `true` is an int
+    to Python and was a limit of one character, "memory at 100000%" (third review of 2.9.6, Codex) — and not
+    `.inf` / `.nan`, which PyYAML gives as floats and `int()` refuses."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            and int(value) > 0)
 
 
 def _hermes_config_text(home=None):
@@ -285,6 +293,19 @@ def _hermes_config(home=None):
     return _hermes_config_parsed(home)[0]
 
 
+_MEMORY_KEYS = ("memory_char_limit", "user_char_limit", "provider", "write_approval")
+
+
+def hermes_enabled(value):
+    """A Hermes on/off setting as Hermes reads it (`tools/write_approval._normalize_enabled`): a YAML bool as it
+    is, a string among on / true / yes / 1 / approve / enabled, anything else — a number, null — off."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+    return False
+
+
 def hermes_memory_settings(home=None):
     """`memory:` of Hermes config.yaml — the limits and the provider that decide
     what the dream can see and what counts as "memory is filling up".
@@ -292,35 +313,109 @@ def hermes_memory_settings(home=None):
     The defaults shipped in the example config are the CORE defaults (2200 and
     1375), so an install that raised its limits got "memory at 285%" and a
     nightly order to merge and drop entries (external review, 2026-10-07). The
-    numbers live in one place; read them from there."""
-    mem = (_hermes_config(home) or {}).get("memory")
-    if isinstance(mem, dict):
-        out = {}
-        for key in ("memory_char_limit", "user_char_limit", "provider", "write_approval"):
-            if key in mem:
-                out[key] = mem[key]
-        if out:
-            return out
-    # No PyYAML (or an unparsable file): scan the block for the few keys.
-    text = _hermes_config_text(home)
-    block = re.search(r"^memory:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
-    if not block:
-        return {}
-    out = {}
-    for key in ("memory_char_limit", "user_char_limit", "provider", "write_approval"):
-        hit = re.search(rf"^[ \t]+{key}:[ \t]*([^#\n]*)", block.group(1), re.MULTILINE)
-        if not hit:
+    numbers live in one place; read them from there.
+
+    Once PyYAML has read the file its answer is final, an empty one too: a `memory:`
+    without these keys, or not a mapping, is "not set" and does not fall through to
+    the scanner (review of 2.9.6, Codex: a second `memory:` block, which YAML keeps,
+    had the scanner read the first). `write_approval` comes back as a bool."""
+    data, parsed = _hermes_config_parsed(home)
+    mem = data.get("memory") if parsed else _scan_memory_block(_hermes_config_text(home))
+    out = {key: mem[key] for key in _MEMORY_KEYS if key in mem} if isinstance(mem, dict) else {}
+    if "write_approval" in out:
+        out["write_approval"] = hermes_enabled(out["write_approval"])
+    return out
+
+
+# A top-level `memory` key, plain or quoted, and what follows it on the line.
+_MEMORY_HEAD_RE = re.compile(r"""^(?:memory|"memory"|'memory')[ \t]*:(.*)$""")
+_MEMORY_KEY_RE = re.compile(r"""^([ \t]+)(["']?)([A-Za-z_][\w-]*)\2:(?:[ \t]+(.*)|[ \t]*$)""")
+_COMMENT_RE = re.compile(r"(?:^|[ \t]+)#.*$")
+_UNREAD = object()
+# Plain scalars as PyYAML (YAML 1.1) types them: "write_approval: 1" is a number, which Hermes reads as off, and
+# "05000" is octal.
+# PyYAML's own lists: "y" and "n" stay strings (third review of 2.9.6, Codex).
+_YAML_TRUE = {"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"}
+_YAML_FALSE = {"false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"}
+_YAML_NULL = {"", "~", "null", "Null", "NULL"}
+_YAML_INT = re.compile(r"[-+]?(?:0|[1-9][0-9_]*)$")
+_YAML_OCT = re.compile(r"[-+]?0[0-7_]+$")
+_YAML_HEX = re.compile(r"[-+]?0x[0-9a-fA-F_]+$")
+_YAML_FLOAT = re.compile(r"[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+][0-9]+)?$")
+
+
+def _scalar(rest):
+    """The scalar after `key:`, typed as PyYAML types it for the plain forms Hermes writes (bool, int, float,
+    null, string), or _UNREAD for one this scanner does not read: a block scalar (`|`, `>`), a flow collection,
+    an anchor, an alias or a tag. A quoted value is a string, read up to its closing quote without escapes; `#`
+    starts a comment only at the start or after a space, as in YAML: `holo#graphic` is one value."""
+    rest = rest.strip()
+    if rest[:1] in ("'", '"'):
+        end = rest.find(rest[0], 1)
+        return rest[1:end] if end > 0 else _UNREAD
+    rest = _COMMENT_RE.sub("", rest).strip()
+    if rest[:1] in ("|", ">", "{", "[", "&", "*", "!", "%", "@", "`"):
+        return _UNREAD
+    if rest in _YAML_NULL:
+        return None
+    if rest in _YAML_TRUE or rest in _YAML_FALSE:
+        return rest in _YAML_TRUE
+    digits = rest.replace("_", "")
+    if _YAML_INT.match(rest):
+        return int(digits)
+    if _YAML_OCT.match(rest):
+        return int(digits, 8)
+    if _YAML_HEX.match(rest):
+        return int(digits, 16)
+    if _YAML_FLOAT.match(rest) and any(c.isdigit() for c in rest):
+        return float(digits)
+    return rest
+
+
+def _scan_memory_block(text):
+    """{key: value} of the direct children of `memory:` — the scanner behind
+    `hermes_memory_settings` when PyYAML is missing or cannot parse the file. Not a
+    YAML parser: a block mapping with plain or quoted keys and one-line scalars,
+    typed as PyYAML types the plain forms (`_scalar`); a value it does not read
+    leaves the key out, and a tab indent is taken although YAML refuses it.
+
+    A comment line belongs to no block, at any indent: YAML skips it, so a top-level
+    "# Section heading" between `memory:` and its `provider:` does not end the mapping
+    (issue #2: the old block regex stopped there and reported no provider while Hermes
+    ran holographic). The block ends at the first other line that is not indented. Only
+    a direct child counts: the first indented line fixes the indent, whatever it holds
+    (review of 2.9.6, Codex: a quoted key the extractor skipped let a nested key set
+    it), and deeper lines belong to a nested mapping. Every top-level `memory` key
+    replaces what an earlier one gave, as in YAML; one this scanner cannot read
+    (`memory: {…}`, `memory: null`) leaves nothing (second review of 2.9.6, Codex).
+    `memory:` may carry a comment, the file a BOM, and the last line may lack a newline."""
+    out, inside, indent = {}, False, None
+    for line in text.lstrip("\ufeff").splitlines():
+        head = _MEMORY_HEAD_RE.match(line)
+        if head:
+            out, indent = {}, None
+            inside = not _COMMENT_RE.sub("", head.group(1)).strip()
             continue
-        raw = hit.group(1).strip().strip("\"'")
-        if key.endswith("_limit"):
-            try:
-                out[key] = int(raw)
-            except ValueError:
-                continue
-        elif key == "write_approval":
-            out[key] = raw.lower() in ("true", "yes", "1")
-        else:
-            out[key] = raw
+        if not inside:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[:1].isspace():
+            inside = False
+            continue
+        lead = line[:len(line) - len(line.lstrip())]
+        if indent is None:
+            indent = lead
+        if lead != indent:
+            continue
+        hit = _MEMORY_KEY_RE.match(line)
+        if hit:
+            value = _scalar(hit.group(4) or "")
+            if value is _UNREAD:
+                out.pop(hit.group(3), None)
+            else:
+                out[hit.group(3)] = value
     return out
 
 

@@ -522,5 +522,179 @@ class CheckJobsTests(unittest.TestCase):
         self.assertEqual((r.ok_n, r.warn_n, r.bad_n), (0, 0, 0), out)
 
 
+# Issue #2 (blopa24): a top-level comment inside `memory:` is valid YAML — Hermes reads the
+# provider after it — but the installer's block regex stopped there and said it was not set.
+ISSUE_2 = ("memory:\n  memory_enabled: true\n\n# Section heading from the generated/example config\n"
+           "# Additional explanation\n  provider: holographic\n  memory_char_limit: 5000\n  user_char_limit: 6000\n"
+           "  write_approval: true\nnext_key: true\n")
+ALL_FOUR = {"provider": "holographic", "memory_char_limit": 5000, "user_char_limit": 6000, "write_approval": True}
+
+# The configs both readers must agree on — the reviews' cases among them (review of 2.9.6, Codex: a quoted parent
+# set the indent by its nested key; a second `memory:` is the one YAML keeps)
+AGREE = {
+    "issue #2": ISSUE_2,
+    "quoted parent": ('memory:\n  "extra":\n    unrelated: value\n  provider: holographic\n'
+                      "  memory_char_limit: 5000\n  user_char_limit: 6000\n  write_approval: true\n"),
+    "quoted keys": ('"memory":\n  "provider": "holographic"\n  \'memory_char_limit\': 5000\n'
+                    "  user_char_limit: 6000\n  write_approval: true\n"),
+    "second block wins": ("memory:\n# heading\n  provider: other\n  memory_char_limit: 9000\nmemory:\n"
+                          "  provider: holographic\n  memory_char_limit: 5000\n  user_char_limit: 6000\n"
+                          "  write_approval: true\n"),
+    "BOM and CRLF": ("﻿memory:\r\n  provider: holographic\r\n  memory_char_limit: 5000\r\n"
+                     "  user_char_limit: 6000\r\n# c\r\n  write_approval: true\r\n"),
+    "four-space indent, nested list": ("memory:\n    extra:\n      - provider: other\n        write_approval: false\n"
+                                       "    provider: holographic\n    memory_char_limit: 5000\n"
+                                       "    user_char_limit: 6000\n    write_approval: true  # gate on\n"),
+    "octal, hex and on": ("memory:\n  provider: holographic\n  memory_char_limit: 011610\n  user_char_limit: 0x1770\n"
+                          "  write_approval: on\n"),
+}
+
+# Configs where both readers find nothing: the first `memory:` is replaced by one without the keys, whatever its form
+# (second review of 2.9.6, Codex)
+EMPTY = {
+    "second block": "memory:\n  provider: holographic\n  memory_char_limit: 9000\nmemory:\n  memory_enabled: true\n",
+    "second after a comment": ("memory:\n# heading\n  provider: holographic\n  memory_char_limit: 9000\nmemory:\n"
+                               "  memory_enabled: true\n"),
+    "second as null": "memory:\n  provider: holographic\nmemory: null\n",
+}
+
+
+class MemoryBlockTests(unittest.TestCase):
+    """`memory:` of config.yaml: the scanner behind a missing PyYAML agrees with YAML on the block mappings Hermes
+    writes, and the installer reads it the way the pass does (2.9.6)."""
+
+    def test_the_scanner_skips_comments_and_reads_direct_children_only(self):
+        cases = {
+            ISSUE_2: {"memory_enabled": True, "provider": "holographic", "memory_char_limit": 5000,
+                      "user_char_limit": 6000, "write_approval": True},
+            "memory:  # the memory block\n  provider: holographic": {"provider": "holographic"},
+            "memory:\n    # indented comment\n  provider: 'holographic'  # set by hand\n": {"provider": "holographic"},
+            "memory:\n  extra:\n    provider: other\n  provider: holographic\n": {"extra": None,
+                                                                                  "provider": "holographic"},
+            "memory:\n  memory_enabled: true\nnext:\n  provider: holographic\n": {"memory_enabled": True},
+            "memory:\n# a comment, then nothing indented\nprovider: holographic\n": {},
+            "other: 1\n  provider: holographic\n": {},
+            # "#" is a comment only after a space; a quoted value keeps it; a block scalar is not read
+            "memory:\n  provider: holo#graphic\n": {"provider": "holo#graphic"},
+            'memory:\n  provider: "holo #graphic" # note\n': {"provider": "holo #graphic"},
+            "memory:\n  provider: |-\n    holographic\n  memory_char_limit: 5000\n": {"memory_char_limit": 5000},
+            # typed as PyYAML types plain scalars: a number is no bool, "05000" is octal, a quoted number a string
+            "memory:\n  write_approval: 1\n  memory_char_limit: 05000\n  user_char_limit: '6000'\n":
+                {"write_approval": 1, "memory_char_limit": 2560, "user_char_limit": "6000"},
+            # every top-level `memory` replaces the one before; one the scanner cannot read leaves nothing
+            "memory:\n# c\n  provider: holographic\nmemory: {provider: none}\n": {},
+            "memory:\n  provider: holographic\nmemory: null\n": {},
+            "memory:\n  provider: holographic\n'memory':\n  provider: none\n": {"provider": "none"},
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(dream._scan_memory_block(text), want)
+
+    def test_both_readers_agree(self):
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        for name, text in AGREE.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._settings(text, with_yaml=False), ALL_FOUR)
+                if yaml is not None:
+                    self.assertEqual(self._settings(text, with_yaml=True), ALL_FOUR)
+
+    def test_a_replaced_memory_gives_nothing(self):
+        """YAML keeps the last `memory`, so one without the keys is "not set": with PyYAML its answer is final, and
+        the scanner replaces the first block too, whatever form the second takes (reviews of 2.9.6, Codex)."""
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        for name, text in EMPTY.items():
+            with self.subTest(case=name):
+                self.assertEqual(self._settings(text, with_yaml=False), {})
+                if yaml is not None:
+                    self.assertEqual(self._settings(text, with_yaml=True), {})
+
+    def test_write_approval_is_read_as_hermes_reads_it(self):
+        """tools/write_approval._normalize_enabled: a bool as is, a few strings on, a number off."""
+        for raw, want in (("true", True), ("on", True), ("enabled", True), ('"yes"', True), ("false", False),
+                          ("off", False), ('"false"', False), ("1", False), ("0", False), ("null", False),
+                          ("y", False), ("Y", False), ("n", False), ("N", False)):   # PyYAML: strings, not bools
+            text = f"memory:\n  write_approval: {raw}\n"
+            with self.subTest(raw=raw, pyyaml=False):
+                self.assertIs(self._settings(text, with_yaml=False).get("write_approval", False), want)
+            try:
+                import yaml  # noqa: F401
+            except ImportError:
+                continue
+            with self.subTest(raw=raw, pyyaml=True):
+                self.assertIs(self._settings(text, with_yaml=True).get("write_approval", False), want)
+        self.assertTrue(dream.hermes_enabled("approve") and not dream.hermes_enabled(1)
+                        and not dream.hermes_enabled(None) and dream.hermes_enabled(True))
+
+    def test_only_a_positive_finite_number_is_a_char_limit(self):
+        """Third review of 2.9.6 (Codex): `true` is an int to Python and became a limit of one character; `.inf` and
+        `.nan` made `int()` raise."""
+        from unittest import mock
+        try:
+            import yaml  # noqa: F401
+            modes = (False, True)
+        except ImportError:
+            modes = (False,)
+        for raw in ("true", "false", ".inf", ".nan", "0", "-5", '"5000"', "y"):
+            for with_yaml in modes:
+                with self.subTest(raw=raw, pyyaml=with_yaml), tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, "config.yaml").write_text(f"memory:\n  memory_char_limit: {raw}\n", encoding="utf-8")
+                    saved = dream.HOME
+                    dream.HOME = tmp
+                    try:
+                        with mock.patch.dict(sys.modules, {} if with_yaml else {"yaml": None}), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            cfg = dream.load_config(str(Path(tmp, "dreaming.json")))
+                    finally:
+                        dream.HOME = saved
+                    self.assertNotIn("memory_char_limits", {k: v for k, v in cfg.items() if v})
+        self.assertTrue(dream._a_char_limit(5000) and dream._a_char_limit(2560.0))
+
+    def _settings(self, yaml_text, with_yaml):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.yaml").write_text(yaml_text, encoding="utf-8")
+            if with_yaml:
+                return dream.hermes_memory_settings(tmp)
+            with mock.patch.dict(sys.modules, {"yaml": None}):   # `import yaml` raises: the scanner reads
+                return dream.hermes_memory_settings(tmp)
+
+    def test_the_pass_reads_the_issue_config_with_and_without_pyyaml(self):
+        try:
+            import yaml  # noqa: F401
+            readers = (False, True)
+        except ImportError:
+            readers = (False,)
+        for with_yaml in readers:
+            with self.subTest(pyyaml=with_yaml):
+                got = self._settings(ISSUE_2, with_yaml)
+                self.assertEqual(got.get("provider"), "holographic")
+                self.assertIs(got.get("write_approval"), True)
+
+    def test_install_check_finds_the_provider_after_a_comment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                install.main(["--hermes-home", tmp])
+            Path(tmp, "config.yaml").write_text(ISSUE_2, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                install.main(["--hermes-home", tmp, "--check"])
+            self.assertNotIn("memory.provider is", out.getvalue())
+            self.assertIn("memory provider 'holographic'", out.getvalue())
+
+    def test_unreadable_config_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(install._memory_provider(Path(tmp), dream))
+            Path(tmp, "config.yaml").write_text("memory:\n  provider: \n", encoding="utf-8")
+            self.assertEqual(install._memory_provider(Path(tmp), dream), "")
+            self.assertFalse(install._write_approval(Path(tmp), dream))
+
+
 if __name__ == "__main__":
     unittest.main()

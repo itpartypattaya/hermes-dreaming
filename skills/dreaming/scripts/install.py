@@ -115,29 +115,23 @@ def check_dry_run(dream, cfg, r):
     r.ok(f"dry run: {source_line or 'ok'}")
 
 
-def _memory_provider(home):
+def _memory_provider(home, dream):
+    """`memory.provider` of Hermes config.yaml, read as the pass reads it (`dream.hermes_memory_settings`:
+    YAML when PyYAML is there, else a scanner that skips comments); None when the file cannot be read.
+    The installer had its own block regex, which stopped at a top-level comment inside `memory:` and
+    reported no provider while Hermes ran holographic (issue #2)."""
     try:
-        text = (home / "config.yaml").read_text(encoding="utf-8")
-    except OSError:
+        (home / "config.yaml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
-    block = re.search(r"^memory:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
-    if not block:
-        return ""
-    found = re.search(r"^[ \t]+provider:[ \t]*(.*?)[ \t]*$", block.group(1), re.MULTILINE)
-    return (found.group(1).strip().strip("\"'") if found else "")
+    provider = dream.hermes_memory_settings(str(home)).get("provider")
+    return str(provider).strip() if provider is not None else ""
 
 
-def _write_approval(home):
-    """`memory.write_approval` of Hermes config.yaml (False when unreadable)."""
-    try:
-        text = (home / "config.yaml").read_text(encoding="utf-8")
-    except OSError:
-        return False
-    block = re.search(r"^memory:\n((?:[ \t]+.*\n|\n)*)", text, re.MULTILINE)
-    if not block:
-        return False
-    found = re.search(r"^[ \t]+write_approval:[ \t]*([^#\n]*)", block.group(1), re.MULTILINE)
-    return bool(found) and found.group(1).strip().strip("\"'").lower() in ("true", "yes", "1")
+def _write_approval(home, dream):
+    """`memory.write_approval` of Hermes config.yaml, coerced as Hermes does (`dream.hermes_enabled`); False when
+    unreadable."""
+    return dream.hermes_memory_settings(str(home)).get("write_approval") is True
 
 
 def _check_holographic_version(home, r):
@@ -226,7 +220,7 @@ def check_fact_source(home, dream, r):
             r.ok(f"fact_source '{source}', store present ({path}); extraction stays off "
                  "(it feeds the holographic store only)")
         return
-    provider = _memory_provider(home)
+    provider = _memory_provider(home, dream)
     if provider is None:
         r.warn(f"cannot read {home / 'config.yaml'} — check that memory.provider is set")
     elif provider != "holographic":
@@ -238,7 +232,7 @@ def check_fact_source(home, dream, r):
                   "2026-10-11 (v0.21.7) — install it as a plugin: hermes plugins install holographic "
                   "(itpartypattaya/hermes-plugin-holographic); if `hermes update` turned memory off, "
                   "see that README. 'none' needs nothing and keeps the nightly memory review working")
-        if _write_approval(home):
+        if _write_approval(home, dream):
             # Worth saying before the advice is taken: `fact_store` writes to
             # memory_store.db directly, and the approval gate covers MEMORY.md,
             # USER.md and skills — not the provider (external review, 2026-10-07).

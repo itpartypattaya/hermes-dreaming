@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.6 — 2026-10-20
+
+`install.py --check` said `memory.provider` was not set when a top-level comment stood inside the `memory:` block
+(issue #2 by blopa24): its own block regex stopped at the first unindented line, a comment included, while YAML — and
+Hermes — skip comments and read the `provider:` after it. The same regex was the pass's fallback when PyYAML is not
+installed or cannot parse the file, so there the keys after such a comment (the provider, `write_approval`, the
+memory char limits) were not read either.
+
+- The installer has no reader of its own any more: it reads `memory:` as the pass does (`hermes_memory_settings`).
+- With PyYAML its answer is final, an empty one too: a `memory:` without these keys no longer falls through to the
+  scanner, which read the first of two `memory:` blocks while YAML keeps the last.
+- The scanner is still a narrow reader, not YAML: a block mapping of one-line scalars. Within that it agrees with
+  YAML: comment lines at any indent are skipped, the first indented line fixes the indent of the direct children (a
+  nested mapping, also under a quoted key, is not read), plain and quoted keys are read, plain values are typed as
+  PyYAML types them (bool — `y` and `n` stay strings —, a finite number — `05000` is octal —, null), a quoted value is a string up to its closing quote
+  (escapes are not decoded), `#` starts a comment only after a space, and every top-level `memory` replaces the one
+  before. A flow mapping, a block scalar, an anchor, an alias or a tag leave the key unread — and `memory: {…}` or
+  `memory: null` after a block leaves nothing. A BOM, a comment after `memory:` and a last line without a newline are
+  taken.
+- `write_approval` is read as Hermes reads it (`tools/write_approval._normalize_enabled`): a bool as it is, the
+  strings on / true / yes / 1 / approve / enabled, anything else — a number too — off.
+- A memory char limit from config.yaml is taken only when it is a positive finite number: `true` (an int to Python)
+  was a limit of one character, and `.inf` / `.nan` made the pass fail.
+- The extraction gate wakes the agent only when the provider is read as `holographic`. It used to let a provider it
+  could not find through ("provider is not None"); a config without one has no `fact_store` tool in the session.
+
 ## 2.9.5 — 2026-10-18
 
 The copy of the holographic provider's screen is taken from holographic 0.17.4 (`827c639`): three texts from a live

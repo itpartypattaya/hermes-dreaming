@@ -71,6 +71,8 @@ class ExtractPrecheckTests(DreamFixture):
         self._old_home = extract.HOME
         extract.HOME = self.home
         self.cfg = dict(dream.CONFIG, extract={"min_messages": 3, "max_messages": 4, "backfill_days": 30})
+        # the gate opens only on a provider read as holographic (2.9.6), as on a real install
+        (self.home / "config.yaml").write_text("memory:\n  provider: holographic\n", encoding="utf-8")
 
     def tearDown(self):
         extract.HOME = self._old_home
@@ -220,6 +222,24 @@ class ExtractPrecheckTests(DreamFixture):
     def _four_messages(self):
         for i in range(4):
             self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1)
+
+    def test_the_gate_opens_only_on_a_provider_read_as_holographic(self):
+        """Review of 2.9.6 (Codex): "provider is not None" let an empty answer through — no `memory:`, a second
+        `memory:` without the provider (YAML keeps the second), a block scalar the scanner does not read."""
+        from unittest import mock
+        self._four_messages()
+        configs = ("", "memory:\n  memory_enabled: true\n", "memory:\n  provider: none\n",
+                   "memory:\n  provider: holographic\nmemory:\n  memory_enabled: true\n",
+                   "memory:\n  provider: |-\n    none\n")
+        for text in configs:
+            for no_yaml in (False, True):
+                with self.subTest(config=text, no_yaml=no_yaml):
+                    (self.home / "config.yaml").write_text(text, encoding="utf-8")
+                    with mock.patch.dict(sys.modules, {"yaml": None} if no_yaml else {}):
+                        self.assertEqual(self._main(), {"wakeAgent": False})
+                    self.assertIn("extraction skipped", self.stderr)
+        (self.home / "config.yaml").write_text("memory:\n# heading\n  provider: holographic\n", encoding="utf-8")
+        self.assertIn("messages", self._main())
 
     def test_unanswered_hand_over_is_handed_over_again(self):
         # A turn that fails after the pre-check printed (model error, cron worker
