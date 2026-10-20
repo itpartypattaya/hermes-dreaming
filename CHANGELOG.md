@@ -3,6 +3,55 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.7 — 2026-10-20
+
+The rest of issue #2: the holographic plugin's settings were read by the same block regex, and `timezone` not at
+all, when PyYAML is not installed or cannot parse config.yaml.
+
+- `plugins.hermes-memory-store` (`db_path`, `scope`, `cron_writes`, `min_trust_threshold`, and in `install.py --check`
+  `embeddings`, `mirror_memory_writes`): a comment between `plugins:` and the store's block, or inside it, a comment
+  after `plugins:`, a quoted key, a BOM or a `#` inside a value hid the setting, and of two `plugins:` the first won.
+  Behind them the pass read the default database instead of the configured one, took a split `scope` for the shared
+  store, and missed `cron_writes: false`. One scanner (`_scan_block`) now reads `memory:`, the store's block and the
+  top level, with the rules of 2.9.6.
+- What it reads besides, after three Codex reviews of this release: one-line flow collections up to 64 levels deep,
+  also for a key on the way to the block (`plugins: {hermes-memory-store: {…}}`) and for the whole document —
+  quotes, `#` and commas inside quoted values, and YAML's escapes in double quotes (`\"`, `\x41`, `é`, `\e`…).
+  A plain value continued on deeper lines is folded into one line (`provider: holographic` over `disabled` is
+  "holographic disabled", not holographic). Numbers are typed as PyYAML types them, binary and base-60 (`1:30` is
+  90) too. A second definition of a key on the way (`plugins: {}`, `plugins: null`) clears what the first gave, a
+  list in place of a mapping (`plugins:` over `- holographic`) holds no store, as in YAML, and a list at its key's
+  indent (`toolsets:` over `- hermes-cli`, as Hermes saves config.yaml) is skipped.
+- What it cannot read for sure, it does not guess. The second and third reviews of the branch found configs where a
+  half-read or misread block let the defaults in — the default database, `scope: profile`, cron writes on — kept
+  the first value of a repeated key, or gave a setting YAML does not have, and the extraction gate opened. Now the
+  block (`memory:`, or the store's) counts as unread, not empty: the extraction gate stays shut, the pass reads no
+  facts and no tombstones and says why in the report, and `install.py --check` says the block cannot be read. That
+  is: a value of the block it does not take (a tag, an anchor, an alias, a block scalar, an escape YAML does not
+  know, a flow deeper than 64 levels or not closed on its line, a number of 100 characters or more — base-60
+  arithmetic on a long one took time growing with the square of its length — and a date or timestamp, which PyYAML
+  makes a date with another string), a flow key with `:` and no space after it (`{provider:holographic}` is one key
+  to YAML, with no value), a continued value with a blank or comment line inside (YAML keeps a line break there,
+  and `db_path` named another file), a line of the block that is not a key or sits at another indent, a line that
+  starts with a space YAML does not take for one (NBSP), a whole document indented, a file of several YAML
+  documents, empty ones too (`---` / `...` / `---`), or with content on a `---` line, and a config.yaml that is
+  there but cannot be read (not UTF-8 — it read as "no config", and the pass went to the default database). A store
+  named by `fact_store_path` in dreaming.json is still read, and the report says so; its scope and `cron_writes`
+  stay unknown, so the extraction gate stays shut. Only space and tab are whitespace now, as in YAML: an NBSP is
+  text, and `write_approval: 1` with one after it is the string Hermes reads as on, not the number it reads as
+  off. A quote inside a plain value is a character, as in YAML: `/data/family 'archive #1'.db` ends at the `#`.
+  When PyYAML parses config.yaml, its answer stands and none of this applies — Hermes' own interpreter has PyYAML,
+  so the scheduled jobs read config.yaml with it. It matters for a manual run with a system `python3`, and for a
+  file PyYAML refuses, which Hermes does not load either. Hermes' example config reads the same with the scanner as
+  with PyYAML.
+- A memory char limit too large for a float (`9` × 400) made the 2.9.6 check overflow, and then the fill level in
+  the report (`memory_usage`); with PyYAML both count it exactly now (without it, a number that long leaves
+  `memory:` unread, above). A fraction below one (`.5`) passed the 2.9.6 check and became a limit of 0 — no limit
+  at all; it is not a limit.
+- `timezone` had no fallback without PyYAML, so the pass ran on UTC; the scanner reads the top-level scalars.
+- `install.py --check` read the core's cron scheduler for the exact line `skip_memory=False,`. Spaces or a comment
+  around it are taken now, and a source with no `skip_memory=` line it knows says "cannot tell" instead of "upgrade".
+
 ## 2.9.6 — 2026-10-20
 
 `install.py --check` said `memory.provider` was not set when a top-level comment stood inside the `memory:` block

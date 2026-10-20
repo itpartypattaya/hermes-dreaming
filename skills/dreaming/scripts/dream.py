@@ -39,6 +39,7 @@ import tempfile
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo
@@ -240,6 +241,9 @@ def load_config(path=None):
         if hermes_tz:
             merged["timezone"] = str(hermes_tz)
     if "memory_char_limits" not in data:
+        if "memory" in hermes_config_unread():
+            print("[dream] note: memory: of config.yaml cannot be read for sure — char limits not taken from it",
+                  file=sys.stderr)
         hermes_mem = hermes_memory_settings()
         limits = {name: int(value) for name, value in
                   (("memories/MEMORY.md", hermes_mem.get("memory_char_limit")),
@@ -254,17 +258,29 @@ def load_config(path=None):
 def _a_char_limit(value):
     """A memory char limit worth taking from config.yaml: a positive finite number. Not a bool — `true` is an int
     to Python and was a limit of one character, "memory at 100000%" (third review of 2.9.6, Codex) — and not
-    `.inf` / `.nan`, which PyYAML gives as floats and `int()` refuses."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-            and int(value) > 0)
+    `.inf` / `.nan`, which PyYAML gives as floats and `int()` refuses (review of the 2.9.7 branch, Codex: a huge int
+    made `math.isfinite()` overflow), and not a fraction below one, which `int()` makes 0 — no limit at all (third
+    review of the branch, Codex)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value > 0  # not through float(): a 400-digit int is finite, and math.isfinite() overflowed on it
+    return isinstance(value, float) and math.isfinite(value) and int(value) > 0
 
 
 def _hermes_config_text(home=None):
+    """Hermes config.yaml as text; "" when there is none, None when it is there but cannot be read (not UTF-8, no
+    permission). The two differ: no file is a fresh install with the defaults, an unreadable one is a config this
+    pass cannot see, and its settings count as unread (third review of the 2.9.7 branch, Codex: a stray non-UTF-8
+    byte in a comment pointed the pass at the default database)."""
+    path = os.path.join(home or HOME, "config.yaml")
     try:
-        with open(os.path.join(home or HOME, "config.yaml"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()
-    except (OSError, UnicodeDecodeError):  # a file that is not UTF-8 reads as "no config", not a crash
+    except FileNotFoundError:
         return ""
+    except (OSError, UnicodeDecodeError):
+        return None if os.path.exists(path) else ""
 
 
 def _hermes_config_parsed(home=None):
@@ -288,9 +304,12 @@ def _hermes_config_parsed(home=None):
 
 
 def _hermes_config(home=None):
-    """Hermes config.yaml as a dict, or {} without PyYAML or on a parse error.
-    Callers must degrade gracefully: the pass never requires a dependency."""
-    return _hermes_config_parsed(home)[0]
+    """Hermes config.yaml as a dict: PyYAML's, or without it (or on a parse error) the top-level scalars the
+    scanner reads (`_scan_block`) — a nested block is None there. Callers must degrade gracefully: the pass never
+    requires a dependency. Before 2.9.7 there was no fallback, so without PyYAML `timezone` was never read and
+    the pass ran on UTC."""
+    data, parsed = _hermes_config_parsed(home)
+    return data if parsed else (_scan_block(_hermes_config_text(home) or "", ()) or {})
 
 
 _MEMORY_KEYS = ("memory_char_limit", "user_char_limit", "provider", "write_approval")
@@ -318,105 +337,446 @@ def hermes_memory_settings(home=None):
     Once PyYAML has read the file its answer is final, an empty one too: a `memory:`
     without these keys, or not a mapping, is "not set" and does not fall through to
     the scanner (review of 2.9.6, Codex: a second `memory:` block, which YAML keeps,
-    had the scanner read the first). `write_approval` comes back as a bool."""
+    had the scanner read the first). `write_approval` comes back as a bool. A block the scanner cannot read for
+    sure gives {} — no provider, so the extraction gate stays shut; `hermes_config_unread` says why."""
     data, parsed = _hermes_config_parsed(home)
-    mem = data.get("memory") if parsed else _scan_memory_block(_hermes_config_text(home))
+    if parsed:
+        mem = data.get("memory")
+    else:
+        text = _hermes_config_text(home)
+        mem = None if text is None else _scan_block(text, ("memory",))
     out = {key: mem[key] for key in _MEMORY_KEYS if key in mem} if isinstance(mem, dict) else {}
     if "write_approval" in out:
         out["write_approval"] = hermes_enabled(out["write_approval"])
     return out
 
 
-# A top-level `memory` key, plain or quoted, and what follows it on the line.
-_MEMORY_HEAD_RE = re.compile(r"""^(?:memory|"memory"|'memory')[ \t]*:(.*)$""")
-_MEMORY_KEY_RE = re.compile(r"""^([ \t]+)(["']?)([A-Za-z_][\w-]*)\2:(?:[ \t]+(.*)|[ \t]*$)""")
-_COMMENT_RE = re.compile(r"(?:^|[ \t]+)#.*$")
+def hermes_config_unread(home=None):
+    """The blocks of Hermes config.yaml the dream relies on — "memory", "plugins.hermes-memory-store" — that the
+    scanner cannot read for sure (`_scan_block` gives None), or all of them when the file is there but cannot be
+    read; () when PyYAML read the file or there is none. Such a block is not taken as empty: the extraction gate
+    stays shut, the pass reads no facts unless `fact_store_path` names the store, `install.py --check` says so."""
+    text = _hermes_config_text(home)
+    if text is None:
+        return ("memory", ".".join(_STORE))
+    if not text or _hermes_config_parsed(home)[1]:
+        return ()
+    return tuple(".".join(p) for p in (("memory",), _STORE) if _scan_block(text, p) is None)
+
+
+# A key at the start of a line (after its indent), plain or quoted, and what follows the colon.
+_KEY_RE = re.compile(r"""(["']?)(\w[\w.-]*)\1[ \t]*:(?:[ \t]+(.*)|[ \t]*$)""")
 _UNREAD = object()
+_STORE = ("plugins", "hermes-memory-store")
+
+
+class _Unsure(Exception):
+    """The scanner cannot tell what YAML reads here. The block it was reading counts as unread, not as empty: an
+    empty store block means the defaults — `memory_store.db`, `scope: profile`, cron writes on — and the second
+    review of the 2.9.7 branch (Codex) found four configs where a half-read block let those defaults open the
+    extraction gate or point the pass at another database. Unsure is closed."""
+
+
+# A plain scalar of this many characters or more that looks like a number is not typed: YAML's base-60 and
+# arbitrary-size ints cost time that grows with the square of the length (second review of the 2.9.7 branch).
+_NUMBER_LEN = 100
 # Plain scalars as PyYAML (YAML 1.1) types them: "write_approval: 1" is a number, which Hermes reads as off, and
-# "05000" is octal.
-# PyYAML's own lists: "y" and "n" stay strings (third review of 2.9.6, Codex).
+# "05000" is octal. PyYAML's own lists: "y" and "n" stay strings (third review of 2.9.6, Codex); binary, base-60
+# ("1:30" is 90), ".inf" and ".nan" are numbers (review of the 2.9.7 branch, Codex).
 _YAML_TRUE = {"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"}
 _YAML_FALSE = {"false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"}
 _YAML_NULL = {"", "~", "null", "Null", "NULL"}
 _YAML_INT = re.compile(r"[-+]?(?:0|[1-9][0-9_]*)$")
 _YAML_OCT = re.compile(r"[-+]?0[0-7_]+$")
 _YAML_HEX = re.compile(r"[-+]?0x[0-9a-fA-F_]+$")
-_YAML_FLOAT = re.compile(r"[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+][0-9]+)?$")
+_YAML_BIN = re.compile(r"[-+]?0b[0-1_]+$")
+_YAML_INT60 = re.compile(r"[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+$")
+# PyYAML's float: a digit before the point, or an unsigned ".5" ("-.5" stays a string)
+_YAML_FLOAT = re.compile(r"(?:[-+]?[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+)(?:[eE][-+][0-9]+)?$")
+_YAML_FLOAT60 = re.compile(r"[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$")
+_YAML_INF = re.compile(r"[-+]?\.(?:inf|Inf|INF)$")
+_YAML_NAN = re.compile(r"\.(?:nan|NaN|NAN)$")
+_YAML_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}"
+                             r"(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?)?$")
+# YAML's line breaks: str.splitlines() also breaks at \v, \f and \x1c-\x1e, which YAML does not
+_YAML_LINES = re.compile("\r\n|[\r\n\x85\u2028\u2029]")
+# YAML's double-quoted escapes (JSON knows only some of them)
+_YAML_ESCAPES = {"0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f",
+                 "r": "\r", "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85", "_": "\xa0",
+                 "L": " ", "P": " "}
+_YAML_HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
+# How deep a one-line flow (`{a: [b, {c: d}]}`) is followed before it counts as unread: past it, recursion would
+# reach Python's limit (review of the 2.9.7 branch, Codex: a 1,100-deep list crashed the config load).
+_FLOW_DEPTH = 64
+
+
+def _quoted(text, start):
+    """(value, index after the closing quote) of the quoted scalar at `text[start]`, or None when it does not
+    close on this line. Single quotes double to escape (`''`); double quotes take YAML's escapes (`\\"`, `\\\\`,
+    `\\n`, `\\x41`, `\\u00e9`…). An escape YAML does not know gives _UNREAD as the value, with the end still found,
+    so it leaves out its own key and nothing else (review of the 2.9.7 branch, Codex)."""
+    quote, i = text[start], start + 1
+    if quote == "'":
+        out = []
+        while i < len(text):
+            if text[i] == "'":
+                if text[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                return "".join(out), i + 1
+            out.append(text[i])
+            i += 1
+        return None
+    out, bad = [], False
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            return (_UNREAD if bad else "".join(out)), i + 1
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        esc = text[i + 1:i + 2]
+        if esc in _YAML_ESCAPES:
+            out.append(_YAML_ESCAPES[esc])
+            i += 2
+        elif esc in _YAML_HEX_ESCAPES:
+            width = _YAML_HEX_ESCAPES[esc]
+            digits = text[i + 2:i + 2 + width]
+            if len(digits) == width and all(d in "0123456789abcdefABCDEF" for d in digits):
+                out.append(chr(int(digits, 16)) if int(digits, 16) <= 0x10FFFF else "")
+                bad = bad or int(digits, 16) > 0x10FFFF
+                i += 2 + width
+            else:
+                bad, i = True, i + 2
+        else:
+            bad, i = True, i + 2
+    return None
+
+
+def _strip_comment(text, plain=False):
+    """`text` without its comment: `#` at the start or after a space, outside quotes (`"a #b"` keeps it). A quote
+    opens a quoted scalar only where a scalar starts — at the start of `text`, or in a flow after `[`, `{`, `,` or
+    `:` — and is a character inside a plain one, as in YAML: `/data/family 'archive #1'.db` ends at the `#` (third
+    review of the 2.9.7 branch, Codex). `plain`: the text continues a plain scalar (a continuation line)."""
+    flow = not plain and text[:1] in ("{", "[")
+    prev, i = "", 0  # prev: the last character before `i` that is not a space, outside quotes
+    while i < len(text):
+        c = text[i]
+        if c in ("'", '"') and not plain and (i == 0 or (flow and prev in ("[", "{", ",", ":"))):
+            hit = _quoted(text, i)
+            if hit is None:
+                return text
+            prev, i = c, hit[1]
+            continue
+        if c == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i].rstrip(" \t")
+        if c not in " \t":
+            prev = c
+        i += 1
+    return text.rstrip(" \t")
+
+
+def _base60(text):
+    sign = -1 if text.startswith("-") else 1
+    total = 0.0 if "." in text else 0
+    for part in text.lstrip("+-").replace("_", "").split(":"):
+        total = total * 60 + (float(part) if "." in part else int(part))
+    return sign * total
+
+
+def _plain(text):
+    """A plain scalar typed as PyYAML types it, or _UNREAD for what this reader does not take: a block scalar
+    (`|`, `>`), an anchor, an alias, a tag, a directive, a number of _NUMBER_LEN characters or more, a timestamp
+    (PyYAML makes it a date, whose string differs — third review of the 2.9.7 branch, Codex)."""
+    text = text.strip(" \t")
+    if text[:1] in ("|", ">", "&", "*", "!", "%", "@", "`") or _YAML_TIMESTAMP.match(text):
+        return _UNREAD
+    if text in _YAML_NULL:
+        return None
+    if text in _YAML_TRUE or text in _YAML_FALSE:
+        return text in _YAML_TRUE
+    digits = text.replace("_", "")
+    if len(text) >= _NUMBER_LEN and any(r.match(text) for r in (_YAML_INT, _YAML_OCT, _YAML_HEX, _YAML_BIN,
+                                                                  _YAML_INT60, _YAML_FLOAT60, _YAML_FLOAT)):
+        return _UNREAD
+    try:
+        if _YAML_INT.match(text):
+            return int(digits)
+        if _YAML_OCT.match(text):
+            return int(digits, 8)
+        if _YAML_HEX.match(text):
+            return int(digits, 16)
+        if _YAML_BIN.match(text):
+            return int(digits, 2)
+        if _YAML_INT60.match(text) or _YAML_FLOAT60.match(text):
+            return _base60(text)
+        if _YAML_INF.match(text):
+            return float("-inf") if text.startswith("-") else float("inf")
+        if _YAML_NAN.match(text):
+            return float("nan")
+        if _YAML_FLOAT.match(text) and any(c.isdigit() for c in text):
+            return float(digits)
+    except (ValueError, OverflowError):
+        return _UNREAD
+    return text
+
+
+def _flow(text, i=0, depth=0):
+    """(value, index after it) of the flow collection or scalar at `text[i]` — `{…}` a dict, `[…]` a list, nested
+    up to _FLOW_DEPTH — or None on what this reader cannot follow on the line. A value it does not read (an
+    anchor, a tag, an escape YAML does not know, a flow deeper than _FLOW_DEPTH) raises _Unsure: leaving the pair
+    out kept an earlier value of a repeated key, and leaving the mapping out let the defaults in (second review
+    of the 2.9.7 branch, Codex)."""
+    if depth > _FLOW_DEPTH:
+        raise _Unsure
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    if i >= len(text):
+        return None
+    c = text[i]
+    if c in ("'", '"'):
+        return _quoted(text, i)
+    if c in "{[":
+        close, out, i = ("}" if c == "{" else "]"), ({} if c == "{" else []), i + 1
+        while True:
+            while i < len(text) and text[i] in " \t":
+                i += 1
+            if i >= len(text):
+                return None
+            if text[i] == close:
+                return out, i + 1
+            if isinstance(out, dict):
+                if text[i] in ("'", '"'):
+                    hit = _quoted(text, i)
+                    if hit is None:
+                        return None
+                    key, i = hit
+                else:
+                    j = i
+                    while j < len(text) and text[j] not in ":,{}[]":
+                        j += 1
+                    if j + 1 < len(text) and text[j] == ":" and text[j + 1] not in " \t,{}[]":
+                        # `{provider:holographic}` is one key in YAML, `provider:holographic` with no value (third
+                        # review of the 2.9.7 branch, Codex)
+                        raise _Unsure
+                    key, i = text[i:j].strip(" \t"), j
+                    if not key:
+                        raise _Unsure  # `{: none}`: a key YAML refuses (third review of the 2.9.7 branch, Codex)
+                while i < len(text) and text[i] in " \t":
+                    i += 1
+                if i >= len(text) or text[i] != ":":
+                    return None
+                hit = _flow(text, i + 1, depth + 1)
+                if hit is None:
+                    return None
+                value, i = hit
+                if value is _UNREAD or key is _UNREAD:
+                    raise _Unsure
+                out[str(key)] = value
+            else:
+                hit = _flow(text, i, depth + 1)
+                if hit is None:
+                    return None
+                value, i = hit
+                if value is _UNREAD:
+                    raise _Unsure
+                out.append(value)
+            while i < len(text) and text[i] in " \t":
+                i += 1
+            if i < len(text) and text[i] == ",":
+                i += 1
+            elif i >= len(text) or text[i] != close:
+                return None
+    j = i
+    while j < len(text) and text[j] not in ",{}[]":
+        j += 1
+    return _plain(text[i:j]), j
 
 
 def _scalar(rest):
-    """The scalar after `key:`, typed as PyYAML types it for the plain forms Hermes writes (bool, int, float,
-    null, string), or _UNREAD for one this scanner does not read: a block scalar (`|`, `>`), a flow collection,
-    an anchor, an alias or a tag. A quoted value is a string, read up to its closing quote without escapes; `#`
-    starts a comment only at the start or after a space, as in YAML: `holo#graphic` is one value."""
-    rest = rest.strip()
-    if rest[:1] in ("'", '"'):
-        end = rest.find(rest[0], 1)
-        return rest[1:end] if end > 0 else _UNREAD
-    rest = _COMMENT_RE.sub("", rest).strip()
-    if rest[:1] in ("|", ">", "{", "[", "&", "*", "!", "%", "@", "`"):
-        return _UNREAD
-    if rest in _YAML_NULL:
+    """The value after `key:` on its line, typed as PyYAML types it for the forms Hermes writes: a plain scalar
+    (`_plain`), a quoted string (escapes decoded), a one-line flow collection (`_flow`) — or _UNREAD for what
+    this reader does not take (a block scalar, an anchor, an alias, a tag, a flow that does not close on the line);
+    inside a flow, such a value raises _Unsure, which `_scan_block` turns into None. `#` starts a comment only at
+    the start or after a space and outside quotes, as in YAML: `holo#graphic` and `"a #b"` are values."""
+    rest = _strip_comment(rest.strip(" \t"))
+    if rest[:1] in ("'", '"', "{", "["):
+        hit = _flow(rest)
+        if hit is None or rest[hit[1]:].strip(" \t"):
+            return _UNREAD
+        return hit[0]
+    return _plain(rest)
+
+
+def _a_plain_value(value_text):
+    """Is this value on the key's line a plain scalar, which YAML continues on deeper lines?"""
+    return bool(value_text) and value_text[:1] not in ("'", '"', "{", "[", "|", ">", "&", "*", "!")
+
+
+def _scan_block(text, path):
+    """{key: value} of the direct children of the mapping at `path` in config.yaml (`()` is the top level,
+    `("memory",)`, `("plugins", "hermes-memory-store")`), or None when the scanner cannot tell what YAML reads
+    there — the reader behind the config helpers when PyYAML is missing or cannot parse the file. Not a YAML
+    parser: block mappings with plain or quoted keys, and values typed as PyYAML types them (`_scalar`):
+    scalars, a plain scalar continued on deeper lines, one-line flow collections. A flow mapping stands for the
+    block at `path` or at any key on the way to it (`plugins: {hermes-memory-store: {…}}`), or for the whole
+    document. A tab indent is taken although YAML refuses it.
+
+    None — unsure — is not {}: an empty store block means the defaults, and a half-read one let them open the
+    extraction gate or point the pass at another database (second review of the 2.9.7 branch, Codex). It comes
+    on a value of `path` or of a key on the way to it that this reader does not take (a tag, an anchor, a block
+    scalar, an escape YAML does not know, a flow deeper than _FLOW_DEPTH or not closed on its line, a number of
+    _NUMBER_LEN characters or more), a continued plain value with a blank or comment line inside (YAML keeps
+    those as line breaks), a line of that mapping that is not a key or sits at another indent, an indented line
+    outside any mapping, and on a file of several YAML documents or with content on a `---` line.
+
+    A comment line belongs to no block, at any indent: YAML skips it, so a top-level "# Section heading" between
+    `memory:` and its `provider:` does not end the mapping (issue #2: the old block regex stopped there and
+    reported no provider while Hermes ran holographic; the same regex read `plugins:` until 2.9.7). Each mapping's
+    first content line fixes the indent of its children, whatever it holds (review of 2.9.6, Codex: a quoted key
+    the old extractor skipped let a nested key set it); deeper lines belong to a nested value. A key with a value
+    on its line holds no children: the lines under `memory: |` are text, not settings (review of 2.9.7, Codex),
+    and the lines under a plain value continue it, as YAML folds them — `provider: holographic` over
+    `    disabled` is "holographic disabled", not holographic (review of the 2.9.7 branch, Codex). Every definition
+    of `path`, or of a key on the way to it, replaces what an earlier one gave, as in YAML: a second `plugins:`
+    without the store leaves nothing (review of 2.9.7). A key may carry a comment, the file a BOM, and the last
+    line may lack a newline. A document marker is one only in column 0: `---` inside a block scalar is text."""
+    path = tuple(path)
+    try:
+        return _scan_block_or_raise(text, path)
+    except _Unsure:
         return None
-    if rest in _YAML_TRUE or rest in _YAML_FALSE:
-        return rest in _YAML_TRUE
-    digits = rest.replace("_", "")
-    if _YAML_INT.match(rest):
-        return int(digits)
-    if _YAML_OCT.match(rest):
-        return int(digits, 8)
-    if _YAML_HEX.match(rest):
-        return int(digits, 16)
-    if _YAML_FLOAT.match(rest) and any(c.isdigit() for c in rest):
-        return float(digits)
-    return rest
 
 
-def _scan_memory_block(text):
-    """{key: value} of the direct children of `memory:` — the scanner behind
-    `hermes_memory_settings` when PyYAML is missing or cannot parse the file. Not a
-    YAML parser: a block mapping with plain or quoted keys and one-line scalars,
-    typed as PyYAML types the plain forms (`_scalar`); a value it does not read
-    leaves the key out, and a tab indent is taken although YAML refuses it.
+def _scan_block_or_raise(text, path):
+    result, found = {}, not path
+    content = started = ended = False  # a content line seen; a `---` seen; a `...` seen
+    gap = False  # a blank or comment line since the last content line: it ends a continued plain value
+    # [indent, key, indent of its children, opaque: a value on the key's line, continuation lines of a plain
+    # value of a direct child of `path` (or None), the value's first line, a list: its children are `- ` items]
+    stack = []
 
-    A comment line belongs to no block, at any indent: YAML skips it, so a top-level
-    "# Section heading" between `memory:` and its `provider:` does not end the mapping
-    (issue #2: the old block regex stopped there and reported no provider while Hermes
-    ran holographic). The block ends at the first other line that is not indented. Only
-    a direct child counts: the first indented line fixes the indent, whatever it holds
-    (review of 2.9.6, Codex: a quoted key the extractor skipped let a nested key set
-    it), and deeper lines belong to a nested mapping. Every top-level `memory` key
-    replaces what an earlier one gave, as in YAML; one this scanner cannot read
-    (`memory: {…}`, `memory: null`) leaves nothing (second review of 2.9.6, Codex).
-    `memory:` may carry a comment, the file a BOM, and the last line may lack a newline."""
-    out, inside, indent = {}, False, None
-    for line in text.lstrip("\ufeff").splitlines():
-        head = _MEMORY_HEAD_RE.match(line)
-        if head:
-            out, indent = {}, None
-            inside = not _COMMENT_RE.sub("", head.group(1)).strip()
-            continue
-        if not inside:
-            continue
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not line[:1].isspace():
-            inside = False
-            continue
-        lead = line[:len(line) - len(line.lstrip())]
-        if indent is None:
-            indent = lead
-        if lead != indent:
-            continue
-        hit = _MEMORY_KEY_RE.match(line)
-        if hit:
-            value = _scalar(hit.group(4) or "")
+    def on_path():
+        """Is the mapping at the top of the stack `path` or a mapping on the way to it?"""
+        keys = tuple(entry[1] for entry in stack)
+        return path[:len(keys)] == keys
+
+    def close(entry):
+        if entry[4]:
+            value = _plain(" ".join([entry[5]] + entry[4]))
             if value is _UNREAD:
-                out.pop(hit.group(3), None)
+                raise _Unsure
+            result[entry[1]] = value
+
+    for line in _YAML_LINES.split(text.lstrip("﻿")):
+        # YAML's whitespace is space and tab: NBSP and the other Unicode spaces are text to it, and stripping them
+        # moved keys and changed values (third review of the 2.9.7 branch, Codex)
+        body = line.strip(" \t")
+        if not body:
+            gap = True
+            continue
+        if body[0].isspace():
+            raise _Unsure  # a line that starts with a space YAML does not take for one
+        if line.startswith(("---", "...")) and (len(line) == 3 or line[3] in " \t"):
+            if _strip_comment(line[3:].strip(" \t")):
+                raise _Unsure  # `--- {memory: …}`, `--- !tag`: a document on the marker's line
+            if line.startswith("---"):
+                if content or started or ended:
+                    raise _Unsure  # a second document, empty ones too (`---` / `...` / `---`)
+                started = True
             else:
-                out[hit.group(3)] = value
-    return out
+                ended = True
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if body.startswith("#") and not (stack and stack[-1][3] and indent > stack[-1][0]):
+            gap = True
+            continue
+        if ended:
+            raise _Unsure  # content after `...` is another document
+        content = True
+        after_gap, gap = gap, False
+        if (stack and indent == stack[-1][0] and not stack[-1][3] and stack[-1][2] in (None, indent)
+                and (body == "-" or body.startswith(("- ", "-\t")))):
+            # a list at the indent of its key, as PyYAML (and Hermes, saving its config) writes it: `toolsets:`
+            # over `- hermes-cli`. Nothing on `path` lies inside a list: PyYAML reads no store under `plugins:` there
+            stack[-1][2], stack[-1][6] = indent, True
+            continue
+        while stack and indent <= stack[-1][0]:
+            close(stack.pop())
+        if stack:
+            top = stack[-1]
+            if top[3]:
+                if top[4] is not None:
+                    piece = _strip_comment(body, plain=True)
+                    if not piece:
+                        gap = True
+                        continue
+                    if after_gap or _KEY_RE.match(line, indent):
+                        raise _Unsure
+                    top[4].append(piece)
+                    gap = piece != body
+                continue
+            first = top[2] is None
+            if first:
+                top[2] = indent
+            if indent != top[2]:
+                if on_path() and not top[6]:
+                    raise _Unsure
+                continue
+            if body == "-" or body.startswith(("- ", "-\t")):
+                if first or top[6]:
+                    top[6] = True  # a list, as above: `plugins:` over `  - holographic`
+                elif on_path():
+                    raise _Unsure
+                continue
+            if top[6]:
+                if on_path():
+                    raise _Unsure  # a key after list items: not YAML
+                continue
+        elif indent:
+            raise _Unsure
+        hit = _KEY_RE.match(line, indent)
+        if not hit:
+            if not stack and body.startswith("{"):
+                # the whole document as one flow mapping: `{timezone: UTC, memory: {provider: x}}`
+                value = _scalar(body)
+                if value is _UNREAD:
+                    raise _Unsure
+                for name in path:
+                    value = value.get(name) if isinstance(value, dict) else None
+                found, result = True, (dict(value) if isinstance(value, dict) else {})
+                stack.append([indent, "", None, True, None, "", False])
+            elif on_path():
+                raise _Unsure
+            continue
+        key, rest = hit.group(2), hit.group(3) or ""
+        here = tuple(entry[1] for entry in stack) + (key,)
+        value_text = _strip_comment(rest.strip(" \t"))
+        continued = None
+        if path[:len(here)] == here:
+            # `path` or a key on the way to it is defined again: what came before is gone
+            found, result = True, {}
+            if value_text:
+                value = _scalar(value_text)
+                if value is _UNREAD:
+                    raise _Unsure
+                for name in path[len(here):]:
+                    value = value.get(name) if isinstance(value, dict) else None
+                result = dict(value) if isinstance(value, dict) else {}
+        elif found and here[:-1] == path:
+            value = _scalar(rest)
+            if value is _UNREAD:
+                raise _Unsure
+            result[key] = value
+            if _a_plain_value(value_text):
+                continued = []
+                gap = value_text != rest.strip(" \t")  # a comment on the key's line ends the value there
+        stack.append([indent, key, None, bool(value_text), continued, value_text, False])
+    while stack:
+        close(stack.pop())
+    return result
 
 
 def _hermes_plugin_setting(key, home=None):
@@ -442,41 +802,16 @@ def _hermes_plugin_setting(key, home=None):
     return _scan_plugin_setting(text, key)
 
 
-_FLOW_STORE_RE = re.compile(r"^[ \t]+hermes-memory-store:[ \t]*\{([^{}\n]*)\}[ \t]*(?:#.*)?$", re.MULTILINE)
-
-
 def _scan_plugin_setting(text, key):
-    """The line scanner behind `_hermes_plugin_setting` when PyYAML is missing or failed.
-
-    Only a DIRECT child of `hermes-memory-store` counts: the first key line fixes the block's
-    indent, and anything deeper belongs to a nested mapping. A last line without a trailing
-    newline is read like any other, and a one-line flow mapping (`hermes-memory-store:
-    {scope: chat, min_trust_threshold: 0.4}`) is read too — both are valid YAML that the
-    previous scanner silently skipped, which turned a configured floor into the default."""
-    text = text if text.endswith("\n") else text + "\n"
-    section = re.search(r"^plugins:[ \t]*\n((?:[ \t]+.*\n|[ \t]*\n)*)", text, re.MULTILINE)
-    if not section:
+    """`plugins.hermes-memory-store.<key>` by the scanner (`_scan_block`) when PyYAML is missing or failed, as a
+    string like the YAML path gives, or None. Only a direct child of `hermes-memory-store` counts, a one-line flow
+    mapping (`hermes-memory-store: {scope: chat}`) is read, and a comment anywhere no longer ends `plugins:` or
+    the store's block — it did until 2.9.7, and `db_path`, `scope`, `cron_writes` and `min_trust_threshold`
+    after one fell back to their defaults: the pass read another database and said nothing of a split scope."""
+    value = (_scan_block(text, _STORE) or {}).get(key)
+    if value is None or value == "" or isinstance(value, (dict, list)):
         return None
-    flow = _FLOW_STORE_RE.search(section.group(1))
-    if flow:
-        for pair in flow.group(1).split(","):
-            name, sep, value = pair.partition(":")
-            if sep and name.strip().strip("\"'") == key:
-                value = value.strip().strip("\"'")
-                return value or None
-        return None
-    store = re.search(r"^([ \t]+)hermes-memory-store:[ \t]*\n((?:\1[ \t]+.*\n|[ \t]*\n)*)",
-                      section.group(1), re.MULTILINE)
-    if not store:
-        return None
-    body = store.group(2)
-    first = re.search(r"^([ \t]+)\S", body, re.MULTILINE)
-    if not first:
-        return None
-    indent = re.escape(first.group(1))
-    hit = re.search(rf"^{indent}{re.escape(key)}:[ \t]*([^#\n]*)", body, re.MULTILINE)
-    value = hit.group(1).strip().strip("\"'") if hit else ""
-    return value or None
+    return str(value)
 
 
 def _hermes_plugin_db_path(home=None):
@@ -498,6 +833,17 @@ def fact_store_note(home=None):
     know — not because nothing was said (external review, 2026-10-13)."""
     if fact_source() != "holographic":
         return None
+    if ".".join(_STORE) in hermes_config_unread(home):
+        why = ("plugins.hermes-memory-store of config.yaml cannot be read for sure (the file is not readable "
+               "UTF-8, or PyYAML is missing or refuses it and the block has a form the fallback reader does not take)")
+        fix = ("run with Hermes' own Python (it has PyYAML), or write the block in plain `key: value` lines")
+        if os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path"):
+            # the store named in dreaming.json is read (third review of the 2.9.7 branch, Codex: the note said
+            # otherwise); scope and cron_writes stay unknown
+            return (f"{why} — the dream reads the store fact_store_path names, but cannot tell its scope and "
+                    f"cron_writes, so the extraction job stays asleep; {fix}")
+        return (f"{why} — the dream reads no facts and the extraction job stays asleep rather than guess the "
+                f"database, scope and cron_writes; {fix}")
     scope = holographic_scope(home)
     if scope in SPLIT_SCOPES:
         read, keys = chat_stores_settings()
@@ -711,11 +1057,13 @@ def fact_store_path(home=None):
     > `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~` and relative paths are
     expanded the way the provider does it — an install that moved its store
     must not look empty to the dream. A generic source (`sqlite`, `jsonl`) has
-    no default: None until `fact_store_path` is set."""
+    no default: None until `fact_store_path` is set. None too for holographic when
+    the store's block cannot be read for sure (`hermes_config_unread`): the default
+    database is a guess, maybe another one."""
     home = home or HOME
     raw = os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path")
     if not raw:
-        if fact_source() != "holographic":
+        if fact_source() != "holographic" or ".".join(_STORE) in hermes_config_unread(home):
             return None
         raw = _hermes_plugin_db_path(home) or "memory_store.db"
     raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
@@ -1228,8 +1576,9 @@ def load_facts(db=None):
         return []
     path = db or fact_store_path()
     if not path:
-        print(f"[dream] note: fact_source={src} but fact_store_path is not set — no facts",
-              file=sys.stderr)
+        why = ("plugins.hermes-memory-store of config.yaml cannot be read for sure" if src == "holographic"
+               else "fact_store_path is not set")
+        print(f"[dream] note: fact_source={src} but {why} — no facts", file=sys.stderr)
         return []
     if _missing_db(path, "treating the fact store as empty"):
         return []
@@ -3782,7 +4131,7 @@ def memory_usage(mem_md):
         rec = {"chars": n}
         if limit:
             rec["limit"] = int(limit)
-            rec["percent"] = round(100.0 * n / int(limit))
+            rec["percent"] = round(Fraction(100 * n, int(limit)))  # exact: a 400-digit limit overflowed a float
         out[name] = rec
     return out
 
@@ -4383,6 +4732,12 @@ def load_forgotten(db=None, errors=None):
     if fact_source() != "holographic" and not db:
         return {}
     path = db or fact_store_path()
+    if not path:  # the store's settings cannot be read for sure: not "nothing was forgotten" either
+        msg = "plugins.hermes-memory-store of config.yaml cannot be read for sure — tombstones not read"
+        if errors is not None:
+            errors.append(msg)
+        else:
+            print(f"[dream] warn: {msg}", file=sys.stderr)
     try:
         out = _tombstones(path)
     except sqlite3.Error as exc:

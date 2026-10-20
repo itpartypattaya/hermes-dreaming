@@ -411,7 +411,10 @@ config, as everywhere): `$DREAM_FACT_STORE` → `fact_store_path` in `dreaming.j
 `plugins.hermes-memory-store.db_path` from `config.yaml` (PyYAML if present,
 else a narrow scanner) → `$HERMES_HOME/memory_store.db`. `$HERMES_HOME`, `~`
 and relative paths expand the way the provider expands them. The pass, the
-extraction gate and `dream-reject.py` all go through it.
+extraction gate and `dream-reject.py` all go through it. When `config.yaml` is
+there but cannot be read, or the scanner cannot read the store's block for sure
+(`hermes_config_unread`), there is no default: the path is None, the pass reads
+no facts and no tombstones, and `fact_store_note` says why (2.9.7).
 
 **Extraction cursor** (`cache/dream-extract-state.json`) is `(since_ts,
 since_id)`: rows can share a timestamp, and a chunk cut between two of them

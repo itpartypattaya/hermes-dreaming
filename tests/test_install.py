@@ -6,9 +6,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -574,21 +576,25 @@ class MemoryBlockTests(unittest.TestCase):
             "memory:\n  memory_enabled: true\nnext:\n  provider: holographic\n": {"memory_enabled": True},
             "memory:\n# a comment, then nothing indented\nprovider: holographic\n": {},
             "other: 1\n  provider: holographic\n": {},
-            # "#" is a comment only after a space; a quoted value keeps it; a block scalar is not read
+            # "#" is a comment only after a space; a quoted value keeps it; a block scalar leaves the block unread
             "memory:\n  provider: holo#graphic\n": {"provider": "holo#graphic"},
             'memory:\n  provider: "holo #graphic" # note\n': {"provider": "holo #graphic"},
-            "memory:\n  provider: |-\n    holographic\n  memory_char_limit: 5000\n": {"memory_char_limit": 5000},
+            "memory:\n  provider: |-\n    holographic\n  memory_char_limit: 5000\n": None,
             # typed as PyYAML types plain scalars: a number is no bool, "05000" is octal, a quoted number a string
             "memory:\n  write_approval: 1\n  memory_char_limit: 05000\n  user_char_limit: '6000'\n":
                 {"write_approval": 1, "memory_char_limit": 2560, "user_char_limit": "6000"},
-            # every top-level `memory` replaces the one before; one the scanner cannot read leaves nothing
-            "memory:\n# c\n  provider: holographic\nmemory: {provider: none}\n": {},
+            # every top-level `memory` replaces the one before (a one-line flow is read, 2.9.7); one the scanner
+            # cannot read leaves nothing
+            "memory:\n# c\n  provider: holographic\nmemory: {provider: none}\n": {"provider": "none"},
+            "memory: {provider: holographic, write_approval: true}  # flow\n": {"provider": "holographic",
+                                                                                 "write_approval": True},
+            "memory: {provider: {nested: 1}}\n": {"provider": {"nested": 1}},   # nested flows too (review of 2.9.7)
             "memory:\n  provider: holographic\nmemory: null\n": {},
             "memory:\n  provider: holographic\n'memory':\n  provider: none\n": {"provider": "none"},
         }
         for text, want in cases.items():
             with self.subTest(text=text):
-                self.assertEqual(dream._scan_memory_block(text), want)
+                self.assertEqual(dream._scan_block(text, ("memory",)), want)
 
     def test_both_readers_agree(self):
         try:
@@ -640,7 +646,7 @@ class MemoryBlockTests(unittest.TestCase):
             modes = (False, True)
         except ImportError:
             modes = (False,)
-        for raw in ("true", "false", ".inf", ".nan", "0", "-5", '"5000"', "y"):
+        for raw in ("true", "false", ".inf", ".nan", "0", "-5", '"5000"', "y", ".5", "0.99"):   # int(.5) is 0
             for with_yaml in modes:
                 with self.subTest(raw=raw, pyyaml=with_yaml), tempfile.TemporaryDirectory() as tmp:
                     Path(tmp, "config.yaml").write_text(f"memory:\n  memory_char_limit: {raw}\n", encoding="utf-8")
@@ -694,6 +700,347 @@ class MemoryBlockTests(unittest.TestCase):
             Path(tmp, "config.yaml").write_text("memory:\n  provider: \n", encoding="utf-8")
             self.assertEqual(install._memory_provider(Path(tmp), dream), "")
             self.assertFalse(install._write_approval(Path(tmp), dream))
+
+
+# `plugins.hermes-memory-store` read past a comment, as `memory:` in 2.9.6 (2.9.7): the same block regex stopped
+# `plugins:` and the store's block at a comment, so `db_path`, `scope`, `cron_writes` fell back to their defaults
+PLUGINS = {
+    "comment between plugins and store": "plugins:\n# Memory provider settings\n  hermes-memory-store:\n"
+                                         "    db_path: /data/facts.db\n    scope: chat\n",
+    "comment inside the store, column 0": "plugins:\n  hermes-memory-store:\n    db_path: /data/facts.db\n"
+                                          "# --- scope ---\n    scope: chat\n",
+    "comment inside the store, plugin indent": "plugins:\n  hermes-memory-store:\n    db_path: /data/facts.db\n"
+                                               "  # scope below\n    scope: chat\n",
+    "plugins: with a comment": "plugins:  # third-party plugins\n  hermes-memory-store:\n    scope: chat\n",
+    "another plugin first": "plugins:\n  other:\n    x: 1\n\n# holographic\n  hermes-memory-store:\n"
+                            "    cron_writes: false\n    min_trust_threshold: 0.4  # floor\n",
+    "quoted store key": 'plugins:\n  "hermes-memory-store":\n    scope: chat\n',
+    "second plugins wins": "plugins:\n  hermes-memory-store:\n    scope: chat\nplugins:\n  hermes-memory-store:\n"
+                           "    scope: profile\n",
+    "BOM": "﻿plugins:\n  hermes-memory-store:\n    scope: chat\n",
+    "# inside a value": "plugins:\n  hermes-memory-store:\n    db_path: /data/a#b.db\n",
+    "flow mapping": "plugins:\n  hermes-memory-store: {scope: chat, min_trust_threshold: 0.4}  # one line\n",
+    "nested key is not the store's": "plugins:\n  hermes-memory-store:\n    diagnostics:\n      scope: user\n"
+                                     "    db_path: /data/facts.db\n",
+}
+
+
+# The review of 2.9.7 (Codex): the configs it probed, with what PyYAML reads from them — (memory keys, store keys,
+# timezone). A quoted `#` or comma in a flow, a nested flow, a flow parent, a second `plugins:` without the store,
+# `memory: |` text, the document as one flow mapping. None: the scanner cannot read the block for sure
+# (`memory: |`) and says so instead of reading it as empty (second review of the 2.9.7 branch).
+REVIEW_297 = {
+    'comments': ('timezone: Asia/Bangkok\nmemory: # a\n# x\n  provider: holographic\n    # x\n  memory_char_limit: 5000\nplugins: # x\n# x\n  hermes-memory-store:\n  # x\n    db_path: /data/a.db\n# x\n    scope: chat\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Asia/Bangkok')),
+    'siblings_nested': ('extra:\n  memory:\n    provider: wrong\nplugins:\n  x:\n    hermes-memory-store:\n      db_path: /wrong.db\n  hermes-memory-store:\n    db_path: /right.db\n  y:\n    scope: wrong\nmemory:\n  provider: holographic\nafter:\n  memory:\n    provider: wrong\n',
+        ({'provider': 'holographic'}, {'db_path': '/right.db'}, None)),
+    'list_plugins': ('plugins:\n  - name: x\n    hermes-memory-store:\n      db_path: /wrong.db\ntimezone: Asia/Bangkok\n',
+        ({}, {}, 'Asia/Bangkok')),
+    'quoted_space': ('\ufeff"memory" :\n  "provider" : holographic\n  memory_char_limit : 5000\n"plugins" :\n  "hermes-memory-store" :\n    "scope" : chat\n"timezone" : Asia/Bangkok\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'scope': 'chat'}, 'Asia/Bangkok')),
+    'document': ('---\ntimezone: Asia/Bangkok\nmemory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n    scope: chat\n...\n',
+        ({'provider': 'holographic'}, {'scope': 'chat'}, 'Asia/Bangkok')),
+    'flow_hash': ('memory: {provider: "holo #graphic", memory_char_limit: 5000}\nplugins:\n  hermes-memory-store: {db_path: "/data/a #b.db", scope: chat, cron_writes: false}\n',
+        ({'memory_char_limit': 5000, 'provider': 'holo #graphic'}, {'db_path': '/data/a #b.db', 'scope': 'chat', 'cron_writes': False}, None)),
+    'flow_comma': ('memory: {provider: holographic, extra: "a,b", memory_char_limit: 5000}\nplugins:\n  hermes-memory-store: {db_path: "/data/a,b.db", scope: chat, cron_writes: false}\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a,b.db', 'scope': 'chat', 'cron_writes': False}, None)),
+    'flow_nested': ('memory: {provider: holographic, extra: {x: 1}, memory_char_limit: 5000}\nplugins:\n  hermes-memory-store: {scope: chat, extra: {x: 1}, cron_writes: false}\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'scope': 'chat', 'cron_writes': False}, None)),
+    'flow_parent': ('plugins: {hermes-memory-store: {db_path: /data/a.db, scope: chat}}\n',
+        ({}, {'db_path': '/data/a.db', 'scope': 'chat'}, None)),
+    'root_flow': ('{timezone: Asia/Bangkok, memory: {provider: holographic}}\n',
+        ({'provider': 'holographic'}, {}, 'Asia/Bangkok')),
+    'parent_replaced': ('plugins:\n  hermes-memory-store:\n    db_path: /old.db\n    scope: chat\n    min_trust_threshold: 0.9\nplugins:\n  other: {}\n',
+        ({}, {}, None)),
+    'parent_null': ('plugins:\n  hermes-memory-store:\n    scope: chat\nplugins: null\n',
+        ({}, {}, None)),
+    'block_scalar': ('memory: |\n  provider: holographic\n  memory_char_limit: 5000\nplugins: |\n  hermes-memory-store:\n    db_path: /text.db\n    scope: chat\n',
+        (None, None, None)),
+    'dash': ('memory:\n  memory_char_limit: -5\nplugins:\n  hermes-memory-store:\n    db_path: -facts.db\n    min_trust_threshold: -0.4\n',
+        ({'memory_char_limit': -5}, {'db_path': '-facts.db', 'min_trust_threshold': -0.4}, None)),
+    'CRLF': ('timezone: Asia/Bangkok\r\nmemory: # a\r\n# x\r\n  provider: holographic\r\n    # x\r\n  memory_char_limit: 5000\r\nplugins: # x\r\n# x\r\n  hermes-memory-store:\r\n  # x\r\n    db_path: /data/a.db\r\n# x\r\n    scope: chat\r\n',
+        ({'memory_char_limit': 5000, 'provider': 'holographic'}, {'db_path': '/data/a.db', 'scope': 'chat'}, 'Asia/Bangkok')),
+}
+
+
+class PluginBlockTests(unittest.TestCase):
+    """2.9.7: the plugin settings, `timezone` and the core check read the way `memory:` is read since 2.9.6."""
+
+    def _setting(self, text, key, with_yaml):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
+            with mock.patch.dict(sys.modules, {} if with_yaml else {"yaml": None}):
+                return dream._hermes_plugin_setting(key, tmp)
+
+    def test_both_readers_agree_on_the_store_settings(self):
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        for name, text in PLUGINS.items():
+            for key in ("db_path", "scope", "cron_writes", "min_trust_threshold"):
+                with self.subTest(case=name, key=key):
+                    scanned = self._setting(text, key, with_yaml=False)
+                    if yaml is not None:
+                        self.assertEqual(scanned, self._setting(text, key, with_yaml=True))
+                    store = {"comment between plugins and store": {"db_path": "/data/facts.db", "scope": "chat"},
+                             "another plugin first": {"cron_writes": "False", "min_trust_threshold": "0.4"},
+                             "second plugins wins": {"scope": "profile"},
+                             "# inside a value": {"db_path": "/data/a#b.db"},
+                             "flow mapping": {"scope": "chat", "min_trust_threshold": "0.4"},
+                             "nested key is not the store's": {"db_path": "/data/facts.db"},
+                             }.get(name, {"db_path": "/data/facts.db", "scope": "chat"} if "inside the store" in name
+                                   else {"scope": "chat"})
+                    self.assertEqual(scanned, store.get(key))
+
+    def test_the_review_configs_read_as_pyyaml_reads_them(self):
+        from unittest import mock
+        for name, (text, (memory, store, timezone)) in REVIEW_297.items():
+            with self.subTest(case=name), mock.patch.dict(sys.modules, {"yaml": None}):
+                got_memory = dream._scan_block(text, ("memory",))
+                got_store = dream._scan_block(text, ("plugins", "hermes-memory-store"))
+                if memory is None:
+                    self.assertIsNone(got_memory)
+                else:
+                    self.assertEqual({k: got_memory[k] for k in memory.keys() | got_memory.keys() if k in
+                                      ("memory_char_limit", "user_char_limit", "provider", "write_approval")}, memory)
+                if store is None:
+                    self.assertIsNone(got_store)
+                else:
+                    self.assertEqual({k: got_store[k] for k in got_store if k in
+                                      ("db_path", "scope", "cron_writes", "min_trust_threshold")}, store)
+                self.assertEqual((dream._scan_block(text, ()) or {}).get("timezone"), timezone)
+        # a file of several YAML documents, which Hermes does not load, is not read
+        self.assertIsNone(dream._scan_block("plugins:\n  hermes-memory-store:\n    scope: chat\n---\ntimezone: UTC\n",
+                                            ("plugins", "hermes-memory-store")))
+        # escapes in double quotes are decoded; one YAML does not know leaves the block unread
+        self.assertEqual(dream._scan_block('memory:\n  provider: "holo\\u0067raphic"\n', ("memory",)),
+                         {"provider": "holographic"})
+        self.assertIsNone(dream._scan_block('memory:\n  provider: "a\\qb"\n', ("memory",)))
+
+    def test_the_branch_review_cases(self):
+        """Review of the 2.9.5–2.9.7 branch (Codex): an escape JSON lacks, `---` inside block text, a plain value
+        continued on the next line, a deep flow, a huge number, base-60 and binary numbers."""
+        store = ("plugins", "hermes-memory-store")
+        # an escape YAML knows is decoded; one it does not know leaves the block unread (second review: leaving the
+        # key out kept an earlier value of it)
+        self.assertEqual(dream._scan_block('plugins:\n  hermes-memory-store: {extra: "a\\x41b", db_path: /right.db, '
+                                           'scope: chat, cron_writes: false}\n', store),
+                         {"extra": "aAb", "db_path": "/right.db", "scope": "chat", "cron_writes": False})
+        self.assertIsNone(dream._scan_block('plugins:\n  hermes-memory-store: {extra: "a\\qb", scope: chat}\n', store))
+        # `---` in block text is text: a document marker stands in column 0
+        text = ("memory: |\n  ---\n  provider: none\nplugins:\n  hermes-memory-store:\n    db_path: /right.db\n"
+                "    cron_writes: false\n")
+        self.assertEqual(dream._scan_block(text, store), {"db_path": "/right.db", "cron_writes": False})
+        self.assertIsNone(dream._scan_block(text, ("memory",)))   # `memory: |` — text, unread
+        # a plain value continued on deeper lines is folded, as YAML does — not its first line
+        self.assertEqual(dream._scan_block("memory:\n  provider: holographic\n    disabled\n  write_approval: true\n",
+                                           ("memory",)), {"provider": "holographic disabled", "write_approval": True})
+        self.assertEqual(dream._scan_block("plugins:\n  hermes-memory-store:\n    db_path: /data/family\n"
+                                           "      archive.db\n", store), {"db_path": "/data/family archive.db"})
+        # a deep flow is not followed, and nothing crashes: the block holding it is unread, the others are read
+        deep = "other: " + "[" * 1100 + "0" + "]" * 1100 + "\nmemory:\n  provider: holographic\n"
+        self.assertEqual(dream._scan_block(deep, ("memory",)), {"provider": "holographic"})
+        self.assertIsNone(dream._scan_block(deep, ()))
+        # numbers as PyYAML types them; a huge one is a limit, not a crash
+        self.assertEqual(dream._scan_block("memory:\n  memory_char_limit: 1:30\n  user_char_limit: 0b1000000000000\n",
+                                           ("memory",)), {"memory_char_limit": 90, "user_char_limit": 4096})
+        self.assertTrue(dream._a_char_limit(10 ** 400) and not dream._a_char_limit(-(10 ** 400)))
+        self.assertEqual(dream._plain("-.5"), "-.5")
+        self.assertEqual(dream._plain(".5"), 0.5)
+
+    def test_unsure_is_closed(self):
+        """Second review of the 2.9.7 branch (Codex): a half-read block let the defaults in — another database,
+        `scope: profile`, cron writes on — or kept an earlier value of a repeated key. What the scanner cannot read
+        for sure is unread (None), not empty."""
+        store = ("plugins", "hermes-memory-store")
+        unsure = {
+            # a repeated key whose last value is not read: the first one must not stand
+            "flow repeat": ("memory: {provider: holographic, provider: !!str none}\n", ("memory",)),
+            "flow repeat approval": ("memory: {write_approval: true, write_approval: !!bool false}\n", ("memory",)),
+            "block repeat": ("plugins:\n  hermes-memory-store:\n    cron_writes: false\n    cron_writes: !bad true\n",
+                             store),
+            # a flow too deep to follow next to the settings
+            "deep sibling": ("plugins:\n  hermes-memory-store: {extra: " + "[" * 66 + "0" + "]" * 66 +
+                             ", db_path: /right.db, scope: chat, cron_writes: false}\n", store),
+            # a continued plain value with a blank or comment line inside: YAML keeps a line break there
+            "blank in continuation": ("plugins:\n  hermes-memory-store:\n    db_path: /data/family\n\n"
+                                      "      archive.db\n", store),
+            "comment in continuation": ("memory:\n  provider: holographic\n    # note\n    disabled\n", ("memory",)),
+            "comment then continuation": ("memory:\n  provider: holographic  # note\n    disabled\n", ("memory",)),
+            # several documents, empty ones too, and a document on the marker's line
+            "empty first document": ("---\n...\n---\nmemory:\n  provider: holographic\n", ("memory",)),
+            "two markers": ("---\n---\nmemory:\n  provider: holographic\n", ("memory",)),
+            "after the end marker": ("memory:\n  provider: none\n...\nmemory:\n  provider: holographic\n", ("memory",)),
+            "flow on the marker": ("--- {memory: {provider: holographic}}\n", ("memory",)),
+            # a line of the block that is not a key, at another indent, keys after list items, a whole document
+            # indented
+            "not a key": ("memory:\n  provider holographic\n", ("memory",)),
+            "keys after a list": ("plugins:\n  - holographic\n  hermes-memory-store:\n    scope: chat\n", store),
+            "odd indent": ("memory:\n    provider: none\n  provider: holographic\n", ("memory",)),
+            "indented document": ("  memory:\n    provider: holographic\n", ("memory",)),
+            # a number too long to type in bounded time
+            "long base-60": ("memory:\n  memory_char_limit: 1" + ":0" * 60 + "\n", ("memory",)),
+            "huge int": ("memory:\n  memory_char_limit: " + "9" * 400 + "\n", ("memory",)),
+        }
+        for name, (text, path) in unsure.items():
+            with self.subTest(case=name):
+                self.assertIsNone(dream._scan_block(text, path))
+        # what is still read: a list where the store would be has no store in it, as PyYAML reads it
+        for text in ("plugins:\n  hermes-memory-store:\n    - db_path: /wrong.db\n",
+                     "plugins:\n- hermes-memory-store:\n    db_path: /wrong.db\n", "plugins:\n  - holographic\n"):
+            with self.subTest(text=text):
+                self.assertEqual(dream._scan_block(text, store), {})
+        # a list at its key's indent, as Hermes saves config.yaml, and a clean last document end
+        self.assertEqual(dream._scan_block("toolsets:\n- hermes-cli\n- name: x\n  y: 1\nmemory:\n  provider: holographic"
+                                           "\n  extra:\n  - a\n  write_approval: true\n...\n", ("memory",)),
+                         {"provider": "holographic", "extra": None, "write_approval": True})
+        self.assertEqual(dream._scan_block("---  # config\nmemory:\n  provider: holographic\n", ("memory",)),
+                         {"provider": "holographic"})
+        start = time.monotonic()
+        self.assertIs(dream._plain("1" + ":0" * 80000), dream._UNREAD)
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_an_unread_store_is_not_the_default_store(self):
+        """Without PyYAML, a store block the scanner cannot read gives no database, no tombstones, and a note that
+        shuts the extraction gate — not `memory_store.db`, `scope: profile` and cron writes on."""
+        from unittest import mock
+        text = ("memory:\n  provider: holographic\nplugins:\n  hermes-memory-store: {extra: " + "[" * 66 + "0" +
+                "]" * 66 + ", db_path: /right.db, scope: chat, cron_writes: false}\n")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp),                 mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}),                 mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
+            Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
+            self.assertEqual(dream.hermes_config_unread(tmp), ("plugins.hermes-memory-store",))
+            self.assertIsNone(dream.fact_store_path(tmp))
+            self.assertIn("cannot be read for sure", dream.fact_store_note(tmp) or "")
+            errors = []
+            with mock.patch.object(dream, "list_chat_stores", return_value={}):
+                self.assertEqual(dream.load_forgotten(errors=errors), {})
+            self.assertTrue(errors)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(dream.load_facts(), [])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                install.check_fact_source(Path(tmp), dream, install.Report())
+            self.assertIn("cannot be read for sure", out.getvalue())
+            Path(tmp, "config.yaml").write_text("memory:\n  provider: holographic\n  provider: !!str none\n",
+                                                encoding="utf-8")
+            self.assertIsNone(install._memory_provider(Path(tmp), dream))
+            self.assertEqual(dream.hermes_memory_settings(tmp), {})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                install.check_fact_source(Path(tmp), dream, install.Report())
+            self.assertIn("memory: of", out.getvalue())
+            self.assertNotIn("memory.provider is", out.getvalue())
+
+    def test_the_third_review_cases(self):
+        """Third review of the 2.9.7 branch (Codex): a dict that differs from PyYAML's — a flow key with `:` and no
+        space, a non-YAML space, a quote inside a plain value, a timestamp. Each is unread now, or read as YAML does."""
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        store = ("plugins", "hermes-memory-store")
+        unsure = {
+            "flow key with a colon": ("memory: {provider:holographic}\n", ("memory",)),
+            "flow key with a colon, after the real one": (
+                "plugins: {hermes-memory-store: {cron_writes: false, cron_writes:true}}\n", store),
+            "empty flow key": ("memory: {provider: holographic, : none}\n", ("memory",)),
+            "NBSP in the indent": ("memory:\n  provider: holographic\n", ("memory",)),
+            "NBSP before the key": (" memory:\n  provider: holographic\n", ("memory",)),
+            "timestamp": ("plugins:\n  hermes-memory-store:\n    db_path: 2026-10-20T00:00:00Z\n", store),
+            "date": ("plugins:\n  hermes-memory-store:\n    db_path: 2026-10-20\n", store),
+        }
+        for name, (text, path) in unsure.items():
+            with self.subTest(case=name):
+                self.assertIsNone(dream._scan_block(text, path))
+        read = {
+            # a non-YAML space is text: kept in a value, and it keeps a number a string, as in YAML
+            "NBSP after a path": ("plugins:\n  hermes-memory-store:\n    db_path: /data/family.db \n", store,
+                                  {"db_path": "/data/family.db "}),
+            "NBSP after a limit": ("memory:\n  memory_char_limit: 5000 \n", ("memory",),
+                                   {"memory_char_limit": "5000 "}),
+            # a quote inside a plain value is a character, and ` #` still starts a comment
+            "quote inside a plain value": ("plugins:\n  hermes-memory-store:\n    db_path: /data/family 'archive #1'.db\n",
+                                           store, {"db_path": "/data/family 'archive"}),
+            # a quoted key may touch its colon, as in JSON
+            "JSON-like flow": ('memory: {"provider":"holographic"}\n', ("memory",), {"provider": "holographic"}),
+        }
+        for name, (text, path, want) in read.items():
+            with self.subTest(case=name):
+                self.assertEqual(dream._scan_block(text, path), want)
+                if yaml is not None:
+                    node = yaml.safe_load(text)
+                    for key in path:
+                        node = node[key]
+                    self.assertEqual(node, want)
+        self.assertTrue(dream.hermes_enabled(dream._scan_block("memory:\n  write_approval: 1 \n",
+                                                               ("memory",))["write_approval"]))
+        self.assertFalse(dream._a_char_limit(0.5) or dream._a_char_limit("5000 "))
+
+    def test_an_unreadable_config_is_not_a_missing_one(self):
+        """Third review of the 2.9.7 branch (Codex): a non-UTF-8 byte made config.yaml read as "no config", and the
+        pass went to the default database. A store named in dreaming.json is read, and the note says so."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp), \
+                mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}), \
+                mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}):
+            self.assertEqual(dream._hermes_config_text(tmp), "")
+            self.assertEqual(dream.hermes_config_unread(tmp), ())
+            Path(tmp, "config.yaml").write_bytes(b"memory:\n  provider: holographic  # \xff\n"
+                                                 b"plugins:\n  hermes-memory-store:\n    db_path: /right.db\n")
+            self.assertIsNone(dream._hermes_config_text(tmp))
+            self.assertEqual(dream.hermes_config_unread(tmp), ("memory", "plugins.hermes-memory-store"))
+            self.assertEqual(dream.hermes_memory_settings(tmp), {})
+            self.assertIsNone(dream.fact_store_path(tmp))
+            self.assertIn("not readable UTF-8", dream.fact_store_note(tmp) or "")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                install.check_fact_source(Path(tmp), dream, install.Report())
+            self.assertIn("cannot read", out.getvalue())
+            self.assertNotIn("without PyYAML", out.getvalue())
+            with mock.patch.dict(dream.CONFIG, {"fact_store_path": "/named.db"}):
+                self.assertTrue((dream.fact_store_path(tmp) or "").endswith("named.db"))
+                self.assertIn("reads the store fact_store_path names", dream.fact_store_note(tmp) or "")
+
+    def test_a_huge_char_limit_does_not_crash_the_pass(self):
+        """Second review of the 2.9.7 branch (Codex): the limit passed the check and `memory_usage` overflowed a
+        float on it."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            mem = Path(tmp, "memories", "MEMORY.md")
+            mem.parent.mkdir()
+            mem.write_text("hello", encoding="utf-8")
+            with mock.patch.object(dream, "HOME", tmp), \
+                    mock.patch.object(dream, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 10 ** 400}):
+                usage = dream.memory_usage(str(mem))
+            self.assertEqual(usage["memories/MEMORY.md"]["percent"], 0)
+            with mock.patch.object(dream, "HOME", tmp), \
+                    mock.patch.object(dream, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 8}):
+                self.assertEqual(dream.memory_usage(str(mem))["memories/MEMORY.md"]["percent"], 62)
+
+    def test_timezone_is_read_without_pyyaml(self):
+        """Before 2.9.7 `timezone` had no fallback: without PyYAML the pass ran on UTC."""
+        from unittest import mock
+        text = "# Hermes\ntimezone: Asia/Bangkok  # home\nmemory:\n  provider: holographic\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"yaml": None}):
+                self.assertEqual(dream._hermes_config(tmp).get("timezone"), "Asia/Bangkok")
+                self.assertIsNone(dream._hermes_config(tmp).get("memory"))     # a nested block is not read here
+
+    def test_the_core_check_says_only_what_it_finds(self):
+        cases = {"        skip_memory=False,\n": "natively", "    skip_memory = False,  # cron gets memory\n": "natively",
+                 "        skip_memory=True,\n": "keeps memory providers out", "def run():\n    pass\n": "cannot tell"}
+        for source, said in cases.items():
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmp:
+                sched = Path(tmp, "hermes-agent", "cron", "scheduler.py")
+                sched.parent.mkdir(parents=True)
+                sched.write_text(source, encoding="utf-8")
+                r, out = install.Report(), io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    install.check_core(Path(tmp), r)
+                self.assertIn(said, out.getvalue())
 
 
 if __name__ == "__main__":

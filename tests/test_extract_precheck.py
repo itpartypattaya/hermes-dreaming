@@ -241,6 +241,29 @@ class ExtractPrecheckTests(DreamFixture):
         (self.home / "config.yaml").write_text("memory:\n# heading\n  provider: holographic\n", encoding="utf-8")
         self.assertIn("messages", self._main())
 
+    def test_a_config_the_scanner_cannot_read_for_sure_keeps_the_gate_shut(self):
+        """Second review of the 2.9.7 branch (Codex): without PyYAML a half-read store block let the defaults —
+        cron writes on — open the gate, and a repeated provider kept its first value. Several documents, empty ones
+        too, shut it with PyYAML as well: PyYAML refuses the file and the scanner reads it."""
+        from unittest import mock
+        self._four_messages()
+        deep = "[" * 66 + "0" + "]" * 66
+        configs = {
+            "repeated provider": ("memory: {provider: holographic, provider: !!str none}\n", (True,)),
+            "repeated cron_writes": ("memory:\n  provider: holographic\nplugins:\n  hermes-memory-store: "
+                                     "{cron_writes: true, cron_writes: !!bool false}\n", (True,)),
+            "deep flow by the store": ("memory:\n  provider: holographic\nplugins:\n  hermes-memory-store: {extra: "
+                                       + deep + ", scope: chat, cron_writes: false}\n", (True,)),
+            "empty first document": ("---\n...\n---\nmemory:\n  provider: holographic\n", (False, True)),
+        }
+        for name, (text, modes) in configs.items():
+            for no_yaml in modes:
+                with self.subTest(config=name, no_yaml=no_yaml):
+                    (self.home / "config.yaml").write_text(text, encoding="utf-8")
+                    with mock.patch.dict(sys.modules, {"yaml": None} if no_yaml else {}):
+                        self.assertEqual(self._main(), {"wakeAgent": False})
+                    self.assertIn("extraction skipped", self.stderr)
+
     def test_unanswered_hand_over_is_handed_over_again(self):
         # A turn that fails after the pre-check printed (model error, cron worker
         # crash) used to lose its chunk: the cursor was committed on print.

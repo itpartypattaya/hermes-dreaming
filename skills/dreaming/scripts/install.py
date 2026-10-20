@@ -117,12 +117,15 @@ def check_dry_run(dream, cfg, r):
 
 def _memory_provider(home, dream):
     """`memory.provider` of Hermes config.yaml, read as the pass reads it (`dream.hermes_memory_settings`:
-    YAML when PyYAML is there, else a scanner that skips comments); None when the file cannot be read.
+    YAML when PyYAML is there, else a scanner that skips comments); None when the file cannot be read, or
+    `memory:` cannot be read for sure without PyYAML (`dream.hermes_config_unread`).
     The installer had its own block regex, which stopped at a top-level comment inside `memory:` and
     reported no provider while Hermes ran holographic (issue #2)."""
     try:
         (home / "config.yaml").read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+    if "memory" in dream.hermes_config_unread(str(home)):
         return None
     provider = dream.hermes_memory_settings(str(home)).get("provider")
     return str(provider).strip() if provider is not None else ""
@@ -221,7 +224,12 @@ def check_fact_source(home, dream, r):
                  "(it feeds the holographic store only)")
         return
     provider = _memory_provider(home, dream)
-    if provider is None:
+    readable = dream._hermes_config_text(str(home))  # "" no file, None unreadable
+    if provider is None and readable and "memory" in dream.hermes_config_unread(str(home)):
+        r.warn(f"memory: of {home / 'config.yaml'} cannot be read for sure without PyYAML — the extraction job "
+               "stays asleep rather than guess the provider; run the check with Hermes' own Python (it has "
+               "PyYAML) or write the block in plain `key: value` lines")
+    elif provider is None:
         r.warn(f"cannot read {home / 'config.yaml'} — check that memory.provider is set")
     elif provider != "holographic":
         # Hermes ships the holographic provider but leaves memory.provider empty.
@@ -243,6 +251,8 @@ def check_fact_source(home, dream, r):
                       "fact_source to 'none' and keep the nightly memory review only")
         r.warn(f"memory.provider is {provider or 'not set'} — there is no holographic fact store, so "
                f"promotions stay empty. {advice}")
+    elif not path:
+        pass  # the store's block cannot be read for sure: fact_store_note below says so
     elif os.path.exists(path):
         r.ok(f"memory provider 'holographic', fact store present ({path})")
         _check_holographic_version(home, r)
@@ -320,8 +330,15 @@ def check_core(home, r):
     except OSError:
         r.warn(f"no {sched} — cannot tell whether cron sessions may touch memory")
         return
-    if re.search(r"^ *skip_memory=False,?$", text, re.MULTILINE):
+    # The check reads the core's source, so it says only what it finds: a layout it does not know is "cannot
+    # tell", not "upgrade" — a reformatted `skip_memory = False` would otherwise have told a current Hermes it was
+    # too old (2.9.7).
+    setting = r"^[ \t]*skip_memory[ \t]*=[ \t]*{}[ \t]*,?[ \t]*(?:#.*)?$"
+    if re.search(setting.format("False"), text, re.MULTILINE):
         r.ok("core gives cron jobs memory natively (Hermes >= 0.21) — the extraction job can use fact_store")
+    elif not re.search(setting.format("True"), text, re.MULTILINE):
+        r.warn(f"cannot tell from {sched} whether cron sessions get memory (no `skip_memory=` line this check "
+               "knows) — Hermes >= 0.21 gives them memory; if the extraction job stores nothing, check that")
     else:
         r.warn("this Hermes keeps memory providers out of cron sessions: the nightly dream works, "
                "but the extraction job cannot call fact_store — upgrade to Hermes >= 0.21, or "
