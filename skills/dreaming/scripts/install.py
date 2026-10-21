@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -55,6 +56,7 @@ def _load_dream(home, cfg_path):
     process environment."""
     spec = importlib.util.spec_from_file_location("_dream_for_install", SKILL_DIR / "scripts" / "dream.py")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # registered, as an import is: a setting written on it then raises (3.0.1)
     spec.loader.exec_module(mod)
     mod.load_for_home(home, str(cfg_path))
     return mod

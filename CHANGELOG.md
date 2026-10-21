@@ -3,6 +3,17 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.0.1 — 2026-10-21
+
+### Fixed
+
+- **A setting written on the module raises in every loader, not only after an import.** 3.0.0 made
+  `dream.MIN_SCORE = 1` an error, because it changes nothing the pass reads. The guard took effect only when
+  dream.py was registered in `sys.modules`, and the extraction gate, `dream-reject.py` and `install.py` load it by
+  path without that: there the write passed, read back the new value, and the pass went on with `SETTINGS` (Codex
+  review of 3.0.0). No loader writes a setting today, so no run changed; each now registers the module as an
+  import does, and a test calls the three loaders as they run.
+
 ## 3.0.0 — 2026-10-21
 
 A structural release: `dream.py` gets smaller and every loader configures it the same way. The nightly pass works

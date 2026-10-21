@@ -44,6 +44,7 @@ def _dream():
         spec = importlib.util.spec_from_file_location(
             "_dream_for_reject", os.path.join(os.path.dirname(os.path.abspath(__file__)), "dream.py"))
         mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod  # registered, as an import is: a setting written on it then raises (3.0.1)
         spec.loader.exec_module(mod)
         mod.load_for_home(HOME)
         _DREAM = mod

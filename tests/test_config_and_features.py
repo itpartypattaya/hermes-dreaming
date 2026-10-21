@@ -1688,6 +1688,26 @@ class SettingsObjectTests(unittest.TestCase):
                 delattr(dream, name)
         self.assertEqual(dream.SETTINGS.MIN_SCORE, self._saved.MIN_SCORE)
 
+    def test_the_loaders_of_the_gates_and_install_get_the_same_guard(self):
+        """The extraction gate, dream-reject.py and install.py load dream.py by path, not by import. Unregistered,
+        the module had no guard: `mod.MIN_SCORE = 0.99` read back 0.99 while the pass used SETTINGS (Codex review
+        of 3.0.0). Each loader is called as it runs."""
+        from test_dream import ROOT, _load
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            extract = _load("_guard_extract", ROOT / "scripts" / "dream-extract-precheck.py")
+            extract.DREAM, extract.HOME = ROOT / "scripts" / "dream.py", home
+            reject = _load("_guard_reject", ROOT / "scripts" / "dream-reject.py")
+            reject.HOME, reject._DREAM = str(home), None
+            install = _load("_guard_install", ROOT / "scripts" / "install.py")
+            loaded = {"extraction gate": extract._dream(), "dream-reject.py": reject._dream(),
+                      "install.py": install._load_dream(home, home / "config.yaml")}
+            for who, mod in loaded.items():
+                with self.subTest(who):
+                    with self.assertRaises(AttributeError):
+                        mod.MIN_SCORE = 0.99
+                    self.assertEqual(mod.MIN_SCORE, mod.SETTINGS.MIN_SCORE)
+
     def test_a_misspelt_setting_raises(self):
         with self.assertRaises(AttributeError):
             dream.SETTINGS.MIN_SCOR = 1

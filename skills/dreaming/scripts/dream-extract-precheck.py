@@ -94,6 +94,7 @@ DEFAULTS = {"max_messages": 200, "max_chars": 40000, "min_messages": 15,
 def _dream():
     spec = importlib.util.spec_from_file_location("_dream_for_extract", str(DREAM))
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # registered, as an import is: a setting written on it then raises (3.0.1)
     spec.loader.exec_module(mod)
     # dream.py takes its home from HERMES_HOME when imported. Point it at the
     # home this gate settled on and load its config, or a gate installed into
