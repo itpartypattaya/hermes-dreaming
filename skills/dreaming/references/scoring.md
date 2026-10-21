@@ -49,6 +49,15 @@ same statement said differently («переехали» / «переехал», 
 «Лиссабон»). `_stem()` strips the frequent endings and then cuts to 6 chars
 (5 for Latin) — a plain prefix cut collapsed «контент» and «контейнер».
 
+**A negated message is no mention of the same fact (3.1.0).** Negations are
+stopwords, so «Михаил не любит острое» shared every stem with «Михаил любит
+острое» and corroborated it. A message that says the fact with the opposite
+polarity (the same test as for conflicts below) is skipped for that fact's score
+and for the decay of a memory entry; it still counts for any other fact. A `state.db`
+that is no database (or a damaged one) stops the pass, and the gate reports
+`dream_error`; it used to read as "no messages table" and the night ran with
+nothing to corroborate. A busy or locked one is skipped with a warning, as before.
+
 **Every language the holographic store reads (2.5.0).** Latin words are stemmed
 without diacritics («szkoła» / «szkole», «öğretmen» / «ogretmeni» — one form
 was ASCII and the other not, and they never met). A rare word is a mention alone
@@ -194,7 +203,12 @@ both contain ("does not eat" against "eats"; the word after a modal counts too,
 long entry is first narrowed to its sentences that say nearly the same (stem
 Jaccard >= 0.5). A word one text says both ways ("likes peanuts but does not
 like almonds") is compared together with the word after it, the thing it is said
-of. Reported as `fact_negations` / `memory_negations`, and such a candidate is no
+of, when both texts speak of that thing (3.1.0). Where negations are compared, a short Latin word loses its third-person or
+plural "-s" first («eats» / «eat»; not «class», «bus», «Paris») — not in the general
+stem, where it would part Dutch «fiets» / «fietsen» and meet German «Dachs» / «Dach».
+Chinese writes no spaces: what 不 / 没(有) / 别 / 未 / 无(法) negates is the up to three
+characters after it, compared where both texts hold them («不同意» / «同意» flips; 无锡,
+没收, 别墅 are the same word on both sides) (3.1.0). Reported as `fact_negations` / `memory_negations`, and such a candidate is no
 duplicate for fuzzy dedupe, for an identical head or a verbatim substring ("use X"
 inside "do not use X"), or for the reject list either. An entry that holds a
 secret or an instruction shows nothing of itself: `entry` is a placeholder,

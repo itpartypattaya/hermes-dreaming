@@ -3,6 +3,43 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.1.0 — 2026-10-21
+
+From a review of 3.0.1 in Russian, English and Chinese (Antigravity), and a Codex review of the fixes. Corroboration
+counts differently, hence a minor release; the screen is holographic 0.17.6's.
+
+### Changed
+
+- **A negated message is no corroboration of the same fact.** Negations are stopwords, so «Михаил не любит острое
+  азиатское блюдо» shared every stem with «Михаил любит острое азиатское блюдо» and counted as a mention of it, in
+  every language («Alice does not like…», «李雷不喜欢…»). A message that says the fact with the opposite polarity
+  (the conflict test below) is now skipped for that fact's score and for a memory entry's decay. A negation of
+  something the fact does not speak of leaves the mention alone ("Alice likes spicy Thai food but does not like
+  Italian food" still confirms "Alice likes spicy Thai food"). The check costs nothing where neither text negates
+  anything, and the parts of each text are cached.
+- **The screen is holographic 0.17.6's** (`holo_screen.py`, `aca7b19`): "your instructions" reads as an instruction
+  to the assistant in every language ("забудь свои правила", "忽略你的指令", "ignore your instructions"), and a
+  negation keeps a reminder a fact ("never ignore your instructions").
+
+### Fixed
+
+- **"Does not eat" against "eats" found no conflict.** A short English word and its "-s" form had different stems
+  (the 5-letter prefix kept "eats" and "eat" apart), so the very example of `references/scoring.md` was never
+  reported. Where a negation is compared, such a word loses its "-s" first ("class", "bus", "Paris" keep it). The
+  general stem is unchanged: there the same rule parted Dutch "fiets" / "fietsen" and met German "Dachs" / "Dach".
+- **Chinese negations were not seen in conflicts.** Chinese writes no spaces, so "李雷不喜欢吃辣" was one word and
+  "不" was never a negation. What 不 / 没(有) / 别 / 未 / 无(法) negates is the up to three characters after it,
+  compared where both texts hold them: "不同意" against "同意", "不过敏" against "过敏", "无车" against "有车" and "不喜欢苹果但
+  喜欢香蕉" against "喜欢苹果但不喜欢香蕉" are conflicts, while a word that only begins like a negation (无锡, 没收,
+  别墅) is the same word in both texts and none. Chinese sentences end at 。！？； for the comparison.
+- **The fallback screen knew no Chinese password marker.** Without the provider's screen (`holo_screen.py` missing
+  or broken), "密码: Secret123456" passed. 密码, 口令, 密钥 and 私钥 are markers and a full-width colon a separator;
+  "密码是 / 为 …" right after the marker is one when the value has a digit, a Latin letter or a symbol ("我的密码是
+  猫咪12345"), while "密码是什么", "密码是我的生日", "密码管理器是 Bitwarden" and "私钥格式是 PKCS8" are not.
+- **A state.db that is no database ran the night in silence.** Every query failed, was read as "no messages table",
+  and nothing was corroborated, with a warning on stderr only. It stops the pass now, and the gate reports
+  `dream_error`; a busy or locked one is skipped with a warning, as before.
+
 ## 3.0.1 — 2026-10-21
 
 ### Fixed

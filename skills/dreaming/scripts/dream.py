@@ -788,10 +788,13 @@ class Settings:
     __slots__ = _SETTING_NAMES
 
 
+SETTINGS_GENERATION = 0  # bumped by configure(): what is cached by the settings is cached by this
+
+
 def configure(cfg):
     """Build the Settings of `cfg` (a merged config, see load_config()) and make them the module's. The whole
     object is swapped in at the end: a config that fails half-way leaves the previous settings as they were."""
-    global SETTINGS
+    global SETTINGS, SETTINGS_GENERATION
     s = Settings()
     s.CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
@@ -897,6 +900,7 @@ def configure(cfg):
     except (TypeError, ValueError):
         s.MEMORY_LOSS_ALERT_FRACTION = 0.25
     SETTINGS = s
+    SETTINGS_GENERATION += 1
 
 
 def load_for_home(home, cfg_path=None):
@@ -1339,6 +1343,16 @@ def load_messages(db, days):
     out = []
     c = _conn(db)
     try:
+        # A file that is no database (or a damaged one) failed every query below, read as "no messages table", and
+        # the night ran with nothing to corroborate in silence (Antigravity review of 3.0.1). It stops the pass; a
+        # busy or locked one is only skipped, as before.
+        try:
+            c.execute("select count(*) from sqlite_master").fetchone()
+        except sqlite3.OperationalError as exc:
+            print(f"[dream] warn: {db} cannot be read now ({exc}) — corroboration skipped", file=sys.stderr)
+            return []
+        except sqlite3.DatabaseError as exc:
+            raise sqlite3.DatabaseError(f"{db} is not a readable database ({exc})") from exc
         msg_cols = _table_columns(c, "messages")
         sess_cols = _table_columns(c, "sessions")
         if not msg_cols:
@@ -1516,8 +1530,10 @@ def _distinctive_stem(token):
     return ("latin", latin[:DISTINCTIVE_PREFIX_LATIN]) if latin.isascii() else ("other", _stem(token))
 
 
-def corroborate(item_tokens, messages):
-    """How many different days / messages mention the token set: (mentions, ref_days, last_ts).
+def corroborate(item_tokens, messages, content=None):
+    """How many different days / messages mention the token set: (mentions, ref_days, last_ts). With *content* (the
+    fact's text), a message that says the same with the opposite polarity ("не любит" against "любит") is no mention
+    (3.1.0, Antigravity review of 3.0.1).
 
     Match: overlap ≥2 STEMS, or ≥1 "distinctive" stem. Stems, because Russian
     inflects: «Мы окончательно переехали, в Лиссабоне…» did not corroborate
@@ -1525,17 +1541,17 @@ def corroborate(item_tokens, messages):
     review, 2026-10-07). "Distinctive" means rare enough that one hit is
     evidence — and 8 characters is not rare in Russian (41-45% of words reach
     it: «например», «обязательно»), hence a higher bar for non-Latin."""
-    return _corroborate(item_tokens, messages, False)[:3]
+    return _corroborate(item_tokens, messages, False, content)[:3]
 
 
-def corroborate_with_evidence(item_tokens, messages):
+def corroborate_with_evidence(item_tokens, messages, content=None):
     """`corroborate` plus the samples: (mentions, ref_days, last_ts, samples), where samples are up to
     EVIDENCE_MAX {day, text} snippets from different days — provenance for the reviewer ("why does the dream
     think this is confirmed?"). Two functions, not a flag that changes the shape of the answer (3.0)."""
-    return _corroborate(item_tokens, messages, True)
+    return _corroborate(item_tokens, messages, True, content)
 
 
-def _corroborate(item_tokens, messages, evidence):
+def _corroborate(item_tokens, messages, evidence, content=None):
     if not item_tokens:
         return 0, 0, None, []
     item_stems = _stems(item_tokens)
@@ -1547,7 +1563,7 @@ def _corroborate(item_tokens, messages, evidence):
         inter = item_stems & _stems(m["tokens"])
         rare = bool(distinctive) and not distinctive.isdisjoint(
             _distinctive_stem(t) for t in m["tokens"] if not is_gram(t))
-        if rare or _mentions(inter):
+        if (rare or _mentions(inter)) and not (content and polarity_differs(content, m["content"])):
             mentions += 1
             # A message still counts as a mention, but its text travels to the
             # agent only when it is clean: the fact was screened by
@@ -1577,7 +1593,7 @@ def signals_for_fact(f, messages):
     tags = [t for t in re.split(r"[,\s]+", f.get("tags") or "") if t]
 
     toks = sig_tokens(f.get("content"))
-    mentions, ref_days, last_ts, evidence = corroborate_with_evidence(toks, messages)
+    mentions, ref_days, last_ts, evidence = corroborate_with_evidence(toks, messages, f.get("content"))
 
     days_updated = (now - updated).total_seconds() / 86400 if updated else 999
     days_last_ref = (now.timestamp() - last_ts) / 86400 if last_ts else 999
@@ -1778,6 +1794,23 @@ def _stem(token):
     return t[:STEM_CHARS_OTHER]
 
 
+def _latin_root(word):
+    """A Latin word without its third-person or plural "-s", for comparing what two texts negate only: "eats" /
+    "eat", "likes" / "like" — the 5-character prefix kept them apart, so "does not eat" never met "eats" (Antigravity
+    review of 3.0.1). Not in the general stem: Dutch "fiets" / "fietsen" would part there and German "Dachs" meet
+    "Dach" (Codex review). Not "-ss", "-us", "-is" (class, bus, Paris), nor a word of three letters (gas)."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
+@functools.lru_cache(maxsize=65536)
+def _neg_stem(word):
+    """The stem a negation is compared by: _stem, after _latin_root for a Latin word."""
+    latin = latin_fold(word)
+    return _stem(_latin_root(latin)) if latin.isascii() and not is_gram(word) else _stem(word)
+
+
 def _stems(tokens):
     """Stems for fuzzy comparison.
 
@@ -1864,8 +1897,20 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
 # from dream_lang.py (3.0)
 (NEGATION_WORDS, _MODALS) = (
     _LANG.NEGATION_WORDS, _LANG._MODALS)
-_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n。！？；]+")
 POLARITY_MIN_JACCARD = 0.5
+
+
+@functools.lru_cache(maxsize=16384)
+def _sentence_stems(text, generation):
+    """The stems of *text* by the current settings' stopwords. *generation* (SETTINGS_GENERATION with the id of
+    SETTINGS) keys the cache to them: an id alone may be reused by the next Settings (second Codex pass)."""
+    return frozenset(_stems(sig_tokens(text)))
+
+
+@functools.lru_cache(maxsize=16384)
+def _words_of(text):
+    return tuple(_plain_words(text))
 
 
 def _plain_words(text):
@@ -1880,26 +1925,27 @@ def _real_word(words, start):
     return None
 
 
+@functools.lru_cache(maxsize=65536)
 def _negations(words):
-    """[(index, stem, "не ест")] — the first real word after each negation, and the next one as well when the
-    first is a modal."""
+    """((index, stem, "не ест"), …) — the first real word after each negation, and the next one as well when the
+    first is a modal. *words* is a tuple (_words_of): the answer is cached."""
     out = []
     for i, w in enumerate(words):
         if w not in NEGATION_WORDS:
             continue
         j = _real_word(words, i + 1)
         while j is not None:
-            out.append((j, _stem(words[j]), f"{w} {words[j]}"))
+            out.append((j, _neg_stem(words[j]), f"{w} {words[j]}"))
             if words[j] not in _MODALS:
                 break
             j = _real_word(words, j + 1)
-    return out
+    return tuple(out)
 
 
 def _two_way(words, negs):
     """Stems this text says both negated and plain."""
     at = {j for j, _, _ in negs}
-    return {s for _, s, _ in negs} & {_stem(w) for k, w in enumerate(words) if k not in at and len(w) >= 3}
+    return {s for _, s, _ in negs} & {_neg_stem(w) for k, w in enumerate(words) if k not in at and len(w) >= 3}
 
 
 def _negated(words, both, two_way):
@@ -1912,25 +1958,72 @@ def _negated(words, both, two_way):
         if s in two_way:
             k = _real_word(words, j + 1)
             obj = words[k] if k is not None else ""
-            out.setdefault(f"{s} {_stem(obj) if obj else ''}", f"{phrase} {obj}".strip())
+            if obj and _neg_stem(obj) not in both:
+                # "likes Thai food but does not like Italian food" against "likes Thai food": the negated thing is not
+                # one the other text speaks of (Codex review of 3.1.0).
+                continue
+            out.setdefault(f"{s} {_neg_stem(obj) if obj else ''}", f"{phrase} {obj}".strip())
         else:
             out.setdefault(s, phrase)
     return out
 
 
+# Chinese writes no spaces: what a negation negates is what follows it, up to three characters ("不喜欢苹果" →
+# "喜欢苹"). It counts when the other text holds those characters too, so a word that only begins like a negation
+# (无锡, 没收, 别墅) is the same word on both sides and says nothing, and "不同意" against "同意" is a flip (Antigravity
+# and Codex reviews of 3.0.1 / 3.1.0).
+_CJK_NEGATION_RE = re.compile(r"(?:没有|沒有|无法|無法|不|没|沒|别|別|未|无|無)([\u3400-\u9fff\uf900-\ufaff]{1,3})")
+
+
+def _cjk_negated(text):
+    """{"喜欢苹": "不喜欢苹"}: what *text* negates, by the characters after each negation."""
+    out = {}
+    for m in _CJK_NEGATION_RE.finditer(text):
+        out.setdefault(m.group(1), m.group(0))
+    return out
+
+
+_NEGATION_ANY_RE = None
+
+
+@functools.lru_cache(maxsize=16384)
+def _negates_anything(text):
+    """Whether *text* holds a negation at all: no polarity can differ between two texts that have none."""
+    global _NEGATION_ANY_RE
+    if _NEGATION_ANY_RE is None:
+        words = "|".join(sorted((re.escape(w) for w in NEGATION_WORDS), key=len, reverse=True))
+        _NEGATION_ANY_RE = re.compile(r"(?<!\w)(?:" + words + r")(?!\w)|" + _CJK_NEGATION_RE.pattern, re.IGNORECASE)
+    return bool(_NEGATION_ANY_RE.search(_norm(text or "").replace("ё", "е")))
+
+
 def polarity_flip(content, chunk):
     """(what the fact negates, what the entry negates) when they disagree about a word both contain, or None."""
+    # Every matching message of a fact is checked against it, and every message against every fact: the parts of a
+    # text are cached (Codex review of 3.1.0: ten times the corroboration time on a busy install otherwise).
+    if not (_negates_anything(content or "") or _negates_anything(chunk or "")):
+        return None
     sentences = [s for s in _SENTENCE_SPLIT_RE.split(chunk or "") if s.strip()]
     if len(sentences) > 1:
-        item = _stems(sig_tokens(content))
-        sentences = [s for s in sentences
-                     if (st := _stems(sig_tokens(s))) and item and len(item & st) / len(item | st) >= POLARITY_MIN_JACCARD]
+        item = _sentence_stems(content or "", (SETTINGS_GENERATION, id(SETTINGS)))
+        sentences = [s for s in sentences if (st := _sentence_stems(s, (SETTINGS_GENERATION, id(SETTINGS)))) and item
+                     and len(item & st) / len(item | st) >= POLARITY_MIN_JACCARD]
         if not sentences:
             return None
-    mine, theirs = _plain_words(content), _plain_words(". ".join(sentences))
-    both = {_stem(w) for w in mine} & {_stem(w) for w in theirs}
+    other = ". ".join(sentences) if sentences else (chunk or "")
+    mine, theirs = _words_of(content or ""), _words_of(other)
+    both = {_neg_stem(w) for w in mine} & {_neg_stem(w) for w in theirs}
     two_way = _two_way(mine, _negations(mine)) | _two_way(theirs, _negations(theirs))
     a, b = _negated(mine, both, two_way), _negated(theirs, both, two_way)
+    mine_text, their_text = _norm(content), _norm(other)
+    na, nb = _cjk_negated(mine_text), _cjk_negated(their_text)
+    # One text negates it and the other says it without that negation: "无锡市" against "无锡，" is the same city
+    # (second Codex pass), "不同意" against "同意" is a flip.
+    for what, phrase in na.items():
+        if what in their_text and phrase not in their_text:
+            a[f"zh {what}"] = phrase
+    for what, phrase in nb.items():
+        if what in mine_text and phrase not in mine_text:
+            b[f"zh {what}"] = phrase
     if set(a) == set(b):
         return None
     return sorted(a.values()), sorted(b.values())
@@ -2678,8 +2771,8 @@ SECRET_RE = re.compile(
 PASSWORD_MARKER_RE = re.compile(
     r"(?:парол[ьяию]|password|passwd|passphrase|seed[- ]?фраза|seed[- ]?phrase|"
     r"секретн\w{0,4}\s+(?:ключ|код)|api[- ]?ключ|private\s+key|2fa[- ]?код|"
-    r"пин[- ]?код|\bпин\b|\bpin\b|код\s+от)"
-    r"(?:[^\n:=—–]{0,40}?)(?P<sep>[:=—–]|\s-\s)\s*(?P<value>\S{4,})",
+    r"пин[- ]?код|\bпин\b|\bpin\b|код\s+от|密码|密碼|口令|密钥|密鑰|私钥|私鑰)"
+    r"(?:[^\n:=—–：]{0,40}?)(?P<sep>[:=—–：]|\s-\s)\s*(?P<value>\S{4,})",
     re.IGNORECASE)
 # …and these say "we changed it", not "here it is". A colon or "=" hands the
 # value over whatever comes first ("Changed password: hunter2", "поменяла
@@ -2706,9 +2799,15 @@ def _looks_like_credential(value):
     return not _CYRILLIC_RE.search(value) or bool(_GLUED_DIGIT_RE.search(value))
 
 
+_ZH_PASSWORD_IS_RE = re.compile(r"(?:密码|密碼|口令|密钥|密鑰|私钥|私鑰)\s*(?:是|为|為)\s*(?P<value>[^\s，。,;；]{4,})")
+_ZH_VALUE_RE = re.compile(r"[0-9A-Za-z!@#$%^&*_+=~|\\/<>{}\[\]]")
+
+
 def _password_marker_unsafe(text):
+    if any(_ZH_VALUE_RE.search(m.group("value")) for m in _ZH_PASSWORD_IS_RE.finditer(text)):
+        return True
     for marker in PASSWORD_MARKER_RE.finditer(text):
-        if marker.group("sep").strip() in (":", "="):
+        if marker.group("sep").strip() in (":", "=", "："):
             return True
         ends = [m.end() for m in _SENTENCE_END_RE.finditer(text, 0, marker.start())]
         if not PASSWORD_EVENT_RE.search(text[(ends[-1] if ends else 0):marker.end()]):
@@ -3490,7 +3589,7 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
             # lie — the answer was given, it is the queue that is stuck.
             continue
         toks = sig_tokens(entry)
-        mentions, ref_days, last_ts = corroborate(toks, messages)
+        mentions, ref_days, last_ts = corroborate(toks, messages, entry)
         days_since = (now_ts - last_ts) / 86400 if last_ts else None
         if not (mentions == 0 or (days_since is not None and days_since > decay_days)):
             continue

@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.17.4 (`827c639`), `__init__.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.17.6 (`aca7b19`), `__init__.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.17.4"
-SOURCE_COMMIT = "827c639"
+SOURCE_VERSION = "0.17.6"
+SOURCE_COMMIT = "aca7b19"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -33,57 +33,80 @@ def _alternatives(latin: str, other: str) -> str:
 # Classic injection phrasing only: "ignore previous instructions", not "Anton asks me to ignore style rules in drafts".
 _RE_INJECTION = re.compile(_alternatives(
     # en
-    r"(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+)?"
-    r"(?:previous|prior|above|earlier|preceding|system|original|all)\s+(?:instructions?|prompts?|rules|guidelines)"
+    r"(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?"
+    r"(?:your\s+(?:own\s+)?(?:(?:previous|prior|above|earlier|preceding|system|original|all)\s+)?|(?:the\s+)?"
+    r"(?:previous|prior|above|earlier|preceding|system|original|all)\s+)(?:instructions?|prompts?|rules|guidelines)"
     r"|your\s+(?:new\s+)?instructions\s+are|you\s+are\s+now\s+(?:in\s+)?(?:dan|developer|jailbreak)"
     # In each language "all" or "previous" is enough, as in English ("Ignora todas las instrucciones"; review
-    # 2026-10-16): "ignore the instructions in the README" stays a fact.
+    # 2026-10-16): "ignore the instructions in the README" stays a fact. So is "your" (0.17.6, Antigravity review:
+    # "забудь свои правила", "忽略你的指令" and "ignore your instructions" were stored).
     # es, pt
     r"|(?:ignora|ignore|olvida|omite|esque[çc]a)\s+(?:todas\s+(?:las\s+|as\s+)?(?:instrucciones|instru[çc][õo]es)"
-    r"|(?:las\s+|as\s+)?(?:instrucciones|instru[çc][õo]es)\s+(?:anteriores|previas|pr[ée]vias))"
+    r"|(?:las\s+|as\s+)?(?:instrucciones|instru[çc][õo]es)\s+(?:anteriores|previas|pr[ée]vias)"
+    r"|(?:todas\s+)?(?:las\s+|as\s+)?(?:tus|tuas|vuestras)\s+(?:instrucciones|instru[çc][õo]es|reglas|regras))"
+    r"|(?:ignore|esque[çc]a)\s+(?:todas\s+)?(?:as\s+)?suas\s+(?:instru[çc][õo]es|regras)"
     # fr
     r"|(?:ignore[zr]?|oublie[zr]?)\s+(?:toutes\s+(?:les\s+)?(?:instructions|consignes)"
-    r"|(?:les\s+)?(?:instructions|consignes)\s+(?:pr[ée]c[ée]dentes|ant[ée]rieures))"
+    r"|(?:les\s+)?(?:instructions|consignes)\s+(?:pr[ée]c[ée]dentes|ant[ée]rieures)"
+    r"|(?:toutes\s+)?(?:tes|vos)\s+(?:anciennes\s+|pr[ée]c[ée]dentes\s+)?(?:instructions|consignes|r[èe]gles))"
     # it
-    r"|(?:ignora|dimentica)\s+(?:tutte\s+(?:le\s+)?istruzioni|(?:le\s+)?istruzioni\s+(?:precedenti|anteriori))"
+    r"|(?:ignora|dimentica)\s+(?:tutte\s+(?:le\s+)?istruzioni|(?:le\s+)?istruzioni\s+(?:precedenti|anteriori)"
+    r"|(?:tutte\s+)?(?:le\s+)?(?:tue|vostre)\s+(?:precedenti\s+)?(?:istruzioni|regole))"
     # de
-    r"|(?:ignoriere|ignorier|vergiss|ignorieren\s+sie|vergessen\s+sie)\s+(?:alle\s+(?:vorherigen\s+|bisherigen\s+|vorigen\s+|obigen\s+)?"
-    r"|(?:die\s+)?(?:vorherigen|bisherigen|vorigen|obigen)\s+)(?:Anweisungen|Instruktionen|Regeln)"
+    r"|(?<!ich\s)(?:ignoriere|ignorier|vergiss|ignorieren\s+sie|vergessen\s+sie)\s+(?:alle\s+(?:vorherigen\s+|bisherigen\s+|vorigen\s+|obigen\s+)?"
+    r"|(?:die\s+)?(?:vorherigen|bisherigen|vorigen|obigen)\s+"
+    r"|(?:alle\s+)?(?:deine|eure)\s+(?:vorherigen\s+|bisherigen\s+|vorigen\s+|obigen\s+)?)"
+    r"(?:Anweisungen|Instruktionen|Regeln)"
+    r"|(?:ignorieren|vergessen)\s+sie\s+(?:alle\s+)?ihre\s+(?:vorherigen\s+|bisherigen\s+|vorigen\s+|obigen\s+)?"
+    r"(?:Anweisungen|Instruktionen|Regeln)"
     # nl
-    r"|(?:negeer|vergeet)\s+(?:alle\s+(?:eerdere\s+|vorige\s+|voorgaande\s+)?|(?:de\s+)?(?:eerdere|vorige|voorgaande)\s+)"
+    r"|(?<!ik\s)(?:negeer|vergeet)\s+(?:alle\s+(?:eerdere\s+|vorige\s+|voorgaande\s+)?|(?:de\s+)?(?:eerdere|vorige|voorgaande)\s+"
+    r"|(?:al\s+)?(?:je|jouw|uw)\s+(?:eerdere\s+|vorige\s+|voorgaande\s+)?)"
     r"(?:instructies|regels)"
     # pl
     r"|(?:zignoruj|ignoruj|zapomnij)\s+(?:o\s+)?(?:(?:wszystkie|wszystkich)\s+(?:poprzednie\s+|poprzednich\s+)?"
-    r"|(?:poprzednie|poprzednich|wcze[śs]niejsze|wcze[śs]niejszych)\s+)(?:instrukcje|instrukcjach|polecenia|poleceniach)"
+    r"|(?:poprzednie|poprzednich|wcze[śs]niejsze|wcze[śs]niejszych)\s+"
+    r"|(?:wszystkie\s+|wszystkich\s+)?(?:swoje|twoje|wasze|swoich|twoich|waszych)\s+"
+    r"(?:poprzednie\s+|poprzednich\s+|wcze[śs]niejsze\s+|wcze[śs]niejszych\s+)?)"
+    r"(?:instrukcje|instrukcjach|polecenia|poleceniach)"
     # tr: the object first, "önceki tüm talimatları yok say"
     r"|(?:[öo]nceki\s+(?:t[üu]m\s+|b[üu]t[üu]n\s+)?|(?:t[üu]m|b[üu]t[üu]n)\s+)"
     r"(?:talimatlar[ıi]|komutlar[ıi]|kurallar[ıi])\s+(?:yok\s+say|g[öo]rmezden\s+gel|unut)"
+    r"|(?:senin|sizin)\s+(?:t[üu]m\s+|b[üu]t[üu]n\s+)?(?:talimat|komut|kural)lar[ıi]n(?:[ıi]z)?[ıi]"
+    r"\s+(?:yok\s+say(?:[ıi]n)?|g[öo]rmezden\s+gel(?:in)?|unut(?:un)?)"
     # id
     r"|(?:abaikan|lupakan)\s+(?:semua\s+(?:instruksi|perintah|aturan)"
-    r"|(?:instruksi|perintah|aturan)\s+(?:sebelumnya|terdahulu))",
+    r"|(?:instruksi|perintah|aturan)\s+(?:sebelumnya|terdahulu)"
+    r"|(?:semua\s+)?(?:instruksi|perintah|aturan)(?:mu|\s+(?:kamu|anda|kalian)))",
     # ru
-    r"(?:игнорируй|забудь|отмени)\s+(?:все\s+)?(?:предыдущие\s+|прежние\s+|системные\s+)?(?:инструкции|правила|указания)"
+    r"(?:игнорируй(?:те)?|забудь(?:те)?|отмени(?:те)?)\s+(?:все\s+)?(?:свои\s+|твои\s+|ваши\s+)?(?:предыдущие\s+|прежние\s+|системные\s+)?"
+    r"(?:инструкции|правила|указания)"
     r"|системный\s+промпт\s*[:：]"
     # zh: "忽略之前的所有指令" (ignore all previous instructions), "系统提示词：" (system prompt:)
-    r"|(?:忽略|无视|無視|忘记|忘記)掉?(?:之前|以前|先前|上面|以上|前面|所有|全部|系统|系統)的?(?:所有|全部)?的?"
+    r"|(?:忽略|无视|無視|忘记|忘記)掉?(?:(?:你|您)(?:自己)?的?(?:之前|以前|先前|上面|以上|前面|所有|全部|系统|系統)?"
+    r"|之前|以前|先前|上面|以上|前面|所有|全部|系统|系統)的?(?:所有|全部)?的?"
     r"(?:指令|指示|提示词|提示詞|规则|規則)|(?:系统|系統)提示(?:词|詞)?\s*[:：]"
     # ja: "以前の指示をすべて無視して"
-    r"|(?:(?:以前|前|これまで|上記)の(?:すべての|全ての)?|すべての|全ての)(?:指示|命令|ルール)を(?:すべて|全て)?(?:無視|忘れ)"
+    r"|(?:(?:以前|前|これまで|上記|あなた|君|きみ|お前)の(?:すべての|全ての)?|すべての|全ての)(?:指示|命令|ルール)を"
+    r"(?:すべて|全て)?(?:無視|忘れ)"
     r"|システムプロンプト\s*[:：]"
     # ko: "이전의 모든 지시를 무시해"
-    r"|(?:이전\s*(?:의\s*)?(?:모든\s*)?|모든\s*)(?:지시|명령|규칙|지침)\S*\s*무시|시스템\s*프롬프트\s*[:：]"
+    r"|(?:(?:이전|너|당신|네)\s*(?:의\s*)?(?:모든\s*)?|모든\s*)(?:지시|명령|규칙|지침)\S*\s*무시|시스템\s*프롬프트\s*[:：]"
     # th: "เพิกเฉยต่อคำสั่งก่อนหน้าทั้งหมด"
     r"|(?:เพิกเฉย(?:ต่อ)?|ละเว้น|ไม่ต้องสนใจ|ลืม)\s*(?:คำสั่ง|คำแนะนำ|กฎ)"
-    r"(?:(?:ทั้งหมด)?\s*(?:ก่อนหน้า|ที่ผ่านมา|ข้างต้น)|ทั้งหมด)"
+    r"(?:(?:ทั้งหมด)?\s*(?:ก่อนหน้า|ที่ผ่านมา|ข้างต้น)|ทั้งหมด|(?:ทั้งหมด)?\s*ของ(?:คุณ|เธอ|นาย))"
     r"|พรอมต์ระบบ\s*[:：]"
     # hi: "पिछले सभी निर्देशों को अनदेखा करो"
-    r"|(?:पिछल[ेी]\s+(?:सभी\s+|सारे\s+)?|(?:सभी|सारे)\s+)(?:निर्देशों|निर्देश|नियमों)\s+(?:को\s+)?"
+    r"|(?:पिछल[ेी]\s+(?:सभी\s+|सारे\s+)?|(?:सभी|सारे)\s+|(?:अपने|तुम्हारे|आपके)\s+(?:सभी\s+|सारे\s+|पिछले\s+)?)"
+    r"(?:निर्देशों|निर्देश|नियमों|नियम)\s+(?:को\s+)?"
     r"(?:अनदेखा|नज़रअंदाज़|नजरअंदाज|भूल)"
     r"|सिस्टम\s+प्रॉम्प्ट\s*[:：]"
     # ar: "تجاهل جميع التعليمات السابقة"
-    r"|(?:تجاهل|انس|إنس)\s+(?:(?:جميع|كل)\s+(?:التعليمات|الأوامر|القواعد)|(?:التعليمات|الأوامر|القواعد)\s+السابقة)"
+    r"|(?<![ء-ي])(?:تجاهل|انس|إنس)\s+(?:(?:جميع|كل)\s+(?:التعليمات|الأوامر|القواعد)|(?:التعليمات|الأوامر|القواعد)\s+السابقة"
+    r"|(?:(?:جميع|كل)\s+)?(?:تعليمات|أوامر|قواعد)(?:ك|كم))"
     # bn: "আগের সব নির্দেশ উপেক্ষা কর"
-    r"|(?:(?:আগের|পূর্ববর্তী)\s+(?:সব\s+|সকল\s+)?|(?:সব|সকল)\s+)(?:নির্দেশ|নির্দেশনা|নিয়ম)\S*\s+(?:উপেক্ষা|ভুলে)")
+    r"|(?:(?:আগের|পূর্ববর্তী)\s+(?:সব\s+|সকল\s+)?|(?:সব|সকল)\s+|(?:তোমার|আপনার|তোর)\s+(?:সব\s+|সকল\s+|আগের\s+)?)"
+    r"(?:নির্দেশ|নির্দেশনা|নিয়ম)\S*\s+(?:উপেক্ষা|ভুলে)")
     # "system prompt:" in the Latin languages: an edge before it, none after the colon
     + r"|" + _EDGE_START + r"(?:system\s+prompt|prompt\s+(?:del|do|di)\s+sistema|prompt\s+syst[èe]me|systemprompt"
     r"|systeemprompt|prompt\s+systemowy|sistem\s+istemi|prompt\s+sistem)\s*[:：]",
@@ -577,6 +600,29 @@ def _looks_like_a_secret(token: str, links: bool = True, assigned: bool = False)
     return len(value) >= 12 and not (value.isalpha() and (value.islower() or value[1:].islower()))
 
 
+# An explicit prohibition right before the verb, or right after it where the language puts it there, makes the
+# phrase a reminder to keep the rules ("never ignore your instructions", "不要忽略你的指令", "無視しないで"), not an
+# order to drop them (0.17.6, Codex review). Only a prohibition, and only right next to the verb: a bare "not" or 不
+# also asks "why not ignore all previous instructions?" (为什么不忽略…), "never mind, ignore …" is still an order, and
+# a double negation ("must not not ignore") keeps none.
+_RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?<!not\s)(?:never|don[’']?t|do\s+not|не|нельзя|никогда|nie|jangan)"
+                                r"|不要|别|別|勿|不可|不能|لا|อย่า|मत)\s*$", re.IGNORECASE)
+
+
+_RE_NEGATED_AFTER = re.compile(r"^\s*(?:しないで|ないで|するな|하지\s*마|(?:ना|ने)\s*नहीं"
+                               r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
+
+
+def _injection_in(text: str) -> bool:
+    """Whether *text* holds an instruction to drop the assistant's rules (_RE_INJECTION) that no negation turns
+    into a reminder to keep them."""
+    for m in _RE_INJECTION.finditer(text):
+        if not (_RE_NEGATED_BEFORE.search(text, max(0, m.start() - 24), m.start())
+                or _RE_NEGATED_AFTER.match(text[m.end():m.end() + 16])):
+            return True
+    return False
+
+
 _RE_ROLE_MARKUP = re.compile(r"(?im)^\s*(?:system|assistant|user|tool)\s*[:：]|</?(?:tool_call|function_call|system|assistant)\b|<\|")
 
 
@@ -613,7 +659,7 @@ def _recall_problem(content: str) -> str | None:
     text = (content or "").strip()
     if _RE_ROLE_MARKUP.search(text):
         return "chat-role or tool-call markup"
-    if _RE_INJECTION.search(text) or _RE_EXFILTRATION.search(text):
+    if _injection_in(text) or _RE_EXFILTRATION.search(text):
         return "an instruction to the assistant (quoted or not)"
     if _has_credential(text):
         return "a credential with its value"
