@@ -393,7 +393,16 @@ their own cooldown ends — long enough for a rewrite to find them.
 `cache/dream-seen.json` (new_facts,
 fact_decays, conflicts — keyed by text fingerprint, marked only after the
 caps, pruned after two cooldowns), `cache/dream-rejected.json`,
-`cache/dream-snapshot.json`. All 0600; broken JSON is fail-soft.
+`cache/dream-snapshot.json`. All 0600, written whole through a temporary file. A state
+file that is not a JSON object is moved aside to `<file>.corrupt-<UTC time>` with a
+warning and the pass runs without it (since the review of 2.9.8; it used to be read as empty, silently, and
+the next write buried it). Only a run that holds the state lock moves a file aside;
+`dream-reject.py --list` reads without the lock and leaves a broken list as it is. A
+set-aside copy may hold a fact's text, cut anywhere: the first forget sweep after a
+`forget` deletes every `*.corrupt-*` copy, later sweeps delete one that mentions a
+forgotten fact (by id, fingerprint or verbatim text); one it cannot delete is an error,
+and the wipe stays owed until the next run finishes it. A missing file is a fresh install. A broken
+`dreaming.json` stops the pass with `dream_error`.
 
 **Acknowledgement.** A mark is provisional until an agent turn confirms it.
 `dream-seen.json` carries a `_pending` record of the last pass (`generated_at`

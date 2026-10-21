@@ -255,6 +255,25 @@ def load_config(path=None):
     return merged
 
 
+def config_problem(path=None):
+    """Why dreaming.json cannot be used, in one line, or None — None also when there is no file (the defaults are the
+    documented answer to that). `load_config` still reads past a broken file with a warning, for `--dry-run`,
+    `--explain` and `install.py --check`; the nightly pass and the extraction gate stop on it instead: run on the
+    defaults, a stray comma emptied `trusted_chat_ids`, and the night asked up to 15 "still relevant?" questions
+    and moved the extraction cursor past every group message (review of 2.9.8)."""
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return f"config {path} cannot be used ({type(exc).__name__}: {exc})"
+    if not isinstance(data, dict):
+        return f"config {path} cannot be used (its root is a {type(data).__name__}, not an object)"
+    return None
+
+
 def _a_char_limit(value):
     """A memory char limit worth taking from config.yaml: a positive finite number. Not a bool — `true` is an int
     to Python and was a limit of one character, "memory at 100000%" (third review of 2.9.6, Codex) — and not
@@ -1121,12 +1140,26 @@ def _parse_excluded_threads(env_value, cfg_value):
     return out
 
 
+# UTC by any of its names needs no zone database: without the `tzdata` package (Windows, slim containers) zoneinfo
+# knows no names at all, and the default "UTC" was reported as an unknown zone on every run.
+_UTC_NAMES = {"utc", "etc/utc", "gmt", "etc/gmt", "z", "zulu", "universal", "etc/universal"}
+
+
 def _tz(name):
-    if ZoneInfo is not None and name:
+    if not name or str(name).strip().lower() in _UTC_NAMES:
+        return timezone.utc
+    if ZoneInfo is not None:
         try:
             return ZoneInfo(name)
         except Exception:  # noqa: BLE001 — unknown zone → UTC with a warning
-            print(f"[dream] warn: unknown timezone {name!r}, using UTC", file=sys.stderr)
+            hint = ""
+            try:
+                import zoneinfo
+                if not zoneinfo.available_timezones():
+                    hint = " (this Python has no zone database: pip install tzdata)"
+            except Exception:  # noqa: BLE001 — the hint is optional
+                pass
+            print(f"[dream] warn: unknown timezone {name!r}, using UTC{hint}", file=sys.stderr)
     return timezone.utc
 
 
@@ -2881,15 +2914,8 @@ def keywords_needed_items(safe, fact_source_name):
 
 
 def load_rejected(path):
-    """Read the reject list. Missing / broken JSON — fail-soft: run without it."""
-    if not path:
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """Read the reject list. Missing — run without it; broken — moved aside with a warning (`_load_state_file`)."""
+    return _load_state_file(path)
 
 
 def is_rejected(content, rejected):
@@ -2993,16 +3019,7 @@ def prune_seen(bucket, now, cooldown_days=None):
 
 
 def load_seen(path):
-    if not path:
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)}
+    return {k: v for k, v in _load_state_file(path).items() if isinstance(v, dict)}
 
 
 # ---------------------------------------------------------------------------
@@ -3675,12 +3692,7 @@ def _snapshot_sizes(value):
 
 
 def load_snapshot(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return _load_state_file(path)
 
 
 _PROBE_SENTENCE_RE = re.compile(r"[.;!?。；！？\n]+")
@@ -3976,15 +3988,8 @@ def pending_alert(pending, seen, now):
 def _load_asked_state(path):
     """{entry_key: {"at", "confirmed"?, "stems"?}}. A legacy value (a bare ISO
     date — the format before confirmations existed) reads as {"at": value}."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
     out = {}
-    for k, v in data.items():
+    for k, v in _load_state_file(path).items():
         if isinstance(v, str):
             out[k] = {"at": v}
         elif isinstance(v, dict) and v.get("at"):
@@ -4629,17 +4634,90 @@ def _write_private(path, text, append=False):
     """Dream files contain private facts — create with mode 0600.
 
     `os.open(..., 0o600)` applies the mode only on CREATION, so a diary created
-    earlier kept 0644 (live case). chmod is enforced explicitly."""
+    earlier kept 0644 (live case). chmod is enforced explicitly.
+
+    A whole-file write goes to a temporary file beside the target and is renamed over it: truncating in place left
+    an empty or half-written file when the gate's timeout killed the pass or the disk filled up, and the next reader
+    took it for "no state" — every rejection and cooldown gone, silently (review of 2.9.8; `dream-reject.save_state`
+    has done this since 2.7.2). A symlinked target is written through, not replaced. Appends stay appends."""
+    path = os.path.realpath(path)
     owner = _owner_of(path) or _owner_of(os.path.dirname(path) or ".")
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "a" if append else "w", encoding="utf-8") as f:
-        f.write(text)
+    if append:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(text)
+    else:
+        tmp = f"{path}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     try:
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        if os.name == "posix":  # elsewhere there is no mode to set; on POSIX a file of facts stays readable
+            print(f"[dream] warn: {path} not made private (0600): {exc}", file=sys.stderr)
     _preserve_owner(path, owner)
+
+
+CORRUPT_MARK = ".corrupt-"
+
+
+def _read_state_file(path):
+    """(dict, why) of one of the dream's own state files, touching nothing: ({}, None) when there is none or it is
+    fine and empty, ({}, why) when it is there but broken — `why` says how, None for a file that cannot be read at
+    all (permissions, reported here). For a reader without the state lock (`dream-reject.py --list`): moving a file
+    aside there raced a locked writer — the reader saw a broken list, a writer put a good one in its place, and the
+    reader moved the good one away (Codex review of the 2.9.9 changes)."""
+    if not path:
+        return {}, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}, None
+    except UnicodeDecodeError as exc:
+        return {}, f"not UTF-8 ({exc.reason})"
+    except OSError as exc:
+        print(f"[dream] warn: state file {path} cannot be read ({exc}) — running without it", file=sys.stderr)
+        return {}, None
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return {}, f"not valid JSON ({exc})"
+    if not isinstance(data, dict):
+        return {}, f"not a JSON object (a {type(data).__name__})"
+    return data, None
+
+
+def _load_state_file(path):
+    """One of the dream's own state files (reject list, cooldowns, questions, snapshot, sweep state, diary index,
+    extraction cursor, last payload) as a dict; {} when there is none — a fresh install. Only for the holder of the
+    state lock, or the only writer of the file (the extraction cursor); others read with `_read_state_file`.
+
+    A file that is there but is not a JSON object is not "no state": read as {} it erased every rejection and
+    cooldown without a word, and the next write buried the evidence (review of 2.9.8). It is moved aside to
+    `<file>.corrupt-<UTC time>` with a warning, and the pass runs without it. Such a copy may hold a fact's text:
+    `forget_sweep` cleans them like the files they came from. A file that cannot be read at all (permissions) is
+    reported and left where it is."""
+    data, why = _read_state_file(path)
+    if why is None:
+        return data
+    aside = f"{path}{CORRUPT_MARK}{_now().strftime('%Y%m%dT%H%M%SZ')}"
+    try:
+        os.replace(path, aside)
+        print(f"[dream] warn: state file {path} is {why} — moved to {aside}; running without it", file=sys.stderr)
+    except OSError as exc:
+        print(f"[dream] warn: state file {path} is {why} and could not be moved aside ({exc}) — running without "
+              f"it; the next write replaces it", file=sys.stderr)
+    return {}
 
 
 def rotate_diary(path, keep=None):
@@ -4734,6 +4812,8 @@ def _preview_hashes(content):
 
 
 def _json_file(path, default):
+    """A JSON file that is not the dream's own (Hermes' `cron/jobs.json`): read as is, never moved aside. The
+    dream's own state goes through `_load_state_file`."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -4783,7 +4863,7 @@ def sweep_stores():
     keys = set(chat_stores_settings()[1])
     path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
     if path:
-        keys |= set(_json_file(path, {}).get("stores") or [])
+        keys |= set(_read_state_file(path)[0].get("stores") or [])  # a reader: never moves a file
     return keys
 
 
@@ -4824,7 +4904,7 @@ def update_diary_index(path, facts):
     are still in the diary. Returns True when the file changed."""
     if not path:
         return False
-    index = _json_file(path, {})
+    index = _load_state_file(path)
     changed = False
     for f in facts:
         fid = str(f.get("fact_id"))
@@ -5070,7 +5150,7 @@ def forget_sweep(db=None, home=None):
     home = home or HOME
     index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
-    state = _json_file(state_path, {}) if state_path else {}
+    state = _load_state_file(state_path)
     # Chat stores promoted now join the remembered ones before anything else, and the record is saved at once:
     # their facts may already be in the payload, and the run may end early below.
     promoted = sorted(set(state.get("stores") or []) | chat_stores_settings()[1])
@@ -5098,18 +5178,18 @@ def forget_sweep(db=None, home=None):
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
-               "diary_lines": 0, "cron_logs": 0, "errors": store_errors}
+               "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0, "errors": store_errors}
     if not tombstones:
         return summary
     ids = {str(i) for i in tombstones}
-    live = _json_file(index_path, {}) if index_path else {}
+    live = _load_state_file(index_path)
     index = {i: {"previews": sorted(set((done.get(i) or {}).get("previews") or [])
                                     | set((live.get(i) or {}).get("previews") or []))} for i in ids}
     fingerprints = {fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])} \
         | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
 
     payload_path = os.path.join(home, "cache", "dream.json")
-    payload = _json_file(payload_path, {})
+    payload = _load_state_file(payload_path)
     if payload:
         summary["payload"] = (_drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
                               + _scrub_copies(payload, _preview_set(index), fingerprints))
@@ -5117,7 +5197,7 @@ def forget_sweep(db=None, home=None):
             _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     rejected_path = _state_default("DREAM_REJECTED_STATE", "rejected")
-    rejected = _json_file(rejected_path, {}) if rejected_path else {}
+    rejected = _load_state_file(rejected_path)
     gone = [k for k, rec in rejected.items()
             if k in fingerprints or (isinstance(rec, dict) and str(rec.get("fact_id")) in ids)]
     for key in gone:
@@ -5127,7 +5207,7 @@ def forget_sweep(db=None, home=None):
         _write_private(rejected_path, json.dumps(rejected, ensure_ascii=False, indent=1) + "\n")
 
     seen_path = _state_default("DREAM_SEEN_STATE", "seen")
-    seen = _json_file(seen_path, {}) if seen_path else {}
+    seen = _load_state_file(seen_path)
     for name, bucket in seen.items():
         if name == "_pending" and isinstance(bucket, dict):
             for key, values in (bucket.get("seen") or {}).items():
@@ -5182,6 +5262,49 @@ def forget_sweep(db=None, home=None):
             except OSError as exc:
                 summary["errors"].append(f"{path}: {exc}")
 
+    # Broken state files moved aside (`_load_state_file`): a copy of the reject list or the payload holds facts' text,
+    # and cleaning only the live files left a forgotten fact there for good while the sweep reported success (Codex
+    # review of the 2.9.9 changes). Such a copy cannot be parsed, and a write cut short cuts a fact's text anywhere —
+    # a fragment matches no id, fingerprint or preview hash, so "it does not mention the fact" cannot be proven.
+    # Hence: when a fact is forgotten for the first time (`new`), every set-aside copy goes — the human's "forget it"
+    # outweighs the evidence. On the runs after, a copy is deleted when it mentions a forgotten fact by its id, its
+    # fingerprint or its verbatim text (a live file is cleaned on every run, so a later copy of it is clean).
+    state_files = {p for p in (rejected_path, seen_path, payload_path, index_path, state_path,
+                               _state_default("DREAM_ASKED_STATE", "asked"),
+                               _state_default("DREAM_SNAPSHOT_STATE", "snapshot"),
+                               os.path.join(home, "cache", "dream-extract-state.json")) if p}
+    hashes = _preview_set(index)
+    # A wipe that did not finish (a copy that could not be deleted) is owed until it does: the tombstone is recorded
+    # as swept below, and without this a fragment in a copy kept on a failed run would never be looked for again.
+    wipe_all = bool(new) or bool(state.get("corrupt_wipe_owed"))
+    errors_before = len(summary["errors"])
+    by_dir = defaultdict(set)
+    for p in state_files:
+        by_dir[os.path.dirname(os.path.abspath(p))].add(os.path.basename(p) + CORRUPT_MARK)
+    for folder, prefixes in sorted(by_dir.items()):
+        try:
+            names = os.listdir(folder)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            summary["errors"].append(f"{folder}: {exc}")
+            continue
+        for name in sorted(n for n in names if n.startswith(tuple(prefixes))):
+            path = os.path.join(folder, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                if (wipe_all or set(pattern.findall(text)) & ids or any(fp in text for fp in fingerprints) or any(
+                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text))):
+                    os.remove(path)
+                    summary["corrupt_copies"] += 1
+            except OSError as exc:
+                summary["errors"].append(f"{path}: {exc}")
+    if wipe_all and len(summary["errors"]) > errors_before:
+        state["corrupt_wipe_owed"] = True
+    else:
+        state.pop("corrupt_wipe_owed", None)
+
     # The hashes move from the index to the sweep state: they keep finding copies written back later, and the
     # owner of another copy of the diary (a git backup) cleans it by them (forgotten_diary_index); not text.
     stamp = _now().isoformat(timespec="seconds")
@@ -5204,8 +5327,9 @@ def forgotten_diary_index(ids):
     the diary index — what scrub_diary_text needs to clean another copy of the diary (a backup) of those facts."""
     index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
-    index = _json_file(index_path, {}) if index_path else {}
-    swept = (_json_file(state_path, {}) if state_path else {}).get("swept") or {}
+    # A reader, also for whoever cleans a backup of the diary without the state lock: it never moves a file.
+    index = _read_state_file(index_path)[0]
+    swept = _read_state_file(state_path)[0].get("swept") or {}
     out = {}
     for i in (str(x) for x in ids):
         done = (swept.get(i) if isinstance(swept.get(i), dict) else None) or {}
@@ -5291,8 +5415,11 @@ def dry_run_summary(result, source):
     lines.append(f"quarantined (secrets / injection, content hidden): {st.get('quarantined', 0)}")
     for a in result.get("alerts") or []:
         lines.append(f"ALERT: {a.get('message') or a}")
-    work = sum(st.get(k, 0) for k in ("promotions", "new_facts_reviewed", "conflicts",
-                                       "fact_decays", "md_decays", "quarantined", "alerts"))
+    # The keys the gate wakes on, from the same config (`precheck.actionable_keys`): a list of its own here said
+    # "would wake" while a gate with other keys stayed asleep (review of 2.9.8).
+    precheck = CONFIG.get("precheck") if isinstance(CONFIG.get("precheck"), dict) else {}
+    keys = precheck.get("actionable_keys") or DEFAULT_CONFIG["precheck"]["actionable_keys"]
+    work = sum(st.get(k, 0) or 0 for k in keys if isinstance(k, str))
     lines.append("verdict: the nightly job would wake the agent" if work
                  else "verdict: nothing to do — the nightly job would stay asleep "
                       "(unless a memory file is near its limit)")
@@ -5381,6 +5508,15 @@ def main(argv=None):
         print(dry_run_summary(result, fact_source()))
         return 0
 
+    if not args.forget_sweep:
+        # The pass writes cooldowns, questions and the diary from this config: on the defaults a broken file turned
+        # into a night of wrong questions. Fail here; the gate turns the stderr line into `dream_error`.
+        problem = config_problem(args.config)
+        if problem:
+            print(f"[dream] error: {problem} — the pass did not run (fix the file, or check it with "
+                  f"install.py --check)", file=sys.stderr)
+            return 2
+
     # Forgotten facts first: the pass must not re-read a cooldown or a reject record of a fact that is gone,
     # and the diary index must hold every fact before today's lines are written.
     def sweep(when):
@@ -5389,7 +5525,7 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 — a sweep hiccup must not cost the night's pass
             swept = {"errors": [f"{type(e).__name__}: {e}"]}
         if not args.forget_sweep and (swept.get("errors") or any(
-                swept.get(k) for k in ("payload", "rejected", "seen", "diary_lines", "cron_logs"))):
+                swept.get(k) for k in ("payload", "rejected", "seen", "diary_lines", "cron_logs", "corrupt_copies"))):
             print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
         return swept
 

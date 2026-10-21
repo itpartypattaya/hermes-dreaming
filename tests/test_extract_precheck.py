@@ -49,7 +49,8 @@ class GateHomeTests(unittest.TestCase):
     def test_dream_module_is_loaded_with_the_gate_home(self):
         """dream.py reads HERMES_HOME when imported; a gate that found its home
         another way must re-point it, or config and store come from ~/.hermes."""
-        import os, tempfile
+        import os
+        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / "dreaming.json").write_text(
@@ -127,7 +128,8 @@ class ExtractPrecheckTests(DreamFixture):
         for i in range(6):
             con.execute("insert into messages (session_id, role, content, timestamp, observed)"
                         " values (?,?,?,?,0)", ("s-tie", "user", f"Одинаковое время, сообщение {i} про кофе", same_ts))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         payload, cursor, total = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertEqual(len(payload["messages"]), 4)
         self.assertEqual(payload["window"]["remaining_after_this_chunk"], 2)
@@ -201,7 +203,8 @@ class ExtractPrecheckTests(DreamFixture):
     # The cursor is committed by the agent's answer, not by printing ---------
     def _main(self, **ext):
         """Run main() against the fixture home; returns the printed JSON."""
-        import contextlib, io
+        import contextlib
+        import io
         cfg = dict(dream.CONFIG, extract=dict(self.cfg["extract"], **ext))
         saved = (extract._dream, extract.STATE, dream.CONFIG)
         extract._dream = lambda: dream
@@ -217,7 +220,7 @@ class ExtractPrecheckTests(DreamFixture):
         return json.loads(out.getvalue().strip().splitlines()[-1])
 
     def _state(self):
-        return extract.load_state(self.home / "cache" / "dream-extract-state.json")
+        return extract.load_state(dream, self.home / "cache" / "dream-extract-state.json")
 
     def _four_messages(self):
         for i in range(4):
@@ -314,6 +317,16 @@ class ExtractPrecheckTests(DreamFixture):
         second = self._main()
         self.assertIn("messages", second)
 
+    def test_a_broken_config_stops_the_gate_and_keeps_the_cursor(self):
+        """Review of 2.9.8: on the defaults a broken dreaming.json empties `trusted_chat_ids`, and the cursor
+        moved past every group message for good. Now: dream_error, no hand-over, no state written."""
+        self._four_messages()
+        (self.home / "dreaming.json").write_text('{"trusted_chat_ids": ["-100111",]}', encoding="utf-8")
+        out = self._main()
+        self.assertIn("dream_error", out)
+        self.assertIn("dreaming.json", out["dream_error"])
+        self.assertFalse((self.home / "cache" / "dream-extract-state.json").exists())
+
     def test_retries_exhausted_moves_on(self):
         self._four_messages()
         self._main(max_retries=2)
@@ -325,9 +338,25 @@ class ExtractPrecheckTests(DreamFixture):
 
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"
-        extract.save_state(path, {"since_ts": 123.0})
-        self.assertEqual(extract.load_state(path)["since_ts"], 123.0)
-        self.assertEqual(extract.load_state(self.home / "missing.json"), {})
+        extract.save_state(dream, path, {"since_ts": 123.0})
+        self.assertEqual(extract.load_state(dream, path)["since_ts"], 123.0)
+        self.assertEqual(extract.load_state(dream, self.home / "missing.json"), {})
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [path.name], "no temporary file is left")
+
+    def test_broken_cursor_is_set_aside_not_read_as_a_fresh_start(self):
+        """A truncated cursor read as {} sent the gate `backfill_days` back: two months of messages again."""
+        path = self.home / "cache" / "dream-extract-state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"since_ts": 17', encoding="utf-8")
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(extract.load_state(dream, path), {})
+        self.assertFalse(path.exists())
+        aside = [p.name for p in path.parent.iterdir() if p.name.startswith(path.name + ".corrupt-")]
+        self.assertEqual(len(aside), 1, aside)
+        self.assertIn("moved to", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -184,16 +184,29 @@ def _import_jobs():
     return jobs
 
 
-def _existing(jobs, script):
+def _list_jobs(jobs):
+    """Every existing job, paused ones too. A listing that fails stops the installer before anything is created:
+    read as "no jobs" it made a second copy of every job — the duplicates this installer exists to prevent
+    (review of 2.9.8)."""
     try:
         try:
             listed = jobs.list_jobs(include_disabled=True)   # a paused job is still ours
         except TypeError:  # older API without the flag
             listed = jobs.list_jobs()
-    except Exception:  # noqa: BLE001 — older/newer API shapes
-        listed = []
+    except Exception as exc:  # noqa: BLE001 — any failure ends the run, with the reason
+        raise SystemExit(
+            f"cannot list the existing cron jobs ({type(exc).__name__}: {exc}) — nothing was created, so nothing "
+            f"is duplicated. Run this with the Hermes interpreter, e.g.\n"
+            f"  {HOME}/hermes-agent/venv/bin/python {Path(__file__).name} --help") from exc
     if isinstance(listed, dict):
         listed = listed.get("jobs", [])
+    if not isinstance(listed, (list, tuple)):
+        raise SystemExit(f"the cron API listed the jobs as {type(listed).__name__}, not a list — nothing was "
+                         "created; this Hermes is newer than the installer knows")
+    return list(listed)
+
+
+def _existing(listed, script):
     return [j for j in listed if (j or {}).get("script") == script]
 
 
@@ -360,9 +373,10 @@ def main(argv=None):
         return 0
 
     jobs = _import_jobs()
+    listed = _list_jobs(jobs)  # once, before anything is created: a failure leaves no half-made install
     created, skipped, rebound, stale = [], [], [], []
     for plan in planned:
-        already = _existing(jobs, plan["script"])
+        already = _existing(listed, plan["script"])
         if plan.get("no_agent"):  # no skill to bind: one job is enough
             if already and not args.force:
                 skipped.extend((plan["script"], job.get("id")) for job in already)

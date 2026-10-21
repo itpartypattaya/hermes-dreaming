@@ -11,7 +11,6 @@ import io
 import json
 import os
 import sqlite3
-import sys
 import unittest
 
 from test_dream import DreamFixture, dream, reject, _ts  # noqa: E402

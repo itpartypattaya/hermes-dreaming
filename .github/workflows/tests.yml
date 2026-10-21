@@ -27,5 +27,37 @@ jobs:
       - name: Install PyYAML
         if: matrix.pyyaml
         run: python -m pip install pyyaml
+      # The source of scripts/holo_screen.py, at the commit the copy was made from: without it
+      # test_the_copy_matches_the_provider skips, and a drift of the copy goes unseen.
+      # Bump the ref together with SOURCE_COMMIT when tools/vendor_screen.py makes a new copy.
+      - name: Check out the holographic provider (source of the vendored screen)
+        uses: actions/checkout@v4
+        with:
+          repository: itpartypattaya/hermes-plugin-holographic
+          ref: 827c639e3cf38b17e9b5c1b6a4ef2ef7880ae953
+          path: _holographic
+      - name: The checked-out provider is the commit the copy names
+        run: |
+          pinned="$(sed -n 's/^SOURCE_COMMIT = "\(.*\)"$/\1/p' skills/dreaming/scripts/holo_screen.py)"
+          actual="$(git -C _holographic rev-parse HEAD)"
+          echo "holo_screen.py: $pinned, checked out: $actual"
+          case "$actual" in "$pinned"*) ;; *) echo "::error::bump the ref above to SOURCE_COMMIT"; exit 1;; esac
       - name: Run tests (stdlib unittest, no network)
+        env:
+          HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic/__init__.py
         run: python -m unittest discover -s tests -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install ruff (pinned)
+        run: python -m pip install ruff==0.15.16
+      # Errors, undefined names and blind excepts only (every intended one carries `noqa: BLE001` with its
+      # reason). Line length, bugbear, simplify and complexity are left out on purpose: dozens of findings
+      # with no effect on behaviour (review of 2.9.8).
+      - name: ruff
+        run: ruff check --select E,F,BLE --ignore E501 skills tests

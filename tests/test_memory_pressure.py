@@ -122,7 +122,10 @@ class TestConfig(unittest.TestCase):
         """The gate may find its home without HERMES_HOME (installed into
         <home>/scripts); dream.py on its own would read ~/.hermes, so the gate
         passes the home it settled on as --hermes-home."""
-        import contextlib, io, json, os, tempfile
+        import contextlib
+        import io
+        import os
+        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "dream.py"
             fake.write_text(
@@ -149,7 +152,11 @@ class TestConfig(unittest.TestCase):
     def test_hanging_dream_is_a_dream_error_not_a_hang(self):
         """A dream.py that never returns must end in the usual one-line
         dream_error, exit 0 — not in the scheduler's own timeout an hour later."""
-        import contextlib, io, json, os, tempfile
+        import contextlib
+        import io
+        import json
+        import os
+        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             slow = Path(tmp) / "dream.py"
             slow.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")

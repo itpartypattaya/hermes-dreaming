@@ -76,8 +76,9 @@ OUT = HOME / "cache/dream.json"
 # DREAMS.md (external review, 2026-10-07).
 DIARY = HOME / _diary_rel_path()
 
-# Everything except scoring internals; `why` is the short explanation.
-FACT_FIELDS = (
+# The fields of a fact that reach the agent's prompt: everything except scoring internals; `why` is the short
+# explanation. Not dream.py's FACT_FIELDS (the store's columns) — hence the other name (review of 2.9.8).
+PUBLISHED_FIELDS = (
     "fact_id",
     "content",
     "category",
@@ -158,7 +159,7 @@ def _precheck_config():
 
 
 def compact_fact(item, max_content=DEFAULT_MAX_CONTENT):
-    out = {key: item.get(key) for key in FACT_FIELDS if key in item}
+    out = {key: item.get(key) for key in PUBLISHED_FIELDS if key in item}
     content = out.get("content")
     if isinstance(content, str) and len(content) > max_content:
         out["content"] = content[:max_content] + "…"

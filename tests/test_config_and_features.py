@@ -7,8 +7,6 @@ Run:  python -m unittest discover -s tests   (from the skill directory)
 """
 
 import json
-import contextlib
-import io
 import os
 import sqlite3
 import subprocess
@@ -537,7 +535,8 @@ class ReviewFixesTests(DreamFixture):
         con = sqlite3.connect(db)
         con.execute("insert into facts (content, created_at, updated_at) values (?, datetime('now'), datetime('now'))",
                     (content,))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
 
     # 4) loss guard: a vanished file is the loudest loss ---------------------
     def test_loss_guard_alerts_when_the_whole_file_disappears(self):
@@ -603,7 +602,8 @@ class ReviewFixesTests(DreamFixture):
             con.execute("insert into messages (session_id, role, content, timestamp) values (?,?,?,?)",
                         (sid, "user", f"Марина завела кота сфинкса Барсика, день {i}",
                          datetime.now(timezone.utc).timestamp() - 86400 * (i + 1)))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         old = dream.TRUST_NO_CHAT
         try:
             dream.TRUST_NO_CHAT = True
@@ -891,7 +891,8 @@ class MessageSourceTests(unittest.TestCase):
         con = sqlite3.connect(self.db)
         con.execute(self.SCHEMA_SESSIONS)
         con.execute(self.SCHEMA_MESSAGES)
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         self._cfg = dream.CONFIG
         dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
                                           {"trusted_chat_ids": ["-100777"], "timezone": "UTC"}))
@@ -904,14 +905,16 @@ class MessageSourceTests(unittest.TestCase):
         con = sqlite3.connect(self.db)
         con.execute("insert or ignore into sessions values (?,?,?,?,?)",
                     (sid, source, chat_type, chat_id, thread))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
 
     def _msg(self, sid, content, role="user", observed=0, active=1, compacted=0, days_ago=1.0):
         con = sqlite3.connect(self.db)
         con.execute("insert into messages (session_id, role, content, timestamp, observed,"
                     " active, compacted) values (?,?,?,?,?,?,?)",
                     (sid, role, content, _ts(days_ago).timestamp(), observed, active, compacted))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
 
     def _load(self):
         return dream.load_messages(str(self.db), 30)
@@ -938,7 +941,8 @@ class MessageSourceTests(unittest.TestCase):
             con.execute("insert into messages (session_id, role, content, timestamp, observed,"
                         " active, compacted) values (?,?,?,?,0,?,?)",
                         ("s1", "user", self.TEXT, ts, active, compacted))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         self.assertEqual(len(self._load()), 1)
 
     def test_machine_sources_are_untrusted_by_default(self):
@@ -976,7 +980,8 @@ class MessageSourceTests(unittest.TestCase):
         con.execute("insert into sessions values ('s1','telegram','group','-100777',null)")
         con.execute("insert into messages (session_id, role, content, timestamp, observed)"
                     " values ('s1','user',?,?,0)", (self.TEXT, _ts(1.0).timestamp()))
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         self.assertEqual(len(dream.load_messages(str(old_db), 30)), 1)
 
 
@@ -1246,7 +1251,7 @@ class HermesConfigTests(unittest.TestCase):
         try:
             from zoneinfo import ZoneInfo
             ZoneInfo("Europe/Lisbon")
-        except Exception:                      # no zone database — nothing more to check
+        except Exception:  # noqa: BLE001 — no zone database (ImportError, ZoneInfoNotFoundError…): nothing to check
             self.skipTest("zoneinfo without tzdata")
         self._load()
         self.assertIn("Lisbon", str(dream.LOCAL_TZ))

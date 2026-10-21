@@ -3,6 +3,64 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 2.9.9 — 2026-10-21
+
+From the review of 2.9.8 against the articles «10 принципов кода для AI-агентов» and the vibe-coding checklist.
+Nothing changes on a healthy install; what changes is what
+happens when a file is broken.
+
+### Fixed
+
+- **A broken state file is no longer read as "no state" in silence (A1).** The reject list, the cooldowns, the
+  "still relevant?" questions, the loss-guard snapshot, the sweep state, the diary index, the last payload and the
+  extraction cursor were read as `{}` when they were not valid JSON — every rejection and cooldown gone, the loss
+  guard blind for a night, extraction sent `backfill_days` back to hand two months of messages over again — and the
+  next write buried the evidence. Such a file is now moved aside to `<file>.corrupt-<UTC time>` with a warning, and
+  the pass runs without it. A missing file is still a fresh install, without noise. Hermes' own `cron/jobs.json`
+  is read as before and never moved. Only a run that holds the state lock moves a file aside: `dream-reject.py
+  --list` reports a broken list and leaves it (moving it there raced a locked writer, and the good list it had just
+  written could be the one moved away — Codex review). Set-aside copies cannot be parsed and may hold a fact's text
+  cut anywhere, so the first forget sweep after a `forget` deletes all of them; later sweeps delete a copy that
+  mentions a forgotten fact by its id, fingerprint or verbatim text. A copy that cannot be deleted is an error, the
+  gate retries, and the wipe stays owed until it is done (Codex review: a forgotten fact stayed in a `.corrupt-*`
+  copy for good).
+- **State files are written whole or not at all (A2).** Every whole-file write goes to a temporary file renamed
+  over the target (as `dream-reject.py` has done since 2.7.2): a run killed by the gate's timeout or a full disk
+  left an empty file before. The extraction cursor is written the same way. A symlinked state file is written
+  through. On POSIX a file that cannot be made 0600 says so.
+- **`install_cron.py` no longer duplicates the jobs when it cannot list them (A3).** Any failure of `list_jobs` was
+  read as "no jobs", and every job was created a second time. The jobs are listed once, before anything is created;
+  a failure stops the run with the reason, and nothing is created.
+- **`dream-reject.py` stores no text when the screen cannot be loaded (A4).** It used to treat the text as ordinary
+  and could copy a password into the reject list; now only the fingerprint is kept, with a warning.
+- **A broken `dreaming.json` stops the night instead of running it on the defaults (B1).** On the defaults no group
+  chat is trusted: the night asked up to 15 wrong "still relevant?" questions, and the extraction gate moved its
+  cursor past every group message for good. The pass now exits with the reason (the gate reports `dream_error`), and
+  the extraction gate answers `dream_error` and keeps its cursor. A missing file still means the defaults;
+  `--dry-run`, `--explain`, `--forget-sweep` and `install.py --check` still read past a broken one and say so.
+- **`dream-reject.py --hermes-home` read the other home's config (B3).** dream.py configured itself at import for
+  `$HERMES_HOME` / `~/.hermes`, so `fact_source` and `fact_store_path` came from there, and a fact of the home given
+  on the command line was "not found". Reproduced on two homes; the home's config is loaded now.
+
+- **"unknown timezone 'UTC'" on every run without a zone database.** Python's zoneinfo knows no names without the
+  `tzdata` package (Windows, slim containers), so the default `UTC` was reported as unknown each time. UTC by any of
+  its names needs no database now; a zone that really is unknown still warns, and says when the database is missing.
+
+### Changed
+
+- CI: a `lint` job runs `ruff check --select E,F,BLE --ignore E501 skills tests` (ruff 0.15.16) (C1); the test job
+  checks out `itpartypattaya/hermes-plugin-holographic` at the commit `scripts/holo_screen.py` names (827c639) and
+  passes it as `HOLOGRAPHIC_SRC`, so `test_the_copy_matches_the_provider` runs instead of skipping, and a step fails
+  when the pinned ref and `SOURCE_COMMIT` disagree (C2).
+- The extraction gate takes the reply-quote pattern from dream.py instead of a copy of its own (D1); the dry run's
+  "would wake" verdict reads `precheck.actionable_keys` like the gate (D2); the gate's list of fields for the prompt
+  is `PUBLISHED_FIELDS`, not a second `FACT_FIELDS` (D3).
+- Tests: broken and non-object state files, an interrupted write, a failing and an odd `list_jobs`, a broken config
+  for the pass and the extraction gate, `--hermes-home` on two homes, the forget-sweep gate's `find_dream` (D4).
+  Unused imports and one-line `;` statements in the tests removed (A5).
+- README: `DREAM_SCRIPT` named under "Safety and privacy" (D5); `tests/evals/evals.json` described (D6); broken
+  state files and a broken `dreaming.json` described. `references/scoring.md` likewise.
+
 ## 2.9.8 — 2026-10-20
 
 A fourth review of the config reader, by another model, found valid YAML that the 2.9.7 fallback read with

@@ -117,7 +117,8 @@ class MissingDatabaseTests(unittest.TestCase):
                     " helpful_count int, created_at timestamp, updated_at timestamp)")
         con.execute("insert into facts values (1,'Тестовый факт про кофе','general','',0.9,0,0,"
                     "'2026-08-01 10:00:00','2026-08-01 10:00:00')")
-        con.commit(); con.close()
+        con.commit()
+        con.close()
         result = dream.run(14, 60, 60, str(self.home / "memories" / "MEMORY.md"))
         self.assertEqual(result["stats"]["facts"], 1)
         self.assertEqual(result["stats"]["messages_window"], 0)
@@ -247,6 +248,35 @@ class InstallCronTests(unittest.TestCase):
         # No second nightly job next to the stale one; extraction did not exist yet.
         self.assertEqual([c["script"] for c in fake.created], [install_cron.EXTRACT_SCRIPT])
         self.assertEqual(fake.created[0]["skills"], [PLUGIN_SKILL])
+
+    def test_a_listing_that_fails_creates_nothing(self):
+        """Review of 2.9.8: `_existing` read any failure of `list_jobs` as "no jobs" and created a second copy of
+        every job. Now the run stops before anything is created, and says why."""
+        self._complete_install()
+
+        class Broken(FakeJobs):
+            def list_jobs(self, include_disabled=False):
+                raise RuntimeError("jobs.json is locked")
+
+        fake = Broken([self._old_job()])
+        with self.assertRaises(SystemExit) as cm:
+            self._run_main(fake)
+        self.assertIn("jobs.json is locked", str(cm.exception.code))
+        self.assertIn("nothing was created", str(cm.exception.code))
+        self.assertEqual(fake.created, [])
+        self.assertEqual(fake.updated, [])
+
+    def test_a_listing_of_an_unknown_shape_creates_nothing(self):
+        self._complete_install()
+
+        class Odd(FakeJobs):
+            def list_jobs(self, include_disabled=False):
+                return None
+
+        fake = Odd()
+        with self.assertRaises(SystemExit):
+            self._run_main(fake)
+        self.assertEqual(fake.created, [])
 
     def test_rebind_updates_the_skill_in_place(self):
         self._complete_install()

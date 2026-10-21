@@ -65,7 +65,9 @@ def main():
         return 1
     parts = [f"{summary[k]} {label}" for k, label in (("payload", "payload items"), ("rejected", "reject records"),
                                                       ("seen", "cooldowns"), ("diary_lines", "diary lines"),
-                                                      ("cron_logs", "cron logs")) if summary.get(k)]
+                                                      ("cron_logs", "cron logs"),
+                                                      ("corrupt_copies", "set-aside broken state files"))
+             if summary.get(k)]
     if parts:
         print(f"🧹 Forgotten facts cleaned from the dream's copies: {', '.join(parts)}.")
     return 0

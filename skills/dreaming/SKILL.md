@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 2.9.8
+version: 2.9.9
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
@@ -189,7 +189,8 @@ in each of them (`references/scoring.md`, "Every language").
 7c. **Forgotten facts are cleaned by code, not by you.** After `forget`, the store keeps only a
    tombstone (the id). The next pass — or the `dream-forget-sweep.py` gate — removes that id from
    `cache/dream.json`, the reject list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0;
-   older lines through `cache/dream-diary-index.json`) and the dream cron logs. Do not quote a
+   older lines through `cache/dream-diary-index.json`), the dream cron logs and the set-aside
+   `*.corrupt-*` copies of broken state files (all of them on the first sweep after a forget). Do not quote a
    forgotten fact in the report.
 7d. **`confirm` — people said it again.** holographic ≥ 0.15.0 records who stands behind a fact and
    counts confirmations. Each item is a fact of the main store that people in trusted chats said

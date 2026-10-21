@@ -299,7 +299,10 @@ A quiet night prints `{"wakeAgent": false}` and the agent never starts — the w
 ## Configuration
 
 `~/.hermes/dreaming.json` (or `$DREAM_CONFIG`); see `skills/dreaming/examples/dreaming.example.json`.
-Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > default.
+Missing file → defaults. A file that is there but is not valid JSON stops the nightly pass and the extraction job
+with `dream_error`, instead of a night on the defaults (no trusted chats, so a batch of wrong "still relevant?"
+questions and an extraction cursor moved past every group message); `--dry-run` and `install.py --check` still read
+past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 
 | field | meaning |
 |---|---|
@@ -342,8 +345,16 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
   file, `~/.hermes/memories/DREAMS.md` (diary; after 90 nights the older sections move to
   `DREAMS.md.archive.md`), and — only `install.py` — the three gate copies in `~/.hermes/scripts/` (0755)
   plus a seeded `dreaming.json`.
+  A state file is written whole or not at all (a temporary file renamed over it). One that is there but is not
+  valid JSON is never read as "no state": it is moved aside to `<file>.corrupt-<UTC time>` with a warning in the
+  job's log, and the pass runs without it — look there if rejections or cooldowns seem to have reset.
+  Only a run that holds the state lock moves a file aside; `dream-reject.py --list` reports a broken list and leaves
+  it as it is.
   The forget sweep rewrites those files without a forgotten fact and deletes the dream jobs' own logs
-  in `~/.hermes/cron/output/` that mention it, by its id or its verbatim text; nothing else.
+  in `~/.hermes/cron/output/` that mention it, by its id or its verbatim text. The set-aside `*.corrupt-*` copies
+  cannot be parsed, and a write cut short may have cut the fact's text anywhere, so the first sweep after a
+  `forget` deletes all of them; later sweeps delete a copy that mentions a forgotten fact. A copy it cannot delete
+  is an error: the gate fails and the next run deletes it. Nothing else.
 - **The agent writes** memory entries through the `memory` tool (at most 6 changes a night, of them at
   most 3 new); in the extraction job, candidate facts through `fact_store add`; keywords through
   `fact_store update`; trust through `fact_feedback` (`unhelpful` for a rejected fact, `confirmed`). The
@@ -359,6 +370,9 @@ Missing file → defaults. Precedence: CLI flag > `DREAM_*` env > config > defau
   holographic provider's screen (`scripts/holo_screen.py`, a verbatim copy, MIT) — a
   wording nobody has seen yet can still get through. Keep the approval gate on if that matters.
   No tools, hooks, middleware or environment variables are registered.
+- **`DREAM_SCRIPT` decides what code the gates run.** Set in the environment of the cron jobs, it points all three
+  gates at another `dream.py` instead of the plugin's reviewed copy. It exists for unusual layouts
+  (`skills.external_dirs`); leave it unset otherwise.
 
 ## Repository layout
 
@@ -388,8 +402,10 @@ docs/                                README images (SVG sources in docs/src/)
 python3 -m unittest discover -s tests -v
 ```
 
-The tests also run from a copy that keeps `tests/` next to the skill directory. Issues and pull
-requests are welcome.
+The tests also run from a copy that keeps `tests/` next to the skill directory. CI also runs
+`ruff check --select E,F,BLE --ignore E501 skills tests`, and checks `scripts/holo_screen.py` against the provider's
+source at the commit the copy names. `tests/evals/evals.json` holds scenario prompts for checking the agent's
+behaviour against `SKILL.md` with skill-creator; CI does not run them. Issues and pull requests are welcome.
 
 ## Design notes
 

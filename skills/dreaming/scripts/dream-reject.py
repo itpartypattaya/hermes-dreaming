@@ -62,11 +62,15 @@ def _default_state():
 
 
 def _classify_unsafe(content):
-    """Quarantine classifier from dream.py; unavailable — treat as ordinary text."""
+    """Quarantine classifier from dream.py. Unavailable — treat the text as a secret: the record then keeps the
+    fingerprint only, never the text. "Ordinary text" copied a password into the reject list whenever dream.py
+    could not be loaded (review of 2.9.8)."""
     try:
         return _dream().classify_unsafe(content)
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as exc:  # noqa: BLE001 — a broken dream.py must not stop a rejection
+        print(f"[dream-reject] warn: the screen is unavailable ({type(exc).__name__}: {exc}) — the text is not "
+              "stored, only its fingerprint", file=sys.stderr)
+        return "secret"
 
 
 def _fingerprint(content):
@@ -80,12 +84,20 @@ def _fingerprint(content):
 
 
 def load_state(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """The reject list through dream.py's reader: a broken file is moved aside with a warning. Read as {} it was
+    overwritten by the next rejection, and every earlier one was gone (review of 2.9.8)."""
+    return _dream()._load_state_file(path)
+
+
+def peek_state(path):
+    """The reject list for `--list`, which runs without the state lock: a broken file is reported and left where it
+    is. Moving it aside here raced a locked writer — the new, good list could be the one moved away (Codex review
+    of the 2.9.9 changes); the next locked run sets it aside."""
+    data, why = _dream()._read_state_file(path)
+    if why:
+        print(f"the reject list {path} is {why} — shown as empty and left as it is; the next rejection or nightly "
+              "pass moves it aside", file=sys.stderr)
+    return data
 
 
 def save_state(path, data):
@@ -147,6 +159,10 @@ def main(argv=None):
         global HOME
         HOME = os.path.abspath(os.path.expanduser(args.hermes_home))
         _dream().HOME = HOME
+        # …and its config: dream.py configured itself at import for $HERMES_HOME / ~/.hermes, so `fact_source` and
+        # `fact_store_path` were that home's, and a fact of this one was "not found" (reproduced on two homes in the
+        # review of 2.9.8).
+        _dream().configure(_dream().load_config())
     if args.list:
         return _run(ap, args)
     # Read, change, write under the lock the nightly pass and the forget gate hold while they rewrite the
@@ -161,7 +177,8 @@ def main(argv=None):
 def _run(ap, args):
     state_path = args.state or _default_state()
 
-    state = load_state(state_path)
+    # Only a holder of the state lock may move a broken file aside; `--list` reads without it.
+    state = peek_state(state_path) if args.list else load_state(state_path)
 
     if args.list:
         if not state:

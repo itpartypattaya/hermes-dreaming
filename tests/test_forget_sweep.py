@@ -118,6 +118,78 @@ class ForgetSweep(unittest.TestCase):
             'prompt {"promotions":[{"fact_id":1,"content":"…"}]}', encoding="utf-8")
         self.path("cron/output/job-other/2026-10-01.md").write_text('{"fact_id": 2}', encoding="utf-8")
 
+    def _no_trace_of(self, text):
+        """No file left under the home holds any 20-character piece of `text`."""
+        pieces = {text[i:i + 20] for i in range(0, len(text) - 20, 5)}
+        for p in self.home.rglob("*"):
+            if p.is_file() and p.suffix != ".db":
+                body = p.read_text(encoding="utf-8", errors="replace")
+                found = [piece for piece in pieces if piece in body]
+                self.assertEqual(found, [], f"{p.relative_to(self.home)} still holds the forgotten fact")
+
+    def test_set_aside_copies_lose_a_forgotten_fact_even_cut_mid_text(self):
+        """Codex review of the 2.9.9 changes: a broken state file is moved aside whole to `<file>.corrupt-<time>`,
+        and the sweep cleaned only the live names — a forgotten fact stayed there for good while the sweep reported
+        success. A file broken by a write cut short is cut anywhere, the fact's text included: the copy below holds a
+        fragment of it with no id, no closing quote and no fingerprint."""
+        dream.forget_sweep(db=str(self.db))  # the diary index, while the facts exist
+        cache = self.home / "cache"
+        cut = json.dumps({"k": {"fact_id": None, "content": FORGOTTEN_OLD}}, ensure_ascii=False)
+        cut = cut[:cut.index(FORGOTTEN_OLD) + 50]                      # cut in the middle of the fact's text
+        (cache / "dream-rejected.json").write_text(cut, encoding="utf-8")   # broken live: the sweep sets it aside
+        (cache / "dream.json.corrupt-20261001T030000Z").write_text(cut, encoding="utf-8")
+        (cache / "dream-seen.json.corrupt-20261002T030000Z").write_text(
+            '{"new_facts": {"x": {"fact_id": 2, "at": "2026-10-0', encoding="utf-8")
+        self.forget(2)
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertEqual(summary["errors"], [])
+        self._no_trace_of(FORGOTTEN_OLD)
+        self.assertEqual(sorted(p.name for p in cache.iterdir() if ".corrupt-" in p.name), [])
+
+    def test_later_runs_delete_a_copy_that_mentions_a_forgotten_fact(self):
+        """After the first sweep of a tombstone, a copy set aside later is judged by what it holds: one that names
+        the forgotten fact goes, one of the kept facts stays as evidence of what broke."""
+        dream.forget_sweep(db=str(self.db))
+        self.forget(2)
+        dream.forget_sweep(db=str(self.db))                            # the tombstone is swept
+        cache = self.home / "cache"
+        by_id = cache / "dream.json.corrupt-20261020T030000Z"
+        by_id.write_text('{"promotions": [{"fact_id": 2, "content": "', encoding="utf-8")
+        by_text = cache / "dream-seen.json.corrupt-20261020T030000Z"
+        by_text.write_text(json.dumps({"x": FORGOTTEN_OLD}, ensure_ascii=False)[:-1], encoding="utf-8")
+        kept = cache / "dream-rejected.json.corrupt-20261020T030000Z"
+        kept.write_text(json.dumps({"k": {"fact_id": "1", "content": KEPT}}, ensure_ascii=False)[:-1],
+                        encoding="utf-8")
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertEqual(summary["errors"], [])
+        self.assertFalse(by_id.exists())
+        self.assertFalse(by_text.exists())
+        self.assertTrue(kept.exists())
+
+    def test_a_copy_that_cannot_be_deleted_fails_the_sweep_and_is_deleted_next_time(self):
+        """What could not be cleaned must not read as success: the gate fails and runs again, and the next run still
+        deletes the copy — although it holds only a fragment of the fact, with no id, and the tombstone itself was
+        recorded as swept on the failed run."""
+        dream.forget_sweep(db=str(self.db))
+        copy = self.home / "cache" / "dream.json.corrupt-20261001T030000Z"
+        copy.write_text('{"promotions": [{"content": "' + FORGOTTEN_OLD[:40], encoding="utf-8")
+        self.forget(2)
+        from unittest import mock
+        real_remove = os.remove
+
+        def refuse(path, *a, **kw):
+            if ".corrupt-" in str(path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_remove(path, *a, **kw)
+        with mock.patch("os.remove", side_effect=refuse):
+            summary = dream.forget_sweep(db=str(self.db))
+        self.assertTrue(any(".corrupt-" in e for e in summary["errors"]), summary["errors"])
+        self.assertTrue(copy.exists())
+        summary = dream.forget_sweep(db=str(self.db))   # the gate's next tick
+        self.assertEqual(summary["errors"], [])
+        self.assertFalse(copy.exists())
+        self._no_trace_of(FORGOTTEN_OLD)
+
     def test_sweep_removes_every_copy_and_keeps_the_rest(self):
         dream.forget_sweep(db=str(self.db))  # while the facts exist: the diary index
         index = json.loads(self.path("cache/dream-diary-index.json").read_text(encoding="utf-8"))
@@ -374,6 +446,36 @@ class ForgetSweep(unittest.TestCase):
         summary = dream.forget_sweep(db=str(self.db))
         self.assertTrue(summary["errors"])
         self.assertIn(str(self.db), summary["errors"][0])
+
+
+class SweepGateFindsDream(unittest.TestCase):
+    """The third gate keeps its own copy of the lookup (gates are copied into `scripts/` one by one and cannot share
+    a module); the other two have this test, now this one does too (review of 2.9.8)."""
+
+    def test_gate_prefers_the_plugin_copy_of_dream(self):
+        gate = _load("dream_forget_sweep_gate", ROOT / "scripts/dream-forget-sweep.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            plugin = home / "plugins" / "hermes-dreaming" / "skills" / "dreaming" / "scripts"
+            regular = home / "skills" / "dreaming" / "scripts"
+            other = home / "skills" / "memory" / "dreaming" / "scripts"
+            for d in (plugin, regular, other):
+                d.mkdir(parents=True)
+                (d / "dream.py").write_text("# copy", encoding="utf-8")
+            self.assertEqual(gate.find_dream(home), plugin / "dream.py")
+            (plugin / "dream.py").unlink()
+            self.assertEqual(gate.find_dream(home), regular / "dream.py")
+            (regular / "dream.py").unlink()
+            self.assertEqual(gate.find_dream(home), other / "dream.py")
+            old = os.environ.get("DREAM_SCRIPT")
+            os.environ["DREAM_SCRIPT"] = str(home / "elsewhere.py")
+            try:
+                self.assertEqual(gate.find_dream(home), home / "elsewhere.py")
+            finally:
+                if old is None:
+                    del os.environ["DREAM_SCRIPT"]
+                else:
+                    os.environ["DREAM_SCRIPT"] = old
 
 
 if __name__ == "__main__":
