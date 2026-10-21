@@ -229,7 +229,7 @@ class BrokenConfigStopsThePass(unittest.TestCase):
     def test_problem_is_named(self):
         cfg = self.home / "dreaming.json"
         self.assertIsNone(dream.config_problem(str(cfg)))
-        cfg.write_text('{"timezone": "Asia/Bangkok",}', encoding="utf-8")
+        cfg.write_text('{"timezone": "Europe/Lisbon",}', encoding="utf-8")
         self.assertIn("cannot be used", dream.config_problem(str(cfg)))
         cfg.write_text("[]", encoding="utf-8")
         self.assertIn("not an object", dream.config_problem(str(cfg)))
