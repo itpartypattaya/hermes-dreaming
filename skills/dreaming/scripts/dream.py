@@ -1968,11 +1968,13 @@ def _negated(words, both, two_way):
     return out
 
 
-# Chinese writes no spaces: what a negation negates is what follows it, up to three characters ("不喜欢苹果" →
-# "喜欢苹"). It counts when the other text holds those characters too, so a word that only begins like a negation
-# (无锡, 没收, 别墅) is the same word on both sides and says nothing, and "不同意" against "同意" is a flip (Antigravity
-# and Codex reviews of 3.0.1 / 3.1.0).
-_CJK_NEGATION_RE = re.compile(r"(?:没有|沒有|无法|無法|不|没|沒|别|別|未|无|無)([\u3400-\u9fff\uf900-\ufaff]{1,3})")
+# Chinese writes no spaces: what a negation negates is what follows it, up to five characters ("不喜欢吃苹果" →
+# "喜欢吃苹果"). It is a flip when the other text says the longest piece of it it holds, the rest following too, without
+# a negation of its own before it in the same clause ("不吃苹果" against "吃红苹果" meets at "吃"; "不喜欢吃苹果" does not
+# meet "喜欢吃香蕉"; "不再喝酒" agrees with "不喝酒"; 无锡, 没收, 别墅 are the same word on both sides). Antigravity review of
+# 3.0.1, Codex passes over 3.1.0 / 3.1.1.
+_CJK_NEGATION_RE = re.compile(r"(?:没有|沒有|无法|無法|不|没|沒|别|別|未|无|無)([㐀-鿿豈-﫿]{1,5})")
+_CJK_NEGATION_CHARS = "不没沒别別未无無"
 
 
 def _cjk_negated(text):
@@ -1980,6 +1982,36 @@ def _cjk_negated(text):
     out = {}
     for m in _CJK_NEGATION_RE.finditer(text):
         out.setdefault(m.group(1), m.group(0))
+    return out
+
+
+# A clause ends at punctuation and at "but" (但, 却, 可是): "不抽烟但喝酒" does not negate 喝酒.
+_CJK_CLAUSE_END = ("，。、；：！？,.;:!?" + " " + chr(10), ("但是", "可是", "但", "却", "卻"))
+
+
+def _cjk_says_plainly(text, what):
+    """Whether *text* holds *what* somewhere without a negation before it in its clause, up to four characters back
+    ("不经常喝酒" negates 喝酒 too)."""
+    start = text.find(what)
+    while start >= 0:
+        before = text[max(0, start - 4):start]
+        for c in (*_CJK_CLAUSE_END[0], *_CJK_CLAUSE_END[1]):
+            before = before.rsplit(c, 1)[-1]
+        if not any(c in _CJK_NEGATION_CHARS for c in before):
+            return True
+        start = text.find(what, start + 1)
+    return False
+
+
+def _cjk_flips(negated, other):
+    """{key: phrase} for what *negated* (from _cjk_negated) negates and *other* says plainly."""
+    out = {}
+    for what, phrase in negated.items():
+        for n in range(len(what), 0, -1):
+            # A shorter piece counts when the rest is there too: "不吃苹果" meets "吃红苹果", not "吃香蕉".
+            if _cjk_says_plainly(other, what[:n]) and what[n:] in other:
+                out[f"zh {what[:n]}"] = phrase
+                break
     return out
 
 
@@ -2016,14 +2048,8 @@ def polarity_flip(content, chunk):
     a, b = _negated(mine, both, two_way), _negated(theirs, both, two_way)
     mine_text, their_text = _norm(content), _norm(other)
     na, nb = _cjk_negated(mine_text), _cjk_negated(their_text)
-    # One text negates it and the other says it without that negation: "无锡市" against "无锡，" is the same city
-    # (second Codex pass), "不同意" against "同意" is a flip.
-    for what, phrase in na.items():
-        if what in their_text and phrase not in their_text:
-            a[f"zh {what}"] = phrase
-    for what, phrase in nb.items():
-        if what in mine_text and phrase not in mine_text:
-            b[f"zh {what}"] = phrase
+    a.update(_cjk_flips(na, their_text))
+    b.update(_cjk_flips(nb, mine_text))
     if set(a) == set(b):
         return None
     return sorted(a.values()), sorted(b.values())

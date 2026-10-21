@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: itpartypattaya/hermes-plugin-holographic
-          ref: aca7b198544574a27adb3f3fda3d5c68f6f60395
+          ref: fd68b1af1fcfdb5e9401baeb578f8673552daa5f
           path: _holographic
       - name: The checked-out provider is the commit the copy names
         run: |

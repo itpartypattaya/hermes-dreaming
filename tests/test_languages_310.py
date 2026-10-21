@@ -42,14 +42,19 @@ class ConflictTests(unittest.TestCase):
         for fact, entry in (("李雷不喜欢吃四川麻辣火锅", "- 李雷喜欢吃四川麻辣火锅"), ("李雷没有车", "- 李雷有车"),
                             ("李雷不同意这个方案", "- 李雷同意这个方案"), ("李雷对花生不过敏", "- 李雷对花生过敏"),
                             ("李雷无车，喜欢吃四川麻辣火锅", "- 李雷有车，喜欢吃四川麻辣火锅"),
-                            ("李雷不喜欢苹果但喜欢香蕉", "- 李雷喜欢苹果但不喜欢香蕉")):
+                            ("李雷不喜欢苹果但喜欢香蕉", "- 李雷喜欢苹果但不喜欢香蕉"),
+                            ("李雷不吃苹果", "- 李雷吃红苹果"),  # third Codex pass: a word between
+                            ("李雷每天在家吃晚饭，他不喝酒", "- 李雷每天在家吃晚饭，他不抽烟但喝酒")):  # fifth: "but"
             with self.subTest(fact):
                 self.assertIsNotNone(dream.polarity_flip(fact, entry))
 
     def test_chinese_said_the_same_way_is_no_conflict(self):
         for fact, entry in (("李雷不喜欢吃辣", "- 李雷不喜欢吃辣"), ("李雷住在无锡市", "- 李雷住在无锡市，喜欢吃辣"),
                             ("护照被没收了", "- 护照被没收了"), ("李雷喜欢吃辣", "- 李雷喜欢吃辣"),
-                            ("李雷住在无锡市", "- 李雷住在无锡，喜欢吃辣")):
+                            ("李雷住在无锡市", "- 李雷住在无锡，喜欢吃辣"),
+                            ("李雷不喝酒", "- 李雷不再喝酒"),  # third Codex pass: both negate
+                            ("李雷不吃苹果", "- 李雷吃香蕉"), ("李雷不喝酒", "- 李雷不经常喝酒"),  # fourth pass
+                            ("李雷每天在家吃晚饭，他不喜欢吃苹果", "- 李雷每天在家吃晚饭，他喜欢吃香蕉")):  # fifth pass
             with self.subTest(fact):
                 self.assertIsNone(dream.polarity_flip(fact, entry))
 

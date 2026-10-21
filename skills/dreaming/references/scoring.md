@@ -206,9 +206,13 @@ like almonds") is compared together with the word after it, the thing it is said
 of, when both texts speak of that thing (3.1.0). Where negations are compared, a short Latin word loses its third-person or
 plural "-s" first («eats» / «eat»; not «class», «bus», «Paris») — not in the general
 stem, where it would part Dutch «fiets» / «fietsen» and meet German «Dachs» / «Dach».
-Chinese writes no spaces: what 不 / 没(有) / 别 / 未 / 无(法) negates is the up to three
-characters after it, compared where both texts hold them («不同意» / «同意» flips; 无锡,
-没收, 别墅 are the same word on both sides) (3.1.0). Reported as `fact_negations` / `memory_negations`, and such a candidate is no
+Chinese writes no spaces: what 不 / 没(有) / 别 / 未 / 无(法) negates is the up to five
+characters after it; it is a flip when the other text says the longest piece of them,
+the rest following too, without a negation of its own before it in the same clause (a
+clause ends at punctuation and at 但 / 却 / 可是): «不同意» / «同意», «不吃苹果» / «吃红苹果»,
+«不喝酒» / «不抽烟但喝酒» flip; «不喝酒» / «不再喝酒» agree; «不喜欢吃苹果» / «喜欢吃香蕉» is no
+conflict; 无锡, 没收, 别墅 are the same word on both sides (3.1.0, 3.1.1). Still a heuristic
+without a dictionary of words. Reported as `fact_negations` / `memory_negations`, and such a candidate is no
 duplicate for fuzzy dedupe, for an identical head or a verbatim substring ("use X"
 inside "do not use X"), or for the reject list either. An entry that holds a
 secret or an instruction shows nothing of itself: `entry` is a placeholder,

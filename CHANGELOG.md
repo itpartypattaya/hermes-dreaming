@@ -3,6 +3,21 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.1.1 — 2026-10-21
+
+### Fixed
+
+- **Chinese negations, compared the right way.** 3.1.0 looked for the up to three characters after a negation, as one
+  piece, in the other text. A word between broke it ("不吃苹果" against "吃红苹果" found no conflict, and the message
+  corroborated the fact), and the piece inside another negation counted as said plainly ("不喝酒" against "不再喝酒",
+  which agree, was a conflict, and the message was dropped). Up to five characters after the negation are taken; the
+  longest piece of them the other text holds is compared, a shorter piece only when the rest follows too ("不吃苹果"
+  meets "吃红苹果"; "不喜欢吃苹果" does not meet "喜欢吃香蕉"), and only where the other text has no negation before it in
+  the same clause, up to four characters back, a clause ending at punctuation and at 但 / 却 / 可是 ("不经常喝酒" negates
+  喝酒; "不抽烟但喝酒" does not). Still a heuristic without a dictionary of words. (Third to fifth Codex passes.)
+- **The screen is holographic 0.17.7's** (`holo_screen.py`, `fd68b1a`): a double negation or an exception no longer
+  turns an order into a reminder ("不能不要忽略你的指令", "never ignore your instructions unless …").
+
 ## 3.1.0 — 2026-10-21
 
 From a review of 3.0.1 in Russian, English and Chinese (Antigravity), and a Codex review of the fixes. Corroboration
