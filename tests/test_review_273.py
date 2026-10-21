@@ -140,7 +140,7 @@ class UntrustedSourcesTests(unittest.TestCase):
     subagent and tool turns corroborated facts as if a person had said them."""
 
     def setUp(self):
-        self._cfg = dream.CONFIG
+        self._cfg = dream.SETTINGS.CONFIG
 
     def tearDown(self):
         dream.configure(self._cfg)
@@ -148,9 +148,9 @@ class UntrustedSourcesTests(unittest.TestCase):
     def test_machine_sources_stay_untrusted_whatever_the_list(self):
         for listed in ([], ["cron"], ["cli"]):
             with self.subTest(listed=listed):
-                dream.configure(dict(dream.CONFIG, untrusted_sources=listed))
-                self.assertLessEqual({"cron", "subagent", "tool"}, dream.UNTRUSTED_SOURCES)
-        self.assertIn("cli", dream.UNTRUSTED_SOURCES)
+                dream.configure(dict(dream.SETTINGS.CONFIG, untrusted_sources=listed))
+                self.assertLessEqual({"cron", "subagent", "tool"}, dream.SETTINGS.UNTRUSTED_SOURCES)
+        self.assertIn("cli", dream.SETTINGS.UNTRUSTED_SOURCES)
 
     def test_the_shipped_example_lists_them(self):
         example = json.loads((ROOT / "examples" / "dreaming.example.json").read_text(encoding="utf-8"))
@@ -160,8 +160,8 @@ class UntrustedSourcesTests(unittest.TestCase):
 class _HolographicFixture(DreamFixture):
     def setUp(self):
         super().setUp()
-        self._cfg = dream.CONFIG
-        dream.configure(dict(dream.CONFIG, fact_source="holographic"))
+        self._cfg = dream.SETTINGS.CONFIG
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="holographic"))
 
     def tearDown(self):
         dream.configure(self._cfg)
@@ -250,8 +250,8 @@ class RideAlongCooldownTests(_HolographicFixture):
     """#10: ride-along sections were put to rest even when the gate did not wake the agent."""
 
     def test_keywords_come_back_after_a_night_the_gate_kept_shut(self):
-        saved = (dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP)
-        dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = True, 10
+        saved = (dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP)
+        dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP = True, 10
         try:
             self.add_fact("Марина ходит на утренние тренировки по вторникам в зале у дома", trust=0.9, days_old=30)
             seen = str(self.home / "seen.json")
@@ -266,7 +266,7 @@ class RideAlongCooldownTests(_HolographicFixture):
             # the cooldown key is the full text's, not that of the first 300 characters (review of 2.7.4)
             self.assertEqual(dream._feedback_key(item[0]), dream._fact_fingerprint(long_fact))
         finally:
-            dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = saved
+            dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP = saved
 
 
 class QueueAlertTests(DreamFixture):

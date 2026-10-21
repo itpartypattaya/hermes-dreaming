@@ -3,6 +3,48 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.0.0 — 2026-10-21
+
+A structural release: `dream.py` gets smaller and every loader configures it the same way. The nightly pass works
+as before (the `dream-reject.py --hermes-home` fix this split began with shipped in 2.9.9 as B3).
+
+### Structure
+
+- **Importing `dream.py` reads no file.** It used to read `dreaming.json` and `config.yaml` of the home in the
+  environment on import, and print their warnings, even when the caller then pointed it at another home. Now the
+  module starts on the built-in defaults, and `load_for_home(home, cfg_path=None)` is the one call that points it
+  at a home and applies that home's config. The CLI, `install.py`, the extraction gate and `dream-reject.py` all
+  use it.
+- **The config.yaml fallback reader is a file of its own, `scripts/dream_yaml.py`.** It moved unchanged from
+  `dream.py` (about 430 lines), which loads it by path, like `holo_screen.py`. The name avoids Hermes' own
+  `hermes_yaml` module. A missing or broken copy is reported on stderr and does not stop the pass: with PyYAML the
+  reader is never asked, and without it every block it would read counts as unread, which keeps the gates shut.
+  Nothing changes for installation: the gates copied to `~/.hermes/scripts/` still find `dream.py` in the plugin,
+  and the new files sit next to it. The reader is frozen: a YAML form it does not take stays unread, and the fix
+  for that is Hermes' own Python with PyYAML, not a new rule (2.9.5–2.9.8 were four releases in a day for it).
+- **The word lists of the languages are a file of their own, `scripts/dream_lang.py`.** Stopwords, function words
+  of Chinese, Japanese, Korean and Thai, weekdays, months, negations, Russian endings, the words of one-off events
+  and the date patterns moved unchanged (about 280 lines). Unlike the YAML reader, it has no stand-in: without it
+  `dream.py` does not load, and the gates report `dream_error`.
+- **`corroborate()` no longer changes the shape of its answer by a flag.** `corroborate()` gives (mentions, days,
+  last time); `corroborate_with_evidence()` adds the samples. The `evidence=` argument is gone.
+- **The settings are one object, `SETTINGS`.** `configure()` used to set 41 module globals one by one; now it
+  builds a whole `Settings` and swaps it in at the end, so a config that fails half-way leaves the previous
+  settings untouched, and the code reads `SETTINGS.MIN_SCORE` instead of a bare global. `dream.MIN_SCORE` and
+  the other names still read, so gates of an older install keep working. Writing one on the module
+  (`dream.MIN_SCORE = 1`) raises: it would change nothing the pass reads, and a test that did it would pass
+  without testing anything. The tests set `dream.SETTINGS.<name>` instead.
+- **`run()` and `forget_sweep()` are split into named steps**, in the same order and with the same writes:
+  scoring, promotions, conflicts, decays, themes and the cooldown stamps for the pass; the payload, the reject
+  list, the cooldowns, the diary and the cron logs for the sweep. ruff's complexity of the two went from 18 and 33
+  to under 10.
+
+### Fixed
+
+- **The `confirm` cooldowns are pruned by age.** They were stamped like the other ride-along sections and never
+  pruned, so the seen-state kept one key for every fact ever offered for a confirmation. A stamp older than two
+  cooldowns holds nothing back, so no answer changes.
+
 ## 2.9.9 — 2026-10-21
 
 From the review of 2.9.8 against the articles «10 принципов кода для AI-агентов» and the vibe-coding checklist.

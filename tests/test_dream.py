@@ -102,18 +102,18 @@ class DreamFixture(unittest.TestCase):
         con.close()
 
         self._old_home = dream.HOME
-        self._old_family = dream.TRUSTED_CHAT_IDS
-        self._old_cap = dream.NEW_FACTS_CAP
-        self._old_excluded = dream.EXCLUDED_THREADS
+        self._old_family = dream.SETTINGS.TRUSTED_CHAT_IDS
+        self._old_cap = dream.SETTINGS.NEW_FACTS_CAP
+        self._old_excluded = dream.SETTINGS.EXCLUDED_THREADS
         dream.HOME = str(self.home)
-        dream.TRUSTED_CHAT_IDS = {FAMILY_CHAT}
-        dream.EXCLUDED_THREADS = {}
+        dream.SETTINGS.TRUSTED_CHAT_IDS = {FAMILY_CHAT}
+        dream.SETTINGS.EXCLUDED_THREADS = {}
 
     def tearDown(self):
         dream.HOME = self._old_home
-        dream.TRUSTED_CHAT_IDS = self._old_family
-        dream.NEW_FACTS_CAP = self._old_cap
-        dream.EXCLUDED_THREADS = self._old_excluded
+        dream.SETTINGS.TRUSTED_CHAT_IDS = self._old_family
+        dream.SETTINGS.NEW_FACTS_CAP = self._old_cap
+        dream.SETTINGS.EXCLUDED_THREADS = self._old_excluded
         self.tmp.cleanup()
 
     # --- fixture helpers -----------------------------------------------
@@ -221,7 +221,7 @@ class ConsolidationTests(DreamFixture):
         self.assertIn(content, [e["content"] for e in result["ephemeral_events"]])
 
     def test_new_facts_cap_and_review_stats(self):
-        dream.NEW_FACTS_CAP = 5
+        dream.SETTINGS.NEW_FACTS_CAP = 5
         for i in range(8):
             self.add_fact(f"Свежий уникальный факт номер {i} про проект Аврора")
         result = self.run_dream()
@@ -316,52 +316,52 @@ class ExcludedThreadTests(DreamFixture):
                              **msg_kwargs)
 
     def test_excluded_thread_does_not_corroborate(self):
-        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
         self._fact_and_messages(thread_id=self.ALERTS)
         result = self.run_dream()
         self.assertEqual(result["promotions"], [])
         self.assertEqual(result["stats"]["messages_window"], 0)
 
     def test_other_thread_of_the_same_chat_still_corroborates(self):
-        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
         self._fact_and_messages(thread_id="20")
         self.assertEqual(len(self.run_dream()["promotions"]), 1)
 
     def test_thread_less_message_is_unaffected(self):
         # General / a chat without threads: thread_id is empty — the chat level decides.
-        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
         self._fact_and_messages(thread_id=None)
         self.assertEqual(len(self.run_dream()["promotions"]), 1)
 
     def test_same_thread_id_in_another_chat_is_not_excluded(self):
         # Thread numbers are not unique across chats — the exclusion is tied to the pair.
-        dream.EXCLUDED_THREADS = {"-100other": {self.ALERTS}}
+        dream.SETTINGS.EXCLUDED_THREADS = {"-100other": {self.ALERTS}}
         self._fact_and_messages(thread_id=self.ALERTS)
         self.assertEqual(len(self.run_dream()["promotions"]), 1)
 
     def test_empty_config_keeps_previous_behaviour(self):
-        dream.EXCLUDED_THREADS = {}
+        dream.SETTINGS.EXCLUDED_THREADS = {}
         self._fact_and_messages(thread_id=self.ALERTS)
         self.assertEqual(len(self.run_dream()["promotions"]), 1)
 
     def test_cli_source_can_be_untrusted(self):
         # A nightly script calls the agent through the CLI and puts a git diff into the prompt —
         # role=user, empty chat_id. Without this the whole diff was read as family talk.
-        old = dream.UNTRUSTED_SOURCES
-        dream.UNTRUSTED_SOURCES = {"cron", "cli"}
+        old = dream.SETTINGS.UNTRUSTED_SOURCES
+        dream.SETTINGS.UNTRUSTED_SOURCES = {"cron", "cli"}
         try:
             self._fact_and_messages(source="cli", chat_type=None, chat_id=None)
             result = self.run_dream()
             self.assertEqual(result["promotions"], [])
             self.assertEqual(result["stats"]["messages_window"], 0)
         finally:
-            dream.UNTRUSTED_SOURCES = old
+            dream.SETTINGS.UNTRUSTED_SOURCES = old
 
     def test_sessions_without_thread_column_still_corroborate(self):
         # Old Hermes schema: no thread_id column. The query must fall back to the
         # variant without it, NOT to the "no sessions table" branch — that one drops
         # chat_id as well, and corroboration would go blind over a schema detail.
-        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
+        dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {self.ALERTS}}
         con = sqlite3.connect(self.home / "state.db")
         con.execute("alter table sessions rename to sessions_new")
         con.execute("create table sessions (id text primary key, source text,"
@@ -622,7 +622,7 @@ class SeenCooldownTests(DreamFixture):
         self._add_new_fact()
         self.run_dream(seen_state=str(self.seen))
         state = json.loads(self.seen.read_text(encoding="utf-8"))
-        stale = (datetime.now(timezone.utc) - timedelta(days=dream.SEEN_COOLDOWN_DAYS + 1))
+        stale = (datetime.now(timezone.utc) - timedelta(days=dream.SETTINGS.SEEN_COOLDOWN_DAYS + 1))
         for rec in state["new_facts"].values():
             rec["at"] = stale.isoformat(timespec="seconds")
         self.seen.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
@@ -639,7 +639,7 @@ class SeenCooldownTests(DreamFixture):
 
     def test_cap_overflow_not_marked_seen(self):
         # A fact that did not fit under the cap was never shown — it must come back.
-        dream.NEW_FACTS_CAP = 1
+        dream.SETTINGS.NEW_FACTS_CAP = 1
         self._add_new_fact("Первый факт про утренний кофе Ольги")
         self._add_new_fact("Второй факт про вечерние прогулки Ольги")
         first = self.run_dream(seen_state=str(self.seen))
@@ -675,7 +675,7 @@ class SeenCooldownTests(DreamFixture):
         self.run_dream(seen_state=str(self.seen))
         state = json.loads(self.seen.read_text(encoding="utf-8"))
         ancient = (datetime.now(timezone.utc)
-                   - timedelta(days=2 * dream.SEEN_COOLDOWN_DAYS + 1))
+                   - timedelta(days=2 * dream.SETTINGS.SEEN_COOLDOWN_DAYS + 1))
         state["new_facts"]["мусор"] = {"at": ancient.isoformat(timespec="seconds")}
         self.seen.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         self.run_dream(seen_state=str(self.seen))
@@ -947,9 +947,9 @@ class DiaryRotationTests(unittest.TestCase):
         self._fill(10)
         self.assertTrue(dream.rotate_diary(str(self.path), keep=3))
         kept = self.path.read_text(encoding="utf-8")
-        self.assertEqual(len(dream.DIARY_SECTION_RE.findall(kept)), 3)
+        self.assertEqual(len(dream.SETTINGS.DIARY_SECTION_RE.findall(kept)), 3)
         archive = Path(str(self.path) + ".archive.md").read_text(encoding="utf-8")
-        self.assertEqual(len(dream.DIARY_SECTION_RE.findall(archive)), 7)
+        self.assertEqual(len(dream.SETTINGS.DIARY_SECTION_RE.findall(archive)), 7)
         self.assertIn("текст 0", archive)   # nothing is lost
         self.assertIn("текст 9", kept)
 
@@ -962,17 +962,17 @@ class DiaryRotationTests(unittest.TestCase):
     def test_append_diary_triggers_rotation(self):
         # append_diary must trigger the rotation itself, otherwise it never happens
         # in production: nobody calls rotate_diary by hand.
-        old_keep = dream.DIARY_KEEP_SECTIONS
-        dream.DIARY_KEEP_SECTIONS = 2
+        old_keep = dream.SETTINGS.DIARY_KEEP_SECTIONS
+        dream.SETTINGS.DIARY_KEEP_SECTIONS = 2
         try:
             self._fill(5)
             dream.append_diary(str(self.path), "## Сон 2026-07-31\nсвежее\n")
             kept = self.path.read_text(encoding="utf-8")
-            self.assertEqual(len(dream.DIARY_SECTION_RE.findall(kept)), 2)
+            self.assertEqual(len(dream.SETTINGS.DIARY_SECTION_RE.findall(kept)), 2)
             self.assertIn("свежее", kept)
             self.assertTrue(Path(str(self.path) + ".archive.md").exists())
         finally:
-            dream.DIARY_KEEP_SECTIONS = old_keep
+            dream.SETTINGS.DIARY_KEEP_SECTIONS = old_keep
 
     @unittest.skipIf(os.name == "nt", "права POSIX проверяются на сервере")
     def test_existing_diary_gets_private_perms(self):
@@ -1339,7 +1339,7 @@ class MdDecayCooldownTests(unittest.TestCase):
         # still here as it was: "not relevant" would have removed or rewritten
         # it, so it is confirmed — not asked again (fix 2026-10-02).
         key = dream._entry_key(self.ENTRY)
-        stale = (_ts(dream.MD_ASK_COOLDOWN_DAYS + 1)).isoformat(timespec="seconds")
+        stale = (_ts(dream.SETTINGS.MD_ASK_COOLDOWN_DAYS + 1)).isoformat(timespec="seconds")
         self.state.write_text(json.dumps({key: stale}), encoding="utf-8")
         self.assertEqual(self._decays(), [])
         rec = self._state()[key]
@@ -1350,12 +1350,12 @@ class MdDecayCooldownTests(unittest.TestCase):
 
     def test_confirmed_entry_rests_long_then_reflags(self):
         key = dream._entry_key(self.ENTRY)
-        asked_at = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS + 30).isoformat(timespec="seconds")
-        recent = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS - 1).isoformat(timespec="seconds")
+        asked_at = _ts(dream.SETTINGS.MD_CONFIRMED_COOLDOWN_DAYS + 30).isoformat(timespec="seconds")
+        recent = _ts(dream.SETTINGS.MD_CONFIRMED_COOLDOWN_DAYS - 1).isoformat(timespec="seconds")
         self.state.write_text(json.dumps({key: {"at": asked_at, "confirmed": recent}}),
                               encoding="utf-8")
         self.assertEqual(self._decays(), [])
-        old = _ts(dream.MD_CONFIRMED_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
+        old = _ts(dream.SETTINGS.MD_CONFIRMED_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
         self.state.write_text(json.dumps({key: {"at": asked_at, "confirmed": old}}),
                               encoding="utf-8")
         self.assertEqual(len(self._decays()), 1)
@@ -1412,7 +1412,7 @@ class MdDecayCooldownTests(unittest.TestCase):
         self._decays()
         self.assertIn(key, self._state())
         data = self._state()
-        data[key]["at"] = _ts(dream.MD_ASK_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
+        data[key]["at"] = _ts(dream.SETTINGS.MD_ASK_COOLDOWN_DAYS + 1).isoformat(timespec="seconds")
         self.state.write_text(json.dumps(data), encoding="utf-8")
         self._decays()
         self.assertNotIn(key, self._state())
@@ -1430,16 +1430,16 @@ class DiaryDateTests(unittest.TestCase):
     def test_diary_header_uses_local_date(self):
         # 20:30 UTC = 03:30 of the next day in UTC+7 — the header must use the local date.
         # The zone is set here as a fixed offset, not a name: on import the module
-        # is configured from the environment (UTC without ~/.hermes/dreaming.json,
-        # and the test failed), and Windows has no tzdata for ZoneInfo("Asia/…").
-        real_now, real_tz = dream._now, dream.LOCAL_TZ
+        # starts on the defaults (UTC, and the test failed), and Windows has no
+        # tzdata for ZoneInfo("Asia/…").
+        real_now, real_tz = dream._now, dream.SETTINGS.LOCAL_TZ
         dream._now = lambda: datetime(2026, 7, 10, 20, 30, tzinfo=timezone.utc)
-        dream.LOCAL_TZ = timezone(timedelta(hours=7))
+        dream.SETTINGS.LOCAL_TZ = timezone(timedelta(hours=7))
         try:
             diary = dream.build_diary(14, 0, 0, [], [], [], [])
             self.assertTrue(diary.startswith("## Сон 2026-07-11"), diary.splitlines()[0])
         finally:
-            dream._now, dream.LOCAL_TZ = real_now, real_tz
+            dream._now, dream.SETTINGS.LOCAL_TZ = real_now, real_tz
 
 
 if __name__ == "__main__":

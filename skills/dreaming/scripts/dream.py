@@ -36,6 +36,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import types
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -383,435 +384,33 @@ def hermes_config_unread(home=None):
     return tuple(".".join(p) for p in (("memory",), _STORE) if _scan_block(text, p) is None)
 
 
-# A key at the start of a line (after its indent), plain or quoted, and what follows the colon.
-_KEY_RE = re.compile(r"""(["']?)(\w[\w.-]*)\1[ \t]*:(?:[ \t]+(.*)|[ \t]*$)""")
-_UNREAD = object()
 _STORE = ("plugins", "hermes-memory-store")
 
 
-class _Unsure(Exception):
-    """The scanner cannot tell what YAML reads here. The block it was reading counts as unread, not as empty: an
-    empty store block means the defaults — `memory_store.db`, `scope: profile`, cron writes on — and the second
-    review of the 2.9.7 branch (Codex) found four configs where a half-read block let those defaults open the
-    extraction gate or point the pass at another database. Unsure is closed."""
-
-
-# A plain scalar of this many characters or more that looks like a number is not typed: YAML's base-60 and
-# arbitrary-size ints cost time that grows with the square of the length (second review of the 2.9.7 branch).
-_NUMBER_LEN = 100
-# Plain scalars as PyYAML (YAML 1.1) types them: "write_approval: 1" is a number, which Hermes reads as off, and
-# "05000" is octal. PyYAML's own lists: "y" and "n" stay strings (third review of 2.9.6, Codex); binary, base-60
-# ("1:30" is 90), ".inf" and ".nan" are numbers (review of the 2.9.7 branch, Codex).
-_YAML_TRUE = {"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"}
-_YAML_FALSE = {"false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"}
-_YAML_NULL = {"", "~", "null", "Null", "NULL"}
-_YAML_INT = re.compile(r"[-+]?(?:0|[1-9][0-9_]*)$")
-_YAML_OCT = re.compile(r"[-+]?0[0-7_]+$")
-_YAML_HEX = re.compile(r"[-+]?0x[0-9a-fA-F_]+$")
-_YAML_BIN = re.compile(r"[-+]?0b[0-1_]+$")
-_YAML_INT60 = re.compile(r"[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+$")
-# PyYAML's float: a digit before the point, or an unsigned ".5" ("-.5" stays a string)
-_YAML_FLOAT = re.compile(r"(?:[-+]?[0-9][0-9_]*\.[0-9_]*|\.[0-9_]+)(?:[eE][-+][0-9]+)?$")
-_YAML_FLOAT60 = re.compile(r"[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$")
-_YAML_INF = re.compile(r"[-+]?\.(?:inf|Inf|INF)$")
-_YAML_NAN = re.compile(r"\.(?:nan|NaN|NAN)$")
-_YAML_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}"
-                             r"(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?)?$")
-# YAML's line breaks: str.splitlines() also breaks at \v, \f and \x1c-\x1e, which YAML does not
-_YAML_LINES = re.compile("\r\n|[\r\n\x85\u2028\u2029]")
-# YAML's double-quoted escapes (JSON knows only some of them)
-_YAML_ESCAPES = {"0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f",
-                 "r": "\r", "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85", "_": "\xa0",
-                 "L": " ", "P": " "}
-_YAML_HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
-# How deep a one-line flow (`{a: [b, {c: d}]}`) is followed before it counts as unread: past it, recursion would
-# reach Python's limit (review of the 2.9.7 branch, Codex: a 1,100-deep list crashed the config load).
-_FLOW_DEPTH = 64
-# How a plain flow key may not start: `?` (explicit key), `!` (tag), `&` (anchor), `*` (alias) and YAML's indicators
-_NOT_A_PLAIN_KEY = ("?", "!", "&", "*", "|", ">", "%", "@", "`")
-
-
-def _quoted(text, start):
-    """(value, index after the closing quote) of the quoted scalar at `text[start]`, or None when it does not
-    close on this line. Single quotes double to escape (`''`); double quotes take YAML's escapes (`\\"`, `\\\\`,
-    `\\n`, `\\x41`, `\\u00e9`…). An escape YAML does not know gives _UNREAD as the value, with the end still found,
-    so it leaves out its own key and nothing else (review of the 2.9.7 branch, Codex)."""
-    quote, i = text[start], start + 1
-    if quote == "'":
-        out = []
-        while i < len(text):
-            if text[i] == "'":
-                if text[i + 1:i + 2] == "'":
-                    out.append("'")
-                    i += 2
-                    continue
-                return "".join(out), i + 1
-            out.append(text[i])
-            i += 1
-        return None
-    out, bad = [], False
-    while i < len(text):
-        c = text[i]
-        if c == '"':
-            return (_UNREAD if bad else "".join(out)), i + 1
-        if c != "\\":
-            out.append(c)
-            i += 1
-            continue
-        esc = text[i + 1:i + 2]
-        if esc in _YAML_ESCAPES:
-            out.append(_YAML_ESCAPES[esc])
-            i += 2
-        elif esc in _YAML_HEX_ESCAPES:
-            width = _YAML_HEX_ESCAPES[esc]
-            digits = text[i + 2:i + 2 + width]
-            if len(digits) == width and all(d in "0123456789abcdefABCDEF" for d in digits):
-                out.append(chr(int(digits, 16)) if int(digits, 16) <= 0x10FFFF else "")
-                bad = bad or int(digits, 16) > 0x10FFFF
-                i += 2 + width
-            else:
-                bad, i = True, i + 2
-        else:
-            bad, i = True, i + 2
-    return None
-
-
-def _strip_comment(text, plain=False):
-    """`text` without its comment: `#` at the start or after a space, outside quotes (`"a #b"` keeps it). A quote
-    opens a quoted scalar only where a scalar starts — at the start of `text`, or in a flow after `[`, `{`, `,` or
-    `:` — and is a character inside a plain one, as in YAML: `/data/family 'archive #1'.db` ends at the `#` (third
-    review of the 2.9.7 branch, Codex). `plain`: the text continues a plain scalar (a continuation line)."""
-    flow = not plain and text[:1] in ("{", "[")
-    prev, i = "", 0  # prev: the last character before `i` that is not a space, outside quotes
-    while i < len(text):
-        c = text[i]
-        if c in ("'", '"') and not plain and (i == 0 or (flow and prev in ("[", "{", ",", ":"))):
-            hit = _quoted(text, i)
-            if hit is None:
-                return text
-            prev, i = c, hit[1]
-            continue
-        if c == "#" and (i == 0 or text[i - 1] in " \t"):
-            return text[:i].rstrip(" \t")
-        if c not in " \t":
-            prev = c
-        i += 1
-    return text.rstrip(" \t")
-
-
-def _base60(text):
-    sign = -1 if text.startswith("-") else 1
-    total = 0.0 if "." in text else 0
-    for part in text.lstrip("+-").replace("_", "").split(":"):
-        total = total * 60 + (float(part) if "." in part else int(part))
-    return sign * total
-
-
-def _plain(text):
-    """A plain scalar typed as PyYAML types it, or _UNREAD for what this reader does not take: a block scalar
-    (`|`, `>`), an anchor, an alias, a tag, a directive, a number of _NUMBER_LEN characters or more, a timestamp
-    (PyYAML makes it a date, whose string differs — third review of the 2.9.7 branch, Codex)."""
-    text = text.strip(" \t")
-    if text[:1] in ("|", ">", "&", "*", "!", "%", "@", "`") or _YAML_TIMESTAMP.match(text):
-        return _UNREAD
-    if text in _YAML_NULL:
-        return None
-    if text in _YAML_TRUE or text in _YAML_FALSE:
-        return text in _YAML_TRUE
-    digits = text.replace("_", "")
-    if len(text) >= _NUMBER_LEN and any(r.match(text) for r in (_YAML_INT, _YAML_OCT, _YAML_HEX, _YAML_BIN,
-                                                                  _YAML_INT60, _YAML_FLOAT60, _YAML_FLOAT)):
-        return _UNREAD
+def _load_yaml_scanner(path=None):
+    """dream_yaml.py next to this file — the reader of config.yaml without PyYAML (`_scan_block`) — or None. A
+    missing or broken copy must not take the pass down: with PyYAML the scanner is never asked, and without it
+    every block it would read counts as unread (`_scan_block` gives None), which keeps the gates shut."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "dream_yaml.py")
     try:
-        if _YAML_INT.match(text):
-            return int(digits)
-        if _YAML_OCT.match(text):
-            return int(digits, 8)
-        if _YAML_HEX.match(text):
-            return int(digits, 16)
-        if _YAML_BIN.match(text):
-            return int(digits, 2)
-        if _YAML_INT60.match(text) or _YAML_FLOAT60.match(text):
-            return _base60(text)
-        if _YAML_INF.match(text):
-            return float("-inf") if text.startswith("-") else float("inf")
-        if _YAML_NAN.match(text):
-            return float("nan")
-        if _YAML_FLOAT.match(text) and any(c.isdigit() for c in text):
-            return float(digits)
-    except (ValueError, OverflowError):
-        return _UNREAD
-    return text
-
-
-def _flow(text, i=0, depth=0):
-    """(value, index after it) of the flow collection or scalar at `text[i]` — `{…}` a dict, `[…]` a list, nested
-    up to _FLOW_DEPTH — or None on what this reader cannot follow on the line. A value it does not read (an
-    anchor, a tag, an escape YAML does not know, a flow deeper than _FLOW_DEPTH) raises _Unsure: leaving the pair
-    out kept an earlier value of a repeated key, and leaving the mapping out let the defaults in (second review
-    of the 2.9.7 branch, Codex)."""
-    if depth > _FLOW_DEPTH:
-        raise _Unsure
-    while i < len(text) and text[i] in " \t":
-        i += 1
-    if i >= len(text):
-        return None
-    c = text[i]
-    if c in ("'", '"'):
-        return _quoted(text, i)
-    if c in "{[":
-        close, out, i = ("}" if c == "{" else "]"), ({} if c == "{" else []), i + 1
-        while True:
-            while i < len(text) and text[i] in " \t":
-                i += 1
-            if i >= len(text):
-                return None
-            if text[i] == close:
-                return out, i + 1
-            if isinstance(out, dict):
-                if text[i] in ("'", '"'):
-                    hit = _quoted(text, i)
-                    if hit is None:
-                        return None
-                    key, i = hit
-                else:
-                    j = i
-                    while j < len(text) and text[j] not in ":,{}[]":
-                        j += 1
-                    if j + 1 < len(text) and text[j] == ":" and text[j + 1] not in " \t,{}[]":
-                        # `{provider:holographic}` is one key in YAML, `provider:holographic` with no value (third
-                        # review of the 2.9.7 branch, Codex)
-                        raise _Unsure
-                    key, i = text[i:j].strip(" \t"), j
-                    if not key or key[:1] in _NOT_A_PLAIN_KEY or key == "<<":
-                        # `{: none}`, an explicit `? key`, a tagged, anchored or aliased key, a merge `<<`: YAML reads
-                        # them otherwise, and a second `? provider: none` overrode the first (fourth review of the
-                        # 2.9.7 branch, Codex)
-                        raise _Unsure
-                while i < len(text) and text[i] in " \t":
-                    i += 1
-                if i >= len(text) or text[i] != ":":
-                    return None
-                hit = _flow(text, i + 1, depth + 1)
-                if hit is None:
-                    return None
-                value, i = hit
-                if value is _UNREAD or key is _UNREAD:
-                    raise _Unsure
-                out[str(key)] = value
-            else:
-                hit = _flow(text, i, depth + 1)
-                if hit is None:
-                    return None
-                value, i = hit
-                if value is _UNREAD:
-                    raise _Unsure
-                out.append(value)
-            while i < len(text) and text[i] in " \t":
-                i += 1
-            if i < len(text) and text[i] == ",":
-                i += 1
-            elif i >= len(text) or text[i] != close:
-                return None
-    j = i
-    while j < len(text) and text[j] not in ",{}[]":
-        j += 1
-    return _plain(text[i:j]), j
-
-
-def _scalar(rest):
-    """The value after `key:` on its line, typed as PyYAML types it for the forms Hermes writes: a plain scalar
-    (`_plain`), a quoted string (escapes decoded), a one-line flow collection (`_flow`) — or _UNREAD for what
-    this reader does not take (a block scalar, an anchor, an alias, a tag, a flow that does not close on the line);
-    inside a flow, such a value raises _Unsure, which `_scan_block` turns into None. `#` starts a comment only at
-    the start or after a space and outside quotes, as in YAML: `holo#graphic` and `"a #b"` are values."""
-    rest = _strip_comment(rest.strip(" \t"))
-    if rest[:1] in ("'", '"', "{", "["):
-        hit = _flow(rest)
-        if hit is None or rest[hit[1]:].strip(" \t"):
-            return _UNREAD
-        return hit[0]
-    return _plain(rest)
-
-
-def _a_plain_value(value_text):
-    """Is this value on the key's line a plain scalar, which YAML continues on deeper lines?"""
-    return bool(value_text) and value_text[:1] not in ("'", '"', "{", "[", "|", ">", "&", "*", "!")
-
-
-def _scan_block(text, path):
-    """{key: value} of the direct children of the mapping at `path` in config.yaml (`()` is the top level,
-    `("memory",)`, `("plugins", "hermes-memory-store")`), or None when the scanner cannot tell what YAML reads
-    there — the reader behind the config helpers when PyYAML is missing or cannot parse the file. Not a YAML
-    parser: block mappings with plain or quoted keys, and values typed as PyYAML types them (`_scalar`):
-    scalars, a plain scalar continued on deeper lines, one-line flow collections. A flow mapping stands for the
-    block at `path` or at any key on the way to it (`plugins: {hermes-memory-store: {…}}`), or for the whole
-    document. A tab indent is taken although YAML refuses it.
-
-    None — unsure — is not {}: an empty store block means the defaults, and a half-read one let them open the
-    extraction gate or point the pass at another database (second review of the 2.9.7 branch, Codex). It comes
-    on a value of `path` or of a key on the way to it that this reader does not take (a tag, an anchor, a block
-    scalar, an escape YAML does not know, a flow deeper than _FLOW_DEPTH or not closed on its line, a number of
-    _NUMBER_LEN characters or more), a continued plain value with a blank or comment line inside (YAML keeps
-    those as line breaks), a line of that mapping that is not a key or sits at another indent, an indented line
-    outside any mapping, and on a file of several YAML documents or with content on a `---` line.
-
-    A comment line belongs to no block, at any indent: YAML skips it, so a top-level "# Section heading" between
-    `memory:` and its `provider:` does not end the mapping (issue #2: the old block regex stopped there and
-    reported no provider while Hermes ran holographic; the same regex read `plugins:` until 2.9.7). Each mapping's
-    first content line fixes the indent of its children, whatever it holds (review of 2.9.6, Codex: a quoted key
-    the old extractor skipped let a nested key set it); deeper lines belong to a nested value. A key with a value
-    on its line holds no children: the lines under `memory: |` are text, not settings (review of 2.9.7, Codex),
-    and the lines under a plain value continue it, as YAML folds them — `provider: holographic` over
-    `    disabled` is "holographic disabled", not holographic (review of the 2.9.7 branch, Codex). Every definition
-    of `path`, or of a key on the way to it, replaces what an earlier one gave, as in YAML: a second `plugins:`
-    without the store leaves nothing (review of 2.9.7). A key may carry a comment, the file a BOM, and the last
-    line may lack a newline. A document marker is one only in column 0: `---` inside a block scalar is text."""
-    path = tuple(path)
-    try:
-        return _scan_block_or_raise(text, path)
-    except _Unsure:
+        spec = importlib.util.spec_from_file_location("_dream_yaml", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        print(f"[dream] warn: {path} not loaded ({exc!r}) — without PyYAML config.yaml counts as unread",
+              file=sys.stderr)
         return None
 
 
-def _scan_block_or_raise(text, path):
-    result, found = {}, not path
-    content = started = ended = False  # a content line seen; a `---` seen; a `...` seen
-    gap = False  # a blank or comment line since the last content line: it ends a continued plain value
-    # [indent, key, indent of its children, opaque: a value on the key's line, continuation lines of a plain
-    # value of a direct child of `path` (or None), the value's first line, a list: its children are `- ` items]
-    stack = []
-
-    def on_path():
-        """Is the mapping at the top of the stack `path` or a mapping on the way to it?"""
-        keys = tuple(entry[1] for entry in stack)
-        return path[:len(keys)] == keys
-
-    def close(entry):
-        if entry[4]:
-            value = _plain(" ".join([entry[5]] + entry[4]))
-            if value is _UNREAD:
-                raise _Unsure
-            result[entry[1]] = value
-
-    if text[:1] == "\ufeff":
-        # one BOM, as YAML: a second one is part of the first key (fourth review of the 2.9.7 branch, Codex)
-        text = text[1:]
-    if any(c in text for c in ("\x85", "\u2028", "\u2029")):
-        # NEL, LS, PS break lines in YAML, but a plain scalar folded over one keeps it, not a space — another db_path
-        # (fourth review of the 2.9.7 branch, Codex). Rare enough to leave the file unread.
-        raise _Unsure
-    for line in _YAML_LINES.split(text):
-        # YAML's whitespace is space and tab: NBSP and the other Unicode spaces are text to it, and stripping them
-        # moved keys and changed values (third review of the 2.9.7 branch, Codex)
-        body = line.strip(" \t")
-        if not body:
-            gap = True
-            continue
-        if body[0].isspace():
-            raise _Unsure  # a line that starts with a space YAML does not take for one
-        if line.startswith(("---", "...")) and (len(line) == 3 or line[3] in " \t"):
-            if _strip_comment(line[3:].strip(" \t")):
-                raise _Unsure  # `--- {memory: …}`, `--- !tag`: a document on the marker's line
-            if line.startswith("---"):
-                if content or started or ended:
-                    raise _Unsure  # a second document, empty ones too (`---` / `...` / `---`)
-                started = True
-            else:
-                ended = True
-            continue
-        indent = len(line) - len(line.lstrip(" \t"))
-        if body.startswith("#") and not (stack and stack[-1][3] and indent > stack[-1][0]):
-            gap = True
-            continue
-        if ended:
-            raise _Unsure  # content after `...` is another document
-        content = True
-        after_gap, gap = gap, False
-        if (stack and indent == stack[-1][0] and not stack[-1][3] and stack[-1][2] in (None, indent)
-                and (body == "-" or body.startswith(("- ", "-\t")))):
-            # a list at the indent of its key, as PyYAML (and Hermes, saving its config) writes it: `toolsets:`
-            # over `- hermes-cli`. Nothing on `path` lies inside a list: PyYAML reads no store under `plugins:` there
-            stack[-1][2], stack[-1][6] = indent, True
-            continue
-        while stack and indent <= stack[-1][0]:
-            close(stack.pop())
-        if stack:
-            top = stack[-1]
-            if top[3]:
-                if top[4] is not None:
-                    piece = _strip_comment(body, plain=True)
-                    if not piece:
-                        gap = True
-                        continue
-                    if after_gap or _KEY_RE.match(line, indent):
-                        raise _Unsure
-                    top[4].append(piece)
-                    gap = piece != body
-                continue
-            first = top[2] is None
-            if first:
-                top[2] = indent
-            if indent != top[2]:
-                if on_path() and not top[6]:
-                    raise _Unsure
-                continue
-            if body == "-" or body.startswith(("- ", "-\t")):
-                if first or top[6]:
-                    top[6] = True  # a list, as above: `plugins:` over `  - holographic`
-                elif on_path():
-                    raise _Unsure
-                continue
-            if top[6]:
-                if on_path():
-                    raise _Unsure  # a key after list items: not YAML
-                continue
-        elif indent:
-            raise _Unsure
-        hit = _KEY_RE.match(line, indent)
-        if not hit:
-            if stack and tuple(entry[1] for entry in stack[:-1]) == path and not stack[-1][6]:
-                # the value of a direct child of `path` on the next line: `db_path:` over `  right.db` is right.db,
-                # not null — and null meant the default database (fourth review of the 2.9.7 branch, Codex)
-                raise _Unsure
-            if not stack and body.startswith("{"):
-                # the whole document as one flow mapping: `{timezone: UTC, memory: {provider: x}}`
-                value = _scalar(body)
-                if value is _UNREAD:
-                    raise _Unsure
-                for name in path:
-                    value = value.get(name) if isinstance(value, dict) else None
-                found, result = True, (dict(value) if isinstance(value, dict) else {})
-                stack.append([indent, "", None, True, None, "", False])
-            elif on_path():
-                raise _Unsure
-            continue
-        key, rest = hit.group(2), hit.group(3) or ""
-        here = tuple(entry[1] for entry in stack) + (key,)
-        value_text = _strip_comment(rest.strip(" \t"))
-        continued = None
-        if path[:len(here)] == here:
-            # `path` or a key on the way to it is defined again: what came before is gone
-            found, result = True, {}
-            if value_text:
-                value = _scalar(value_text)
-                if value is _UNREAD:
-                    raise _Unsure
-                for name in path[len(here):]:
-                    value = value.get(name) if isinstance(value, dict) else None
-                result = dict(value) if isinstance(value, dict) else {}
-        elif found and here[:-1] == path:
-            value = _scalar(rest)
-            if value is _UNREAD:
-                raise _Unsure
-            result[key] = value
-            if _a_plain_value(value_text):
-                continued = []
-                gap = value_text != rest.strip(" \t")  # a comment on the key's line ends the value there
-        stack.append([indent, key, None, bool(value_text), continued, value_text, False])
-    while stack:
-        close(stack.pop())
-    return result
+_YAML_SCANNER = _load_yaml_scanner()
+if _YAML_SCANNER is not None:
+    # the scanner's names dream.py and the tests use as dream.<name>
+    _scan_block, _plain = _YAML_SCANNER._scan_block, _YAML_SCANNER._plain
+    _UNREAD, _Unsure = _YAML_SCANNER._UNREAD, _YAML_SCANNER._Unsure
+else:
+    def _scan_block(text, path):
+        return None
 
 
 def _hermes_plugin_setting(key, home=None):
@@ -872,7 +471,7 @@ def fact_store_note(home=None):
         why = ("plugins.hermes-memory-store of config.yaml cannot be read for sure (the file is not readable "
                "UTF-8, or PyYAML is missing or refuses it and the block has a form the fallback reader does not take)")
         fix = ("run with Hermes' own Python (it has PyYAML), or write the block in plain `key: value` lines")
-        if os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path"):
+        if os.environ.get("DREAM_FACT_STORE") or SETTINGS.CONFIG.get("fact_store_path"):
             # the store named in dreaming.json is read (third review of the 2.9.7 branch, Codex: the note said
             # otherwise); scope and cron_writes stay unknown
             return (f"{why} — the dream reads the store fact_store_path names, but cannot tell its scope and "
@@ -950,7 +549,7 @@ def _promote_key(raw):
 
 def chat_stores_settings():
     """(read, {promoted store keys}) of the `chat_stores` config."""
-    cfg = CONFIG.get("chat_stores") or {}
+    cfg = SETTINGS.CONFIG.get("chat_stores") or {}
     if not isinstance(cfg, dict):
         return False, set()
     keys = {_promote_key(r) for r in (cfg.get("promote_from") or []) if str(r or "").strip()}
@@ -1047,10 +646,10 @@ def _message_store(source, chat_id, thread_id, user_id, scope):
 def _own_store_message(source, chat_id, thread_id):
     """A message of a promoted chat that the trust rules leave out still corroborates its own chat's facts —
     unless it is machine speech or from an excluded thread."""
-    if (source or "") in UNTRUSTED_SOURCES:
+    if (source or "") in SETTINGS.UNTRUSTED_SOURCES:
         return False
     tid, cid = str(thread_id or ""), str(chat_id or "")
-    return not (tid and tid in EXCLUDED_THREADS.get(cid, ()))
+    return not (tid and tid in SETTINGS.EXCLUDED_THREADS.get(cid, ()))
 
 
 def messages_for(fact, messages, by_store=None):
@@ -1079,7 +678,7 @@ def fact_source():
     """Where candidate facts come from: `$DREAM_FACT_SOURCE` > dreaming.json
     `fact_source` > `holographic`. An unknown value is an error, not a silent
     "none": a typo must not quietly turn the dream into a memory-file checker."""
-    raw = os.environ.get("DREAM_FACT_SOURCE") or CONFIG.get("fact_source") or "holographic"
+    raw = os.environ.get("DREAM_FACT_SOURCE") or SETTINGS.CONFIG.get("fact_source") or "holographic"
     src = str(raw).strip().lower()
     if src not in FACT_SOURCES:
         raise ValueError(f"fact_source {raw!r} is not one of {', '.join(FACT_SOURCES)}")
@@ -1096,7 +695,7 @@ def fact_store_path(home=None):
     the store's block cannot be read for sure (`hermes_config_unread`): the default
     database is a guess, maybe another one."""
     home = home or HOME
-    raw = os.environ.get("DREAM_FACT_STORE") or CONFIG.get("fact_store_path")
+    raw = os.environ.get("DREAM_FACT_STORE") or SETTINGS.CONFIG.get("fact_store_path")
     if not raw:
         if fact_source() != "holographic" or ".".join(_STORE) in hermes_config_unread(home):
             return None
@@ -1163,81 +762,95 @@ def _tz(name):
     return timezone.utc
 
 
-# Effective settings — module globals so that tests (and embedding code) can
-# override them; `configure()` (re)populates them from a config dict.
-CONFIG = dict(DEFAULT_CONFIG)
+# The effective settings, one object. Before 3.0 they were 41 module globals that configure() set one by one
+# through a 12-line `global` list, and every function read them implicitly. Now configure() builds a whole
+# Settings and swaps it in; code reads `SETTINGS.MIN_SCORE`, so where a value comes from is visible. `dream.MIN_SCORE` still reads (module __getattr__ at the end of the file — gates of an
+# older install read `dream.LOCAL_TZ`, `dream.CONFIG`), but writing it raises: it would change nothing the pass
+# reads. Change a setting through configure(), or on SETTINGS in a test.
+_SETTING_NAMES = (
+    "CONFIG", "LOCAL_TZ", "WEIGHTS", "MIN_SCORE", "MIN_MENTIONS", "NEW_FACTS_CAP", "PUBLISH_CAP",
+    "MD_ASK_COOLDOWN_DAYS", "MD_CONFIRMED_COOLDOWN_DAYS", "SEEN_COOLDOWN_DAYS",
+    "TRUSTED_CHAT_IDS", "TRUST_PRIVATE",
+    "TRUST_NO_CHAT", "EXCLUDED_THREADS", "UNTRUSTED_SOURCES", "EXCLUDE_PATTERNS",
+    "STOPWORDS", "TOKEN_MIN_LATIN", "TOKEN_MIN_OTHER", "ALIAS_RULES",
+    "PROFILE_HINT_RE", "PROFILE_CATEGORIES", "DIARY_HEADING", "DIARY_SECTION_RE",
+    "DIARY_KEEP_SECTIONS", "DURABLE_MEMORY_PATHS", "MEMORY_CHAR_LIMITS",
+    "PINNED_MARKERS", "PROBES", "REJECT_REASK_DAYS", "MEMORY_LOSS_ALERT_FRACTION", "DIARY_PATH",
+    "PROMOTION_COOLDOWN_DAYS", "PENDING_DIR", "PENDING_ALERT_MIN", "PENDING_ALERT_DAYS",
+    "FEEDBACK_TRUST_FLOOR", "FEEDBACK_CAP", "KEYWORDS_ENABLED", "KEYWORDS_CAP",
+    "FEEDBACK_FLOOR_EXPLICIT",
+)
+
+
+class Settings:
+    """The effective settings of one config (see configure()). Slots: a misspelt name raises instead of adding a
+    setting nobody reads."""
+    __slots__ = _SETTING_NAMES
 
 
 def configure(cfg):
-    global CONFIG, LOCAL_TZ, WEIGHTS, MIN_SCORE, MIN_MENTIONS, NEW_FACTS_CAP, PUBLISH_CAP
-    global MD_ASK_COOLDOWN_DAYS, MD_CONFIRMED_COOLDOWN_DAYS, SEEN_COOLDOWN_DAYS
-    global TRUSTED_CHAT_IDS, TRUST_PRIVATE
-    global TRUST_NO_CHAT, EXCLUDED_THREADS, UNTRUSTED_SOURCES, EXCLUDE_PATTERNS
-    global STOPWORDS, TOKEN_MIN_LATIN, TOKEN_MIN_OTHER, ALIAS_RULES
-    global PROFILE_HINT_RE, PROFILE_CATEGORIES, DIARY_HEADING, DIARY_SECTION_RE
-    global DIARY_KEEP_SECTIONS, DURABLE_MEMORY_PATHS, MEMORY_CHAR_LIMITS
-    global PINNED_MARKERS, PROBES, REJECT_REASK_DAYS, MEMORY_LOSS_ALERT_FRACTION, DIARY_PATH
-    global PROMOTION_COOLDOWN_DAYS, PENDING_DIR, PENDING_ALERT_MIN, PENDING_ALERT_DAYS
-    global FEEDBACK_TRUST_FLOOR, FEEDBACK_CAP, KEYWORDS_ENABLED, KEYWORDS_CAP
-    global FEEDBACK_FLOOR_EXPLICIT
-    CONFIG = cfg
+    """Build the Settings of `cfg` (a merged config, see load_config()) and make them the module's. The whole
+    object is swapped in at the end: a config that fails half-way leaves the previous settings as they were."""
+    global SETTINGS
+    s = Settings()
+    s.CONFIG = cfg
     # A timezone the config does not mention is filled in by load_config()
     # from Hermes' own config.yaml, so here it is simply used.
-    LOCAL_TZ = _tz(_env("DREAM_TIMEZONE", cfg.get("timezone")))
-    WEIGHTS = dict(DEFAULT_CONFIG["weights"], **(cfg.get("weights") or {}))
+    s.LOCAL_TZ = _tz(_env("DREAM_TIMEZONE", cfg.get("timezone")))
+    s.WEIGHTS = dict(DEFAULT_CONFIG["weights"], **(cfg.get("weights") or {}))
     gates = cfg.get("gates") or {}
-    MIN_SCORE = _env("DREAM_MIN_SCORE", float(gates.get("min_score", 0.55)), float)
-    MIN_MENTIONS = _env("DREAM_MIN_MENTIONS", int(gates.get("min_mentions", 3)), int)
-    NEW_FACTS_CAP = _env("DREAM_NEW_FACTS_CAP", int(gates.get("new_facts_cap", 30)), int)
-    PUBLISH_CAP = int(gates.get("publish_cap", 15))
-    MD_ASK_COOLDOWN_DAYS = _env("DREAM_MD_ASK_COOLDOWN_DAYS",
+    s.MIN_SCORE = _env("DREAM_MIN_SCORE", float(gates.get("min_score", 0.55)), float)
+    s.MIN_MENTIONS = _env("DREAM_MIN_MENTIONS", int(gates.get("min_mentions", 3)), int)
+    s.NEW_FACTS_CAP = _env("DREAM_NEW_FACTS_CAP", int(gates.get("new_facts_cap", 30)), int)
+    s.PUBLISH_CAP = int(gates.get("publish_cap", 15))
+    s.MD_ASK_COOLDOWN_DAYS = _env("DREAM_MD_ASK_COOLDOWN_DAYS",
                                 int(gates.get("md_ask_cooldown_days", 14)), int)
-    MD_CONFIRMED_COOLDOWN_DAYS = _env("DREAM_MD_CONFIRMED_COOLDOWN_DAYS",
+    s.MD_CONFIRMED_COOLDOWN_DAYS = _env("DREAM_MD_CONFIRMED_COOLDOWN_DAYS",
                                       int(gates.get("md_confirmed_cooldown_days", 90)), int)
-    PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
+    s.PROMOTION_COOLDOWN_DAYS = _env("DREAM_PROMOTION_COOLDOWN_DAYS",
                                    int(gates.get("promotion_cooldown_days", 3)), int)
     # Two settings, two parses: a bad cap used to reset the floor too, and an explicit
     # override silently became the provider's value (Codex review of 2.7.1).
     raw_floor = gates.get("feedback_trust_floor")
     try:
-        FEEDBACK_TRUST_FLOOR = 0.3 if raw_floor is None else float(raw_floor)
-        if not 0.0 <= FEEDBACK_TRUST_FLOOR <= 1.0:
+        s.FEEDBACK_TRUST_FLOOR = 0.3 if raw_floor is None else float(raw_floor)
+        if not 0.0 <= s.FEEDBACK_TRUST_FLOOR <= 1.0:
             raise ValueError(raw_floor)
     except (TypeError, ValueError):
-        FEEDBACK_TRUST_FLOOR, raw_floor = 0.3, None  # unusable override = no override
+        s.FEEDBACK_TRUST_FLOOR, raw_floor = 0.3, None  # unusable override = no override
     try:
-        FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
+        s.FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
     except (TypeError, ValueError):
-        FEEDBACK_CAP = 5
+        s.FEEDBACK_CAP = 5
     # Whether the floor above is a deliberate override. Unset, `feedback_floor()`
     # asks the provider instead of guessing (resolved lazily: one config read per
     # run, and only for the holographic source).
-    FEEDBACK_FLOOR_EXPLICIT = raw_floor is not None
+    s.FEEDBACK_FLOOR_EXPLICIT = raw_floor is not None
     kw = cfg.get("keywords") if isinstance(cfg.get("keywords"), dict) else {}
-    KEYWORDS_ENABLED = kw.get("enabled") is True
+    s.KEYWORDS_ENABLED = kw.get("enabled") is True
     try:
-        KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
+        s.KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
     except (TypeError, ValueError):
-        KEYWORDS_CAP = 10
+        s.KEYWORDS_CAP = 10
     pend = cfg.get("pending") or {}
-    PENDING_DIR = str(pend.get("dir") or "pending/memory")
+    s.PENDING_DIR = str(pend.get("dir") or "pending/memory")
     try:
-        PENDING_ALERT_MIN = int(pend.get("alert_min", 5))
-        PENDING_ALERT_DAYS = int(pend.get("alert_days", 7))
+        s.PENDING_ALERT_MIN = int(pend.get("alert_min", 5))
+        s.PENDING_ALERT_DAYS = int(pend.get("alert_days", 7))
     except (TypeError, ValueError):
-        PENDING_ALERT_MIN, PENDING_ALERT_DAYS = 5, 7
-    SEEN_COOLDOWN_DAYS = _env("DREAM_SEEN_COOLDOWN_DAYS",
+        s.PENDING_ALERT_MIN, s.PENDING_ALERT_DAYS = 5, 7
+    s.SEEN_COOLDOWN_DAYS = _env("DREAM_SEEN_COOLDOWN_DAYS",
                               int(gates.get("seen_cooldown_days", 14)), int)
     env_chats = os.environ.get("DREAM_TRUSTED_CHAT_IDS")
     if env_chats is None:  # legacy name kept for existing installs
         env_chats = os.environ.get("DREAM_FAMILY_CHAT_IDS")
     if env_chats is not None:
-        TRUSTED_CHAT_IDS = {c.strip() for c in env_chats.split(",") if c.strip()}
+        s.TRUSTED_CHAT_IDS = {c.strip() for c in env_chats.split(",") if c.strip()}
     else:
-        TRUSTED_CHAT_IDS = {str(c).strip() for c in (cfg.get("trusted_chat_ids") or []) if str(c).strip()}
-    TRUST_PRIVATE = bool(cfg.get("trust_private_chats", True))
-    TRUST_NO_CHAT = bool(cfg.get("trust_sessions_without_chat", True))
-    EXCLUDED_THREADS = _parse_excluded_threads(
+        s.TRUSTED_CHAT_IDS = {str(c).strip() for c in (cfg.get("trusted_chat_ids") or []) if str(c).strip()}
+    s.TRUST_PRIVATE = bool(cfg.get("trust_private_chats", True))
+    s.TRUST_NO_CHAT = bool(cfg.get("trust_sessions_without_chat", True))
+    s.EXCLUDED_THREADS = _parse_excluded_threads(
         os.environ.get("DREAM_EXCLUDED_THREADS"), cfg.get("excluded_threads"))
     env_sources = os.environ.get("DREAM_UNTRUSTED_SOURCES")
     raw_sources = (env_sources.split(",") if env_sources is not None
@@ -1246,149 +859,79 @@ def configure(cfg):
     # brief and a tool-driven turn are never speech. A list in dreaming.json
     # replaces the default instead of extending it, and the shipped example once
     # listed only `cron` (Codex review of 2.7.2, 2026-10-14).
-    UNTRUSTED_SOURCES = set(ALWAYS_UNTRUSTED_SOURCES) | {str(s).strip() for s in raw_sources if str(s).strip()}
-    EXCLUDE_PATTERNS = []
+    s.UNTRUSTED_SOURCES = set(ALWAYS_UNTRUSTED_SOURCES) | {str(s).strip() for s in raw_sources if str(s).strip()}
+    s.EXCLUDE_PATTERNS = []
     for pat in (cfg.get("exclude_patterns") or []):
         try:
-            EXCLUDE_PATTERNS.append(re.compile(str(pat), re.IGNORECASE))
+            s.EXCLUDE_PATTERNS.append(re.compile(str(pat), re.IGNORECASE))
         except re.error as exc:
             print(f"[dream] warn: exclude_patterns {pat!r} ignored: {exc}", file=sys.stderr)
-    STOPWORDS = set(RU_STOP) | set(EN_STOP) | OTHER_STOP | OTHER_TEMPORAL_STOP | OTHER_POLARITY_STOP
-    STOPWORDS |= {_norm(w) for w in (cfg.get("agent_names") or []) if w}
-    STOPWORDS |= {_norm(w) for w in (cfg.get("extra_stopwords") or []) if w}
+    s.STOPWORDS = set(RU_STOP) | set(EN_STOP) | OTHER_STOP | OTHER_TEMPORAL_STOP | OTHER_POLARITY_STOP
+    s.STOPWORDS |= {_norm(w) for w in (cfg.get("agent_names") or []) if w}
+    s.STOPWORDS |= {_norm(w) for w in (cfg.get("extra_stopwords") or []) if w}
     tml = cfg.get("token_min_len") or {}
-    TOKEN_MIN_LATIN = int(tml.get("latin", 4))
-    TOKEN_MIN_OTHER = int(tml.get("other", 5))
-    ALIAS_RULES = [r for r in (cfg.get("alias_rules") or []) if isinstance(r, dict)]
+    s.TOKEN_MIN_LATIN = int(tml.get("latin", 4))
+    s.TOKEN_MIN_OTHER = int(tml.get("other", 5))
+    s.ALIAS_RULES = [r for r in (cfg.get("alias_rules") or []) if isinstance(r, dict)]
     terms = [t for t in (cfg.get("profile_hint_terms") or []) if t]
-    PROFILE_HINT_RE = re.compile(
+    s.PROFILE_HINT_RE = re.compile(
         r"(?<!\w)(?:" + "|".join(re.escape(_norm(t)) for t in terms) + r")",
         re.IGNORECASE) if terms else None
-    PROFILE_CATEGORIES = {_norm(c) for c in (cfg.get("profile_categories") or [])}
+    s.PROFILE_CATEGORIES = {_norm(c) for c in (cfg.get("profile_categories") or [])}
     diary = cfg.get("diary") or {}
-    DIARY_HEADING = str(diary.get("heading") or "## Dream").strip()
-    DIARY_SECTION_RE = re.compile(rf"^{re.escape(DIARY_HEADING)} \d{{4}}-\d{{2}}-\d{{2}}",
+    s.DIARY_HEADING = str(diary.get("heading") or "## Dream").strip()
+    s.DIARY_SECTION_RE = re.compile(rf"^{re.escape(s.DIARY_HEADING)} \d{{4}}-\d{{2}}-\d{{2}}",
                                   re.MULTILINE)
-    DIARY_KEEP_SECTIONS = _env("DREAM_DIARY_KEEP", int(diary.get("keep_sections", 90)), int)
-    DIARY_PATH = str(diary.get("path") or "memories/DREAMS.md")
-    DURABLE_MEMORY_PATHS = list(cfg.get("durable_memory_paths") or [])
-    MEMORY_CHAR_LIMITS = dict(cfg.get("memory_char_limits") or {})
-    PINNED_MARKERS = [str(m) for m in (cfg.get("pinned_markers") or []) if m]
-    PROBES = [str(m).strip() for m in (cfg.get("probes") or []) if str(m or "").strip()]
+    s.DIARY_KEEP_SECTIONS = _env("DREAM_DIARY_KEEP", int(diary.get("keep_sections", 90)), int)
+    s.DIARY_PATH = str(diary.get("path") or "memories/DREAMS.md")
+    s.DURABLE_MEMORY_PATHS = list(cfg.get("durable_memory_paths") or [])
+    s.MEMORY_CHAR_LIMITS = dict(cfg.get("memory_char_limits") or {})
+    s.PINNED_MARKERS = [str(m) for m in (cfg.get("pinned_markers") or []) if m]
+    s.PROBES = [str(m).strip() for m in (cfg.get("probes") or []) if str(m or "").strip()]
     try:
-        REJECT_REASK_DAYS = max(0, int(cfg.get("reject_reask_days", 180)))
+        s.REJECT_REASK_DAYS = max(0, int(cfg.get("reject_reask_days", 180)))
     except (TypeError, ValueError):
-        REJECT_REASK_DAYS = 180
+        s.REJECT_REASK_DAYS = 180
     try:
-        MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
+        s.MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
     except (TypeError, ValueError):
-        MEMORY_LOSS_ALERT_FRACTION = 0.25
+        s.MEMORY_LOSS_ALERT_FRACTION = 0.25
+    SETTINGS = s
+
+
+def load_for_home(home, cfg_path=None):
+    """Point this module at a Hermes home and apply that home's config — the one call every loader of dream.py
+    makes after `exec_module` (the CLI, install.py, the extraction gate, dream-reject.py, the tests). Two steps
+    by hand, `HOME = …` then `configure(load_config())`, let a loader forget the second and read the config and
+    fact store of another home (dream-reject.py did until 3.0). `cfg_path` as `--config`: $DREAM_CONFIG or
+    `<home>/dreaming.json` when None. The import itself reads no file: the module starts on the defaults."""
+    global HOME
+    HOME = str(home)
+    configure(load_config(cfg_path))
 
 
 # Threshold of stemmed containment above which a rewording counts as the same
 # fact (shared by memory dedupe and the reject list).
 REJECT_MATCH_THRESHOLD = 0.62
 
-RU_STOP = set("""и в во не на я с со что а то как это он она они мы вы ты по из за к у о об от
-для же бы ли так уже или но да нет там тут вот про при над под без через между есть быть был
-была было были будет если когда чтобы тоже чтоб этот эта эти того этом всё все ещё уже него неё
-их его её им ей мне меня тебя нас вам нам свой своя свои очень более менее как-то кто-то что-то
-надо нужно можно сейчас потом тогда чтобы который которая которые этого этой этим была будет
-сообщение сообщения ветка ветке чат чате топик тред тебе меня себе свои
-привет коротко напомни запиши сделай расскажи покажи какие какой какая пожалуйста спасибо
-твоего твоей твоих твоим твоими моего моей моих моими нашего нашей наших вашего вашей ваших
-поэтому потому почему зачем одним одной словом может могут можешь пришли ответь посмотри
-проверь напиши давай давайте
-только просто конечно наверное например обязательно получается кажется значит вообще
-совсем именно понятно видимо похоже ладно хорошо отлично понял поняла помню помнишь
-думаю считаю знаю хочу хотел хотела будем сегодня завтра вчера утром вечером""".split())
-# Dates in words: never a topic, and two of them ("12 сентября … завтра") were
-# enough for two unrelated texts to "corroborate" each other. Kept apart from
-# RU_STOP because the store-duplicate check must NOT ignore them — "12 сентября"
-# and "12 октября" are different facts.
-RU_TEMPORAL_STOP = set("""сегодня завтра вчера
-января февраля марта апреля августа сентября октября ноября декабря""".split())
-# Negations and comparatives are stopwords for corroboration (they are not a
-# topic) but MUST stay significant for the store-duplicate check: «<person> ест
-# острое» and «<person> не ест острое» are opposite facts, and ignoring «не»
-# collapsed them into one (external review, 2026-10-07).
-RU_POLARITY_STOP = set("""не нет без ни никогда нельзя
-более менее больше меньше""".split())
-RU_STOP |= RU_TEMPORAL_STOP
-# The additions of 2026-10-02 (possessives, connectives, imperatives addressed to
-# the agent, dates in words) come from the live top of "emerging themes": none
-# of them is a topic.
 
-# Latin stopwords (the tokenizer only keeps len>=4, shorter ones drop anyway).
-# Platform words mirror RU_STOP (chat/thread/topic/message): otherwise any
-# message with "telegram"+"thread" corroborates any routing fact (48 false
-# mentions on live data). chat_id is a separate token and is not affected.
-EN_STOP = set("""that this with from your have will just like what when then than they them
-some more very much been does were about into over only also which would could should there
-here please today okay yes
-telegram thread threads topic topics chat chats group groups message messages channel
-https http www""".split())
+def _load_lang(path=None):
+    """dream_lang.py next to this file: the word lists and patterns of every language the pass reads. Unlike
+    holo_screen.py and dream_yaml.py it has no stand-in — without it the pass cannot tell a word from a stopword —
+    so a missing or broken copy fails the import, and the gates report it as dream_error."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "dream_lang.py")
+    spec = importlib.util.spec_from_file_location("_dream_lang", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-# The other languages the holographic store reads (German, Spanish, French, Portuguese, Italian, Dutch, Turkish,
-# Polish, Indonesian): function words of four letters and more — shorter ones never become tokens. Without them two
-# unrelated Polish lines met on «dobra» + «wieczorem», two Dutch ones on «gaat» + «naar» (2026-10-13). Words that
-# are also English content words («door», «data», «solo», «fare») are left out.
-OTHER_STOP = set("""aber alle allem allen aller alles also andere anderen auch beim bereits bitte bist bisschen dabei
-dafür daher damit dann darauf darum dass dein deine deinem deinen deiner denn dessen dich dies diese diesem diesen
-dieser dieses doch dort durch eine einem einen einer eines etwas euch euer eure für gegen gibt habe haben hast hatte
-hätte hier hinter ihm ihn ihnen ihre ihrem ihren ihrer immer jede jedem jeden jeder jedes jetzt kann kannst können
-könnte machen macht mein meine meinem meinen meiner mich muss müssen nach noch oder schon sehr sein seine seinem
-seinen seiner seit sich sind soll sollen sollte über unser unsere unter viel vielleicht warum weil welche welchen
-welcher wenn werden wieder wird wirklich wurde würde zwischen danke genau gerade
-algo algunos ahora antes aquí aquel así bien cada casi como contra cual cuál cuando cuándo cuánto desde después donde
-dónde durante ella ellas ellos entonces entre eran eres esta está están estar estas este esto estos fuera gracias
-hace hacer hasta hola mismo mucho nosotros nuestra nuestro otra otro para pero poco porque puede pueden quien quién
-sido sobre sólo somos también tanto tener tengo tiene tienen todo todos usted vamos vale será siempre esos esas
-bueno
-alors après aussi autre avant avec avoir beaucoup bonjour cela celle celui cette chez comme comment dans depuis donc
-elle elles encore être fait faire faut leur leurs mais merci même notre nous parce pendant peut pour pourquoi quand
-quel quelle quelque sera serait sont sous suis tout toute toutes tous très vous votre vers voilà ceci ceux
-agora ainda algum alguma aqui assim até então essa esse está estão estou isso isto mesmo muito nossa nosso obrigado
-obrigada onde outra outro pela pelo pode porquê qual quem também têm tenho tudo você vocês sempre
-anche ancora avere bene cosa così dalla dalle dallo degli della delle dello dove dopo ecco essere grazie hanno
-loro mentre molto nella nelle nello nostro nostra ogni allora perché però poco quale quanto quello quella questo
-questa sono stato stata tanto tutti tutto vostro ciao fino
-alle alles altijd ander andere omdat beetje bijna daar daarom deze doen dus eens hebben heeft iets jouw kunnen maar
-moet moeten naar onze waar wanneer waarom welke willen worden wordt zijn zich zou zullen alsjeblieft bedankt gaan gaat
-ancak artık bana beni benim bile biraz bize bizim bunu bunun böyle diye için kadar nasıl neden nerede niye olan
-olarak oldu olur onun senin sizin şimdi sonra önce lütfen teşekkürler teşekkür tamam evet gibi
-albo bardzo będzie było była były cały coś czemu dlaczego dlatego gdzie jaki jaka jakie jego jest jestem jeszcze
-każdy kiedy która które który mamy może można mnie nasz nasza nawet przez również siebie sobie także tego tutaj
-tylko wszystko wtedy więc zawsze żeby dziękuję proszę dobra dobrze teraz
-adalah akan anda apakah atau bagaimana bahwa banyak bisa boleh dalam dari dengan jadi juga kalau kami kamu karena
-kenapa kita mana masih mereka nanti oleh pada para saja sama sangat saya sedang sekali sudah tapi untuk terima kasih
-""".split())
-# Months and today / tomorrow / yesterday in those languages and in English: not a topic for corroboration (two
-# texts dated "November" are not about one thing — a German November dentist visit corroborated a remark about the
-# November rain), but significant for the store-duplicate check, like RU_TEMPORAL_STOP.
-OTHER_TEMPORAL_STOP = set("""january february march april june july august september october november december
-januar februar märz juni juli oktober dezember heute morgen gestern
-enero febrero marzo abril mayo junio julio agosto septiembre setiembre octubre noviembre diciembre hoy mañana ayer
-janvier février mars avril juin juillet août septembre octobre novembre décembre aujourd demain hier
-janeiro fevereiro março maio junho julho setembro outubro novembro dezembro hoje amanhã ontem
-gennaio febbraio aprile maggio giugno luglio settembre ottobre dicembre oggi domani ieri
-januari februari maart augustus vandaag gisteren
-ocak şubat mart nisan mayıs haziran temmuz ağustos eylül ekim kasım aralık bugün yarın
-styczeń stycznia luty lutego marzec marca kwiecień kwietnia maja czerwiec czerwca lipiec lipca sierpień sierpnia
-wrzesień września październik października listopad listopada grudzień grudnia dzisiaj jutro wczoraj
-maret juni agustus desember besok kemarin""".split())
-# Negations and comparatives: stopwords for corroboration, significant for the store-duplicate check (RU_POLARITY_STOP).
-OTHER_POLARITY_STOP = set("""nicht kein keine keinen keiner niemals ohne mehr weniger
-nunca nada nadie ningún ninguna jamás menos más
-jamais rien personne sans moins plus
-nenhum nenhuma mais
-niente nessuno senza meno più
-niet geen nooit niets zonder meer minder
-değil asla
-nigdy żaden więcej mniej
-tidak bukan belum tanpa lebih kurang""".split())
-TEMPORAL_STOP = RU_TEMPORAL_STOP | OTHER_TEMPORAL_STOP
-POLARITY_STOP = RU_POLARITY_STOP | OTHER_POLARITY_STOP
+
+_LANG = _load_lang()
+# from dream_lang.py (3.0)
+(RU_STOP, RU_TEMPORAL_STOP, RU_POLARITY_STOP, EN_STOP, OTHER_STOP, OTHER_TEMPORAL_STOP, OTHER_POLARITY_STOP,
+ TEMPORAL_STOP, POLARITY_STOP) = (
+    _LANG.RU_STOP, _LANG.RU_TEMPORAL_STOP, _LANG.RU_POLARITY_STOP, _LANG.EN_STOP, _LANG.OTHER_STOP,
+    _LANG.OTHER_TEMPORAL_STOP, _LANG.OTHER_POLARITY_STOP, _LANG.TEMPORAL_STOP, _LANG.POLARITY_STOP)
 
 
 def _conn(path):
@@ -1481,32 +1024,10 @@ def strip_urls(text):
 
 TOKEN_RE = re.compile(r"[^\W\d_][\w\-]*", re.UNICODE)
 
-# Scripts written without spaces between words. A Chinese, Japanese or Thai sentence is one regex "word", so two
-# texts about the same thing shared no token and nothing in these languages was ever corroborated (0 of 30
-# questions found their fact, 2026-10-13). Such runs are compared by character n-grams instead, as the holographic
-# store compares them: pairs for Chinese/Japanese and Korean, triples for Thai, Lao, Khmer and Myanmar, whose
-# characters are letters. Korean is written with spaces, but its particles stick to the word (레나는 = Lena + topic).
-_HAN_KANA = "々぀-ヿㇰ-ㇿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ"
-_HANGUL = "가-힯"
-_SEA = "฀-໿က-႟ក-៿"
-UNSEGMENTED_RE = re.compile(f"[{_HAN_KANA}]+|[{_HANGUL}]+|[{_SEA}]+")
-_SEA_RE = re.compile(f"[{_SEA}]")
-_HIRAGANA_RE = re.compile("[぀-ゟ]+")
-_HAN_RE = re.compile("[々㐀-䶿一-鿿豈-﫿]")
-# Chinese function characters (particles, pronouns, question words, auxiliaries) and Japanese particles: a pair
-# made only of them (什么, 我们, には) carries no topic and is dropped; a pair with one of them counts half.
-CJK_FUNCTION = frozenset("的是了吗呢吧啊呀哦嗯么怎什哪谁几多少在有和与及或就都也还要会能可以把被给让对为从到这那你我他她它们个一不没很太"
-                         "該應些嘛們這個嗎麼還讓從對為會說說来來裡里"
-                         "はがをにのでともへやかねよなだ")
-# Thai function words: a triple inside one of them carries no topic.
-TH_FUNCTION = sorted(set("""ของ ที่ และ ใน กับ ไม่ ได้ จะ แล้ว ไหม อะไร ยังไง อย่างไร คือ เป็น มี ให้ ครับ ค่ะ คะ นะ เลย ด้วย
-    แบบ ไหน เท่าไหร่ กี่ ว่า ก็ หรือ แต่ จาก ถึง เรา ฉัน ผม คุณ เขา นี้ นั้น หน่อย ควร วันนี้ พรุ่งนี้ เมื่อวาน""".split()),
-                     key=len, reverse=True)
-# Whole runs that are chat fillers ("ok", "thanks", "yes"): no n-grams at all.
-FILLER_RUNS = frozenset("""はい うん ええ いいえ 了解 了解です りょうかい オーケー ありがとう ありがとうございます お願い
-    お願いします よろしく そう そうです わかった わかりました 好的 好 谢谢 謝謝 没问题 對 对 是的 嗯嗯 哈哈 哈哈哈
-    네 예 응 아니 아니요 좋아 좋아요 그래 그래요 알겠어 알겠어요 알겠습니다 오케이 고마워 고마워요 감사 감사합니다
-    ครับ ค่ะ คะ นะ จ้ะ จ้า โอเค ได้ ได้เลย ใช่ ขอบคุณ ขอบคุณครับ ขอบคุณค่ะ ขอบคุณมาก""".split())
+# from dream_lang.py (3.0)
+(_HAN_KANA, _HANGUL, _SEA, UNSEGMENTED_RE, _SEA_RE, _HIRAGANA_RE, _HAN_RE, CJK_FUNCTION, TH_FUNCTION, FILLER_RUNS) = (
+    _LANG._HAN_KANA, _LANG._HANGUL, _LANG._SEA, _LANG.UNSEGMENTED_RE, _LANG._SEA_RE, _LANG._HIRAGANA_RE,
+    _LANG._HAN_RE, _LANG.CJK_FUNCTION, _LANG.TH_FUNCTION, _LANG.FILLER_RUNS)
 
 
 def is_gram(token):
@@ -1535,11 +1056,11 @@ def run_grams(run):
 
 
 def _keep_token(tok):
-    if tok in STOPWORDS:
+    if tok in SETTINGS.STOPWORDS:
         return False
     if tok.isascii():
-        return len(tok) >= TOKEN_MIN_LATIN
-    return len(tok) >= TOKEN_MIN_OTHER
+        return len(tok) >= SETTINGS.TOKEN_MIN_LATIN
+    return len(tok) >= SETTINGS.TOKEN_MIN_OTHER
 
 
 def _raw_tokens(text):
@@ -1550,7 +1071,7 @@ def _raw_tokens(text):
     for run in UNSEGMENTED_RE.findall(low):
         grams |= run_grams(run)
     words = {w for w in TOKEN_RE.findall(UNSEGMENTED_RE.sub(" ", low)) if _keep_token(w)}
-    return words | (grams - STOPWORDS)
+    return words | (grams - SETTINGS.STOPWORDS)
 
 
 def sig_tokens(text):
@@ -1633,7 +1154,7 @@ def load_facts(db=None):
         return []
     if src == "holographic":
         return _load_holographic(path)
-    cols = dict(DEFAULT_FACT_COLUMNS, **(CONFIG.get("fact_columns") or {}))
+    cols = dict(DEFAULT_FACT_COLUMNS, **(SETTINGS.CONFIG.get("fact_columns") or {}))
     raw = _load_generic_sqlite(path, cols) if src == "sqlite" else _load_jsonl(path, cols)
     return [f for f in (_normalize_fact(r, cols) for r in raw) if f]
 
@@ -1700,7 +1221,7 @@ _SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _load_generic_sqlite(db, cols):
-    table = str(CONFIG.get("fact_table") or "facts")
+    table = str(SETTINGS.CONFIG.get("fact_table") or "facts")
     if not _SQL_NAME_RE.match(table):
         raise ValueError(f"fact_table {table!r} is not a plain SQL name")
     c = _conn(db)
@@ -1789,25 +1310,25 @@ def _trusted_message(source, chat_type, chat_id, thread_id=None):
     ``thread_id`` is optional on purpose: callers on a schema without threads
     (and older embedders) keep working, and an unknown thread is treated as
     "not excluded" — the chat-level decision stands."""
-    if (source or "") in UNTRUSTED_SOURCES:
+    if (source or "") in SETTINGS.UNTRUSTED_SOURCES:
         return False
     ctype = (chat_type or "")
     cid = str(chat_id or "")
-    if cid and cid in TRUSTED_CHAT_IDS:
+    if cid and cid in SETTINGS.TRUSTED_CHAT_IDS:
         tid = str(thread_id or "")
-        return not (tid and tid in EXCLUDED_THREADS.get(cid, ()))
+        return not (tid and tid in SETTINGS.EXCLUDED_THREADS.get(cid, ()))
     if ctype in ("group", "supergroup", "channel", "forum"):
         return False
     if ctype in ("dm", "private"):
-        return TRUST_PRIVATE
+        return SETTINGS.TRUST_PRIVATE
     if not ctype and not cid:
-        return TRUST_NO_CHAT
+        return SETTINGS.TRUST_NO_CHAT
     # Unknown chat type with an id that is not trusted — be conservative.
-    return TRUST_PRIVATE if not cid else False
+    return SETTINGS.TRUST_PRIVATE if not cid else False
 
 
 def _day_of(ts):
-    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(SETTINGS.LOCAL_TZ).strftime("%Y-%m-%d")
 
 
 def load_messages(db, days):
@@ -1886,7 +1407,7 @@ def load_messages(db, days):
                 continue
         if is_harness_envelope(content):
             continue
-        if any(p.search(content) for p in EXCLUDE_PATTERNS):
+        if any(p.search(content) for p in SETTINGS.EXCLUDE_PATTERNS):
             continue
         # Compression copies the row it folds, and both copies are visible. The
         # same sentence must not corroborate twice (it was worth +0.04 of score
@@ -1984,15 +1505,8 @@ def _mentions(shared):
 DISTINCTIVE_PREFIX_LATIN = 6
 
 
-# Days of the week are long words in most languages (Dienstag, понедельник, niedziela) but never rare: a weekday
-# still counts as one shared word, never as a rare one that is a mention alone.
-WEEKDAY_PREFIXES = tuple("""понедельник вторник среда среду среды четверг пятниц суббот воскресен
-monday tuesday wednesday thursday friday saturday sunday
-montag dienstag mittwoch donnerstag freitag samstag sonnabend sonntag
-lunes martes miércoles jueves viernes sábado domingo lundi mardi mercredi jeudi vendredi samedi dimanche
-segunda-feira terça-feira quarta-feira quinta-feira sexta-feira lunedì martedì mercoledì giovedì venerdì sabato domenica
-maandag dinsdag woensdag donderdag vrijdag zaterdag zondag pazartesi çarşamba perşembe cumartesi
-poniedział wtorek wtorki środa środy środę czwart piąt sobot niedziel senin selasa kamis jumat sabtu""".split())
+# from dream_lang.py (3.0)
+WEEKDAY_PREFIXES = _LANG.WEEKDAY_PREFIXES
 
 
 def _distinctive_stem(token):
@@ -2002,21 +1516,28 @@ def _distinctive_stem(token):
     return ("latin", latin[:DISTINCTIVE_PREFIX_LATIN]) if latin.isascii() else ("other", _stem(token))
 
 
-def corroborate(item_tokens, messages, evidence=False):
-    """How many different days / messages mention the token set.
+def corroborate(item_tokens, messages):
+    """How many different days / messages mention the token set: (mentions, ref_days, last_ts).
 
     Match: overlap ≥2 STEMS, or ≥1 "distinctive" stem. Stems, because Russian
     inflects: «Мы окончательно переехали, в Лиссабоне…» did not corroborate
     «Илья переехал в Лиссабон» while «Мой брат переехал в Москву» did (external
     review, 2026-10-07). "Distinctive" means rare enough that one hit is
     evidence — and 8 characters is not rare in Russian (41-45% of words reach
-    it: «например», «обязательно»), hence a higher bar for non-Latin.
-    Returns (mentions, ref_days, last_ts) or, with evidence=True,
-    (mentions, ref_days, last_ts, samples) where samples are up to
-    EVIDENCE_MAX (day, snippet) pairs from different days — provenance for the
-    reviewer ("why does the dream think this is confirmed?")."""
+    it: «например», «обязательно»), hence a higher bar for non-Latin."""
+    return _corroborate(item_tokens, messages, False)[:3]
+
+
+def corroborate_with_evidence(item_tokens, messages):
+    """`corroborate` plus the samples: (mentions, ref_days, last_ts, samples), where samples are up to
+    EVIDENCE_MAX {day, text} snippets from different days — provenance for the reviewer ("why does the dream
+    think this is confirmed?"). Two functions, not a flag that changes the shape of the answer (3.0)."""
+    return _corroborate(item_tokens, messages, True)
+
+
+def _corroborate(item_tokens, messages, evidence):
     if not item_tokens:
-        return (0, 0, None, []) if evidence else (0, 0, None)
+        return 0, 0, None, []
     item_stems = _stems(item_tokens)
     distinctive = {_distinctive_stem(t) for t in item_tokens if not is_gram(t)
                    and len(t) >= (DISTINCTIVE_LATIN if latin_fold(t).isascii() else DISTINCTIVE_OTHER)
@@ -2037,7 +1558,7 @@ def corroborate(item_tokens, messages, evidence=False):
                 samples.append({"day": m["day"], "text": _snippet(m["content"])})
             days.add(m["day"])
             last_ts = max(last_ts or 0, m["ts"])
-    return (mentions, len(days), last_ts, samples) if evidence else (mentions, len(days), last_ts)
+    return mentions, len(days), last_ts, samples
 
 
 def _snippet(text, n=100):
@@ -2056,7 +1577,7 @@ def signals_for_fact(f, messages):
     tags = [t for t in re.split(r"[,\s]+", f.get("tags") or "") if t]
 
     toks = sig_tokens(f.get("content"))
-    mentions, ref_days, last_ts, evidence = corroborate(toks, messages, evidence=True)
+    mentions, ref_days, last_ts, evidence = corroborate_with_evidence(toks, messages)
 
     days_updated = (now - updated).total_seconds() / 86400 if updated else 999
     days_last_ref = (now.timestamp() - last_ts) / 86400 if last_ts else 999
@@ -2072,7 +1593,7 @@ def signals_for_fact(f, messages):
 
     sig = {"relevance": relevance, "frequency": frequency, "query_diversity": query_diversity,
            "recency": recency, "consolidation": consolidation, "conceptual_richness": conceptual_richness}
-    score = round(sum(WEIGHTS[k] * v for k, v in sig.items()), 3)
+    score = round(sum(SETTINGS.WEIGHTS[k] * v for k, v in sig.items()), 3)
     meta = {"days_old": round(days_updated, 1), "rc": rc, "mentions": mentions, "ref_days": ref_days,
             "evidence": evidence, "last_ts": last_ts or 0}
     return score, {k: round(v, 3) for k, v in sig.items()}, meta
@@ -2089,7 +1610,7 @@ def _memory_candidate_paths(mem_md):
     promotions must dedupe against all of them — otherwise the dream keeps
     proposing the same profile facts forever."""
     paths = [mem_md]
-    for p in DURABLE_MEMORY_PATHS:
+    for p in SETTINGS.DURABLE_MEMORY_PATHS:
         p = os.path.expanduser(str(p))
         paths.append(p if os.path.isabs(p) else os.path.join(HOME, p))
     seen, out = set(), []
@@ -2210,7 +1731,7 @@ def _semantic_memory_alias(content, memory_text, rules=None):
     durable memory matches its groups, the fact counts as already known — no
     LLM needed in the nightly cron. Rules are installation-specific and live in
     the config (`alias_rules`)."""
-    rules = ALIAS_RULES if rules is None else rules
+    rules = SETTINGS.ALIAS_RULES if rules is None else rules
     if not rules:
         return False
     c = _norm(content)
@@ -2218,19 +1739,8 @@ def _semantic_memory_alias(content, memory_text, rules=None):
     return any(_groups_hit(r.get("fact"), c) and _groups_hit(r.get("memory"), m) for r in rules)
 
 
-# Inflectional endings, longest first. Not a morphological analyser — just the
-# endings that make one word look like two: «переехали»/«переехал»,
-# «Лиссабоне»/«Лиссабон», «транспортные»/«транспорт». A bare prefix cut was too
-# crude the other way: at 5 characters «контент» and «контейнер» collapsed into
-# one stem (external review, 2026-10-07).
-RU_SUFFIXES = (
-    "иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
-    "ость", "ться", "лась", "лись", "ются", "ешься", "ишься",
-    "ах", "ях", "ов", "ев", "ей", "ой", "ый", "ий", "ом", "ем", "ую", "юю",
-    "ые", "ие", "ая", "яя", "ее", "ое", "ам", "ям", "ют", "ут", "ат", "ят",
-    "ет", "ит", "ла", "ло", "ли", "ся", "сь", "шь",
-    "а", "е", "и", "о", "у", "ы", "я", "ю", "й", "ь",
-)
+# from dream_lang.py (3.0)
+RU_SUFFIXES = _LANG.RU_SUFFIXES
 STEM_CHARS_LATIN = 5
 STEM_CHARS_OTHER = 6
 STEM_MIN_ROOT = 4
@@ -2351,16 +1861,9 @@ def _covers(item_stems, chunk_stems, threshold=REJECT_MATCH_THRESHOLD):
 # миндаль"), the word alone cannot tell the sides apart: such a word is
 # compared together with the word after it, the thing it is said of (Codex
 # review of 2.7.5).
-NEGATION_WORDS = {w.replace("ё", "е") for w in """не нет без ни никогда нельзя
-not no never nor neither none nothing nobody without cannot
-doesn don didn isn aren wasn weren hasn haven hadn shouldn wouldn couldn
-nicht kein keine keinen keiner niemals ohne nunca nada nadie ningún ninguna jamás
-jamais rien personne sans pas non nenhum nenhuma niente nessuno senza
-niet geen nooit niets zonder değil asla nie nigdy żaden tidak bukan belum tanpa""".split()}
-# A modal carries the negated verb: the word after it is negated too.
-_MODALS = set("""должен должна должно должны может могут мог могла могли нужно надо будет будут стал
-стала стали хочет хотят умеет can could should would will must may might need needs have has had do does
-did be been is are was were want wants going""".split())
+# from dream_lang.py (3.0)
+(NEGATION_WORDS, _MODALS) = (
+    _LANG.NEGATION_WORDS, _LANG._MODALS)
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
 POLARITY_MIN_JACCARD = 0.5
 
@@ -2524,41 +2027,11 @@ THOUSANDS_RE = re.compile(r"(?<=\d)[\s\u00a0\u202f,](?=\d{3}(?!\d))")
 # A month said in words is as much a "number" as 15.04 — otherwise moving
 # «15 марта» to «15 апреля» changed nothing comparable, and the fuzzy dedupe
 # swallowed it as "already in memory" (external review, 2026-10-07).
-# Month names of the other languages the holographic store reads, with the forms a date takes («14 listopada»,
-# «14 Kasım'da», «14 de noviembre»); English is here too for the day-first order («14 November»).
-OTHER_MONTHS = {}
-for _num, _names in enumerate((
-        "january jan januar enero janvier janeiro gennaio januari ocak styczeń stycznia",
-        "february feb februar febrero février fevereiro febbraio februari şubat luty lutego",
-        "march mar märz marzo mars março maart mart marzec marca maret",
-        "april apr abril avril aprile nisan kwiecień kwietnia",
-        "may mai mayo maio maggio mei mayıs maj maja",
-        "june jun juni junio juin junho giugno haziran czerwiec czerwca",
-        "july jul juli julio juillet julho luglio temmuz lipiec lipca",
-        "august aug agosto août augustus ağustos sierpień sierpnia agustus",
-        "september sep sept septiembre setiembre septembre setembro settembre eylül wrzesień września",
-        "october oct oktober octubre octobre outubro ottobre ekim październik października",
-        "november nov noviembre novembre novembro kasım listopad listopada",
-        "december dec dezember diciembre décembre dezembro dicembre aralık grudzień grudnia desember"), 1):
-    for _name in _names.split():
-        OTHER_MONTHS[_name] = _num
-OTHER_MONTHS_RE = "|".join(sorted(map(re.escape, OTHER_MONTHS), key=len, reverse=True))
-# A day before the month: «14 November», «14. November», «14th of November», «14 de noviembre (de 2026)».
-DAY_MONTH_RE = re.compile(
-    rf"\b(\d{{1,2}})(?:st|nd|rd|th|er|º|\.)?\s+(?:de\s+|of\s+)?({OTHER_MONTHS_RE})\b(?:\.?,?\s+(?:de\s+)?(\d{{4}}))?",
-    re.IGNORECASE)
-# Chinese / Japanese 11月14日 (2026年11月14日), Korean 11월 14일: no \b — the digits touch the characters.
-CJK_DATE_RE = re.compile(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号號]")
-KO_DATE_RE = re.compile(r"(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일")
-# Month names as markers `month:MM`, so "the 12th of May" and "the 12th of June" differ. Whole words only: the
-# old prefixes made «мама», «машина», «Марина», "maybe" and "market" months too. Words that are also ordinary
-# ones ("may", Spanish "mar", the names Maja and Mei) count only next to a day number, i.e. inside a date.
-RU_MONTH_WORD_RE = re.compile(
-    r"(?<!\w)(январ|феврал|апрел|июн|июл|сентябр|октябр|ноябр|декабр)[ьяею]?(?!\w)"
-    r"|(?<!\w)(март|август)[ае]?(?!\w)|(?<!\w)(ма)[йяе](?!\w)", re.IGNORECASE)
-RU_MONTH_NUM = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5, "июн": 6, "июл": 7, "август": 8,
-                "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
-AMBIGUOUS_MONTHS = frozenset("may mar mai maj maja mart mei jan sep dec".split())
+# from dream_lang.py (3.0)
+(OTHER_MONTHS, OTHER_MONTHS_RE, DAY_MONTH_RE, CJK_DATE_RE, KO_DATE_RE, RU_MONTH_WORD_RE, RU_MONTH_NUM,
+ AMBIGUOUS_MONTHS) = (
+    _LANG.OTHER_MONTHS, _LANG.OTHER_MONTHS_RE, _LANG.DAY_MONTH_RE, _LANG.CJK_DATE_RE, _LANG.KO_DATE_RE,
+    _LANG.RU_MONTH_WORD_RE, _LANG.RU_MONTH_NUM, _LANG.AMBIGUOUS_MONTHS)
 # Month names are looked up without case and diacritics: IGNORECASE lets "KASIM" match «kasım», but "KASIM".lower()
 # is "kasim", which was not a key — the pass died on a KeyError (review 2026-10-13).
 _OTHER_MONTHS_FOLDED = {latin_fold(name): num for name, num in OTHER_MONTHS.items()}
@@ -2595,33 +2068,10 @@ def _month_markers(text):
     return {f"month:{n:02d}" for n in nums}
 
 
-# A day of the week is as much a "number" as a month: "ballet moved to Tuesdays" against the entry "ballet on Mondays"
-# is an update, and without a marker the two shared every word, so the fuzzy dedupe swallowed the move as "already in
-# memory" (audit 2026-10-13). Whole-word prefixes, longest first ("cumartesi" before "cuma"); words that are also
-# ordinary ones are left out (Turkish "pazar" is a market, Indonesian "minggu" a week).
-_WEEKDAY_NAMES = (  # a cell of five letters and more is a prefix, a shorter one or one ending in "=" a whole word
-    # Russian by its forms: "среда" is also an environment ("рабочая среда", "в среде"), "суббот…" a субботник,
-    # "воскресен…" a resurrection, "Пятницкая" a street — only the accusative and plural forms of среда count
-    "понедельник вторник среду=|средам=|средами= четверг пятница=|пятницу=|пятницы=|пятнице=|пятницам=|пятницами= "
-    "суббота=|субботу=|субботы=|субботе=|субботам=|субботами= воскресенье=|воскресенья=|воскресенью=|воскресеньям=|"
-    "воскресеньями=",
-    "monday tuesday wednesday thursday friday saturday sunday",
-    "montag dienstag mittwoch donnerstag freitag samstag|sonnabend sonntag",
-    "lunes martes miercoles jueves viernes sabado domingo",
-    "lundi mardi mercredi jeudi vendredi samedi dimanche",
-    "segunda-feira terca-feira quarta-feira quinta-feira sexta-feira sabado domingo",
-    "lunedi martedi mercoledi giovedi venerdi sabato domenica",
-    "maandag dinsdag woensdag donderdag vrijdag zaterdag zondag",
-    "pazartesi sali|salilari carsamba persembe cuma|cumalari cumartesi -",
-    "poniedzial wtorek|wtork sroda=|srode=|srody=|srodach|srodami|srodzie czwart piatek|piatk sobot niedziel",  # srodek: middle
-    "senin selasa rabu kamis jumat sabtu -",
-)
-_WEEKDAY_PREFIXES_NUM = sorted({(p, n) for row in _WEEKDAY_NAMES for n, cell in enumerate(row.split(), 1)
-                                for p in cell.split("|") if p != "-"}, key=lambda pn: -len(pn[0]))
-_WEEKDAY_WORD_RE = re.compile(r"(?<![\w-])[^\W\d_][\w-]*", re.UNICODE)
-_CJK_WEEKDAY_RE = re.compile(r"(?:星期|礼拜|禮拜|周|週)([一二三四五六日天])|([月火水木金土日])曜|([월화수목금토일])요일")
-_CJK_WEEKDAY_NUM = {**dict(zip("一二三四五六", range(1, 7))), "日": 7, "天": 7,
-                    **dict(zip("月火水木金土", range(1, 7))), **dict(zip("월화수목금토일", range(1, 8)))}
+# from dream_lang.py (3.0)
+(_WEEKDAY_NAMES, _WEEKDAY_PREFIXES_NUM, _WEEKDAY_WORD_RE, _CJK_WEEKDAY_RE, _CJK_WEEKDAY_NUM) = (
+    _LANG._WEEKDAY_NAMES, _LANG._WEEKDAY_PREFIXES_NUM, _LANG._WEEKDAY_WORD_RE, _LANG._CJK_WEEKDAY_RE,
+    _LANG._CJK_WEEKDAY_NUM)
 
 
 def _weekday_markers(text):
@@ -2723,7 +2173,7 @@ def _store_duplicates(a, b):
     if len(wa & wb) < STORE_DUP_MIN_SHARED:
         return False
     stop = {s.replace("ё", "е")
-            for s in STOPWORDS - TEMPORAL_STOP - POLARITY_STOP}
+            for s in SETTINGS.STOPWORDS - TEMPORAL_STOP - POLARITY_STOP}
     for mine, other in ((wa - wb, wb), (wb - wa, wa)):
         other_stems = {_stem(w) for w in other if len(w) >= 5}
         for w in mine:
@@ -2764,13 +2214,13 @@ def feedback_floor(fact_source_name=None, home=None):
     the answer in a module global shared by every home and every run, so a
     second run in the same process — or a run for another home — got the first
     one's floor (Codex review). A config read costs nothing next to the pass."""
-    if FEEDBACK_FLOOR_EXPLICIT:
-        return FEEDBACK_TRUST_FLOOR
+    if SETTINGS.FEEDBACK_FLOOR_EXPLICIT:
+        return SETTINGS.FEEDBACK_TRUST_FLOOR
     source = fact_source_name if fact_source_name is not None else fact_source()
     if source != "holographic":
-        return FEEDBACK_TRUST_FLOOR
+        return SETTINGS.FEEDBACK_TRUST_FLOOR
     provider = holographic_min_trust(home)
-    return FEEDBACK_TRUST_FLOOR if provider is None else provider
+    return SETTINGS.FEEDBACK_TRUST_FLOOR if provider is None else provider
 
 
 def trust_feedback_items(suppressed, rejected, fact_source_name):
@@ -2893,7 +2343,7 @@ def keywords_needed_items(safe, fact_source_name):
     Only for the holographic source with `keywords.enabled`: the call writes
     the provider's own column, and a provider older than 0.6.0 accepts the
     parameter and drops it. The pass itself never writes the store."""
-    if not KEYWORDS_ENABLED or fact_source_name != "holographic":
+    if not SETTINGS.KEYWORDS_ENABLED or fact_source_name != "holographic":
         return []
     out = []
     for s in safe:
@@ -2955,11 +2405,11 @@ def said_again(fact, meta, rec, now=None):
     still talk about it — the very case the list was made for (twelve identical questions in five weeks) — so only a
     rejection older than `reject_reask_days` (180; 0 = never) is asked about again, and a second "no" starts the
     count over. The same old row stays silenced."""
-    if not REJECT_REASK_DAYS:
+    if not SETTINGS.REJECT_REASK_DAYS:
         return False
     at = _parse_iso(str(rec.get("at") or rec.get("rejected_at") or ""))
     created = _parse_ts(fact.get("created_at"))
-    if at is None or created is None or (now or _now()) - at < timedelta(days=REJECT_REASK_DAYS):
+    if at is None or created is None or (now or _now()) - at < timedelta(days=SETTINGS.REJECT_REASK_DAYS):
         return False
     return created > at and (meta.get("last_ts") or 0) > at.timestamp()
 
@@ -2986,7 +2436,7 @@ def _parse_iso(s):
 
 def unseen(items, bucket, now, cooldown_days=None, key=None):
     """Candidates not shown for longer than the cooldown. Does not mutate state."""
-    cooldown = timedelta(days=SEEN_COOLDOWN_DAYS if cooldown_days is None else cooldown_days)
+    cooldown = timedelta(days=SETTINGS.SEEN_COOLDOWN_DAYS if cooldown_days is None else cooldown_days)
     key = key or (lambda item: _fact_fingerprint(item["content"]))
     fresh = []
     for item in items:
@@ -3011,7 +2461,7 @@ def mark_seen(items, bucket, now, key=None):
 
 def prune_seen(bucket, now, cooldown_days=None):
     """Drop entries older than two cooldowns so the state does not grow forever."""
-    horizon = timedelta(days=2 * (SEEN_COOLDOWN_DAYS if cooldown_days is None else cooldown_days))
+    horizon = timedelta(days=2 * (SETTINGS.SEEN_COOLDOWN_DAYS if cooldown_days is None else cooldown_days))
     for key in [k for k, v in bucket.items()
                 if not isinstance(v, dict) or not _parse_iso(v.get("at"))
                 or (now - _parse_iso(v.get("at"))) >= horizon]:
@@ -3026,47 +2476,9 @@ def load_seen(path):
 # Ephemeral (dated) events and expiry
 # ---------------------------------------------------------------------------
 
-MONTHS_RE = r"январ[яе]|феврал[яе]|март[ае]?|апрел[яе]|ма[йяе]|июн[яе]|июл[яе]|август[ае]?|сентябр[яе]|октябр[яе]|ноябр[яе]|декабр[яе]"
-THAI_MONTHS_RE = (r"มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|"
-                  r"กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม|ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|"
-                  r"พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.")
-# Thai alternatives are deliberately outside `\b`: Thai has no spaces between
-# words and `\b` needs a \w/non-\w boundary, so `\bสอบ\b` never matched «สอบ»
-# inside «การสอบ» and Thai school messages were never seen as temporary events.
-# Words that make a dated fact a one-off event (an appointment, an exam, a meeting, a flight, a deadline, a thing to
-# bring). Latin and Cyrillic stems take any ending; Chinese, Japanese, Korean and Thai words are matched anywhere —
-# those scripts have no spaces (or glue particles to the word), so a \b never falls where it should.
-EPHEMERAL_HINTS_RE = re.compile(
-    r"\b(?:тест\w*|контрольн\w*|экзамен\w*|экскурс\w*|дедлайн\w*|"
-    r"встреч\w*|созвон\w*|звонок|совещани\w*|собеседовани\w*|"
-    r"вылет\w*|рейс\w*|прилёт\w*|прилет\w*|поезд\w*|"
-    r"приём\w*|прием\w*|запись\s+к\s+врачу|визит\w*|"
-    r"meeting|call|flight|appointment|interview|"
-    r"test|exam\w*|deadline\w*|field\s+trip|bring|submit|prepare|"
-    r"sight\s+words?|страниц\w*|лист\w*\s+для\s+чтени\w*|"
-    r"завтра|сегодня|послезавтра|принести|сдать|подготовить|"
-    r"termin|termine|terminen|arzttermin\w*|prüfung\w*|klassenarbeit\w*|klausur\w*|besprechung\w*|abflug|flug|frist|"
-    r"abgabe\w*|mitbringen|abgeben|elternabend\w*|"
-    r"cita|citas|examen\w*|prueba\w*|reunión|reuniones|vuelo\w*|plazo\w*|entrega\w*|traer|entregar|excursión|"
-    r"rendez-vous|contrôle\w*|réunion\w*|vol|échéance\w*|apporter|rendre|sortie\s+scolaire|"
-    r"consulta\w*|prova\w*|exame\w*|reunião|reuniões|voo\w*|prazo\w*|levar|trazer|excursão|"
-    r"appuntament\w*|esam\w*|verifica\w*|riunion\w*|volo|voli|scadenz\w*|portare|consegna\w*|gita|"
-    r"afspra\w*|toets\w*|vergadering\w*|vlucht\w*|meenemen|inleveren|schoolreis\w*|"
-    r"randevu\w*|sınav\w*|toplantı\w*|uçuş\w*|teslim\w*|getir\w*|götür\w*|gezi\w*|"
-    r"wizyt\w*|sprawdzian\w*|egzamin\w*|kartkówk\w*|spotkani\w*|przynieś\w*|oddać|wycieczk\w*|"
-    r"janji|ujian|ulangan|rapat|pertemuan|penerbangan|tenggat|bawa|kumpulkan|karyawisata|"
-    r"dentist|(?:to|at|see|visit)\s+(?:the|a)\s+doctor|doctor'?s?\s+(?:appointment|visit)|trip|flies|fly|due|"
-    r"стоматолог\w*|к\s+врачу|у\s+врача|врач\s+прид[её]т|вызвать\s+врача|вызов\s+врача|при[её]м\s+врача|утренник\w*|zahnarzt\w*|ausflug\w*|wandertag\w*|"
-    r"llevar|dentista|médico|último\s+dia|colloqui\w*|uçağ\w*|uçak|son\s+ödeme|son\s+gün|dentyst\w*|"
-    r"wylot\w*|lot\s+do|zebrani\w*|\w*toets\w*|ouderavond\w*|tandarts\w*|jadwal|batas|dikumpulkan)\b"
-    r"|(?:สอบ|กำหนดส่ง|ทัศนศึกษา|นำมา|ส่ง|นัด|ประชุม|เที่ยวบิน|"
-    r"予約|テスト|試験|会議|打ち合わせ|フライト|締め切り|締切|持って|提出|遠足|"
-    r"预约|預約|约了|約了|考试|考試|测验|測驗|会议|會議|航班|截止|带上|帶上|提交|春游|秋游|"
-    r"예약|시험|회의|비행|마감|가져|제출|소풍|고사|상담|까지|"
-    r"参観|健康診断|検診|出張|の便|歯医者|までに|复查|復查|复诊|復診|体检|體檢|飞|飛|家长会|家長會|之前|以前|"
-    r"วัคซีน|บิน|ภายใน)",
-    re.IGNORECASE,
-)
+# from dream_lang.py (3.0)
+(MONTHS_RE, THAI_MONTHS_RE, EPHEMERAL_HINTS_RE) = (
+    _LANG.MONTHS_RE, _LANG.THAI_MONTHS_RE, _LANG.EPHEMERAL_HINTS_RE)
 # 14.11, 14/11, 14-11-2026, Korean 12. 31.; the digits may touch Chinese, Japanese or Thai (奶奶11/23上午).
 NUMERIC_DATE_RE = re.compile(
     rf"(?<!{_NUM_EDGE}[\w.])(?<!-)(\d{{1,2}})(?:[./-]|\.\s)(\d{{1,2}})(?:[./-](\d{{2,4}}))?(?!{_NUM_EDGE}\w)(?!-\d)")
@@ -3142,24 +2554,10 @@ def is_ephemeral_fact(content):
 # promoted, and strong corroboration keeps it from decaying by itself. Live
 # case: "test on July 3" stayed in the output until the end of July and
 # opened the wake gate every night although no work was possible.
-RU_MONTHS = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5, "июн": 6,
-             "июл": 7, "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
-EN_MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-             "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
-THAI_MONTHS = {"มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3, "เมษายน": 4, "พฤษภาคม": 5,
-               "มิถุนายน": 6, "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9, "ตุลาคม": 10,
-               "พฤศจิกายน": 11, "ธันวาคม": 12,
-               "ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4, "พ.ค.": 5, "มิ.ย.": 6,
-               "ก.ค.": 7, "ส.ค.": 8, "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
-
-ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
-RU_DATE_RE = re.compile(rf"\b(\d{{1,2}})\s+({MONTHS_RE})(?:\s+(\d{{4}}))?\b", re.IGNORECASE)
-# Month names whole ("Dec", "December"), not any word that starts like one: "mardi 10", "Marina 5", "Mark 3",
-# "Jane 14" and "Mary 5" used to be dates (review 2026-10-13). A day may carry its suffix ("Dec 17th").
-EN_DATE_RE = re.compile(
-    r"\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|"
-    r"october|oct|november|nov|december|dec)\b\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b", re.IGNORECASE)
-THAI_DATE_RE = re.compile(rf"(\d{{1,2}})\s+({THAI_MONTHS_RE})(?:\s+(\d{{4}}))?")
+# from dream_lang.py (3.0)
+(RU_MONTHS, EN_MONTHS, THAI_MONTHS, ISO_DATE_RE, RU_DATE_RE, EN_DATE_RE, THAI_DATE_RE) = (
+    _LANG.RU_MONTHS, _LANG.EN_MONTHS, _LANG.THAI_MONTHS, _LANG.ISO_DATE_RE, _LANG.RU_DATE_RE, _LANG.EN_DATE_RE,
+    _LANG.THAI_DATE_RE)
 
 
 def _resolve_year(year, month, day, today):
@@ -3240,7 +2638,7 @@ def is_expired_event(content, today=None):
     text = _without_lasting(text)  # the date a state began is not the event's date
     if RELATIVE_DATE_RE.search(text):
         return False
-    today = today or _now().astimezone(LOCAL_TZ).date()
+    today = today or _now().astimezone(SETTINGS.LOCAL_TZ).date()
     certain, ambiguous = extract_event_dates(text, today)
     if not certain and not ambiguous:
         return False
@@ -3462,7 +2860,7 @@ def promotion_ready(item):
     helpful = item.get("helpful_count") or 0
     return (
         meta["ref_days"] >= 2
-        or meta["mentions"] >= MIN_MENTIONS
+        or meta["mentions"] >= SETTINGS.MIN_MENTIONS
         or (meta["rc"] >= 3 and helpful >= 1)
     )
 
@@ -3470,9 +2868,9 @@ def promotion_ready(item):
 def user_profile_hint(fact):
     """Hint only: the agent still judges stability, usefulness and sensitivity."""
     category = _norm(fact.get("category"))
-    if category in PROFILE_CATEGORIES:
+    if category in SETTINGS.PROFILE_CATEGORIES:
         return True
-    return bool(PROFILE_HINT_RE and PROFILE_HINT_RE.search(_norm(fact.get("content"))))
+    return bool(SETTINGS.PROFILE_HINT_RE and SETTINGS.PROFILE_HINT_RE.search(_norm(fact.get("content"))))
 
 
 def _theme_gram(gram):
@@ -3494,7 +2892,7 @@ def extract_themes(messages, window_days):
             doc_freq[w] += 1
             samples.setdefault(w, m["content"][:120])
     themes = [{"theme": w, "mentions": n, "sample": samples[w]}
-              for w, n in doc_freq.items() if n >= MIN_MENTIONS]
+              for w, n in doc_freq.items() if n >= SETTINGS.MIN_MENTIONS]
     themes.sort(key=lambda x: -x["mentions"])
     return themes
 
@@ -3517,7 +2915,7 @@ def _entry_key(entry):
 
 def is_pinned(entry):
     """A human-pinned entry (marker from `pinned_markers`) is never asked about."""
-    return any(m in (entry or "") for m in PINNED_MARKERS)
+    return any(m in (entry or "") for m in SETTINGS.PINNED_MARKERS)
 
 
 # `old_text` of the core `memory replace` is matched as a SUBSTRING of an
@@ -3713,7 +3111,7 @@ def probe_found(probe, memory_text):
 def check_probes(memory_text, previous_missing):
     """(alerts, missing): one alert per probe that went missing since the previous pass (or was never found);
     a probe still missing stays quiet — the alert said it, the agent cannot restore it on its own."""
-    missing = [p for p in PROBES if not probe_found(p, memory_text)]
+    missing = [p for p in SETTINGS.PROBES if not probe_found(p, memory_text)]
     before = set(previous_missing or [])
     alerts = [{"kind": "probe_missing", "probe": p[:120],
                "message": f"memory no longer holds “{p[:120]}” (a probe in dreaming.json) — check whether an "
@@ -3725,13 +3123,13 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
     """Compare durable files with the previous snapshot; write a new one.
     Returns a list of alerts (possibly empty)."""
     if not snapshot_path:
-        if PROBES:  # without the snapshot a missing probe would alert every night
+        if SETTINGS.PROBES:  # without the snapshot a missing probe would alert every night
             print("[dream] warn: probes are checked only with a snapshot state (--snapshot-state)", file=sys.stderr)
         return []
     previous = load_snapshot(snapshot_path)
     current, alerts = {}, []
     probes_missing = []
-    if PROBES and memory_text is not None:
+    if SETTINGS.PROBES and memory_text is not None:
         probe_alerts, probes_missing = check_probes(memory_text, previous.get("_probes_missing"))
         alerts.extend(probe_alerts)
     for p in _memory_candidate_paths(mem_md):
@@ -3763,7 +3161,7 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             prev_chars = prev_total
             lost_chars = sum(prev_sizes.get(k, 0) for k in lost)
             char_frac = (lost_chars / prev_chars) if prev_chars else 0.0
-            if frac > MEMORY_LOSS_ALERT_FRACTION or char_frac > MEMORY_LOSS_ALERT_FRACTION:
+            if frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION or char_frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION:
                 # Entry count alone misses "one big entry vanished"; the share of
                 # characters alone misses "many small entries gone". Both, then.
                 alerts.append({"kind": "memory_loss", "file": name,
@@ -3780,7 +3178,7 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
                 now_len = heads.get(key)
                 if not was or now_len is None or was < SHRINK_MIN_CHARS:
                     continue
-                if now_len < was * (1 - MEMORY_LOSS_ALERT_FRACTION * 2):
+                if now_len < was * (1 - SETTINGS.MEMORY_LOSS_ALERT_FRACTION * 2):
                     alerts.append({"kind": "entry_truncated", "file": name,
                                    "had_chars": was, "chars": now_len,
                                    "message": f"{name}: an entry shrank from {was} to {now_len} "
@@ -3882,7 +3280,7 @@ def load_pending_writes(home=None):
     night and the queue grows (87 unattended items on the install the external
     review measured). Fail-soft: no directory, unreadable or foreign JSON — an
     empty list, never an exception."""
-    base = os.path.join(home or HOME, PENDING_DIR)
+    base = os.path.join(home or HOME, SETTINGS.PENDING_DIR)
     out = []
     try:
         names = sorted(os.listdir(base))
@@ -3960,16 +3358,16 @@ def pending_alert(pending, seen, now):
     The queue is the human's job, not the agent's, so this is a reminder, not
     work: it fires only when `alert_min` items have been waiting longer than
     `alert_days`, and then rests for the usual cooldown."""
-    if not pending or len(pending) < PENDING_ALERT_MIN:
+    if not pending or len(pending) < SETTINGS.PENDING_ALERT_MIN:
         return None
     oldest = min((p["created_at"] for p in pending if p.get("created_at")), default=None)
     if not oldest:
         return None
     age_days = (now.timestamp() - oldest) / 86400
-    if age_days < PENDING_ALERT_DAYS:
+    if age_days < SETTINGS.PENDING_ALERT_DAYS:
         return None
     last = _parse_iso((seen.get("_pending_alert") or {}).get("at"))
-    if last and (now - last) < timedelta(days=SEEN_COOLDOWN_DAYS):
+    if last and (now - last) < timedelta(days=SETTINGS.SEEN_COOLDOWN_DAYS):
         return None
     seen["_pending_alert"] = {"at": now.isoformat(timespec="seconds"), "count": len(pending)}
     # Writes and queued records differ when a record holds an `operations[]` batch:
@@ -4032,9 +3430,9 @@ def _md_cooldown_end(rec):
     """When the running cooldown of an asked-record ends (None — no cooldown)."""
     confirmed = _parse_iso(rec.get("confirmed"))
     if confirmed:
-        return confirmed + timedelta(days=MD_CONFIRMED_COOLDOWN_DAYS)
+        return confirmed + timedelta(days=SETTINGS.MD_CONFIRMED_COOLDOWN_DAYS)
     at = _parse_iso(rec.get("at"))
-    return at + timedelta(days=MD_ASK_COOLDOWN_DAYS) if at else None
+    return at + timedelta(days=SETTINGS.MD_ASK_COOLDOWN_DAYS) if at else None
 
 
 def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=(),
@@ -4148,7 +3546,7 @@ def memory_usage(mem_md):
         except OSError:
             continue
         name = _rel_home(path)
-        limit = MEMORY_CHAR_LIMITS.get(name)
+        limit = SETTINGS.MEMORY_CHAR_LIMITS.get(name)
         rec = {"chars": n}
         if limit:
             rec["limit"] = int(limit)
@@ -4160,6 +3558,106 @@ def memory_usage(mem_md):
 # ---------------------------------------------------------------------------
 # Main pass
 # ---------------------------------------------------------------------------
+
+def _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text):
+    """Every fact with its score and what the sections decide on: quarantine class, already in memory or staged
+    for approval, rejected by a human — or rejected and said again since, which makes it a candidate to ask about."""
+    scored = []
+    for f in facts:
+        score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store))
+        rejection = rejection_of(f["content"], rejected)
+        again = rejection is not None and said_again(f, meta, rejection)
+        scored.append({**f, "score": score, "signals": sig, "meta": meta,
+                       "unsafe": classify_unsafe(f["content"]),
+                       "in_memory": already_in_memory(f["content"], memory_text),
+                       "staged": bool(staged_text)
+                       and already_in_memory(f["content"], staged_text),
+                       "rejected": rejection is not None and not again,
+                       # said again after a human rejected it: a candidate once more, but one to ask about
+                       **({"previously_rejected": {"at": str(rejection.get("at") or rejection.get("rejected_at")
+                                                             or "")[:10],
+                                                   "reason": str(rejection.get("reason") or "")[:160]}}
+                          if again else {})})
+    return scored
+
+
+def _select_promotions(safe, seen_promotions, now):
+    """(promotions, their hidden store twins, one-off events, how many rest after a recent showing): facts over
+    the score gate, corroborated, not in memory or staged; dated one-off events go to their own section."""
+    promotion_candidates = [
+        s for s in safe
+        if s["score"] >= SETTINGS.MIN_SCORE and promotion_ready(s)
+        and not s["in_memory"] and not s["staged"]
+    ]
+    # Short rest after a promotion was actually shown (and the night acked): a
+    # candidate the agent could not write — approval gate, budget, a refusal —
+    # used to come back every single night.
+    promotions_before_cooldown = len(promotion_candidates)
+    promotion_candidates = unseen(promotion_candidates, seen_promotions, now,
+                                  cooldown_days=SETTINGS.PROMOTION_COOLDOWN_DAYS)
+    promotions_suppressed = promotions_before_cooldown - len(promotion_candidates)
+    ephemeral_events = [s for s in promotion_candidates if is_ephemeral_fact(s["content"])]
+    promotions = [s for s in promotion_candidates if not is_ephemeral_fact(s["content"])]
+    promotions.sort(key=lambda s: -s["score"])
+    ephemeral_events.sort(key=lambda s: -s["score"])
+    promotions, promotions_dups = collapse_store_duplicates(promotions)
+    return promotions, promotions_dups, ephemeral_events, promotions_suppressed
+
+
+def _conflict_candidates(safe, promoted_ids, memory_text):
+    """Facts that may update a memory entry (same subject, other numbers), each with its `conflicts`."""
+    conflicts_pending = []
+    for s in safe:
+        if s["fact_id"] in promoted_ids:
+            continue
+        if is_ephemeral_fact(s["content"]) or exact_or_alias_in_memory(s["content"], memory_text):
+            continue
+        hits = find_conflicts(s["content"], memory_text)
+        if hits:
+            conflicts_pending.append({**s, "conflicts": hits})
+    return conflicts_pending
+
+
+def _decay_candidates(safe, window_days):
+    """Facts nobody retrieved or mentioned for twice the window, not trusted above 0.5, not in memory."""
+    return [s for s in safe
+            if (s["meta"]["rc"] == 0 and s["meta"]["mentions"] == 0
+                and s["meta"]["days_old"] > window_days * 2
+                and (s["trust_score"] if s["trust_score"] is not None else 0.5) <= 0.5
+                and not s["in_memory"])]
+
+
+def _new_themes(messages, window_days, facts, memory_text):
+    """Recurring themes of the window that no fact and no memory entry holds yet; a suspicious sample hidden."""
+    facts_text = " ".join(_norm(f["content"]) for f in facts)
+    themes = [t for t in extract_themes(messages, window_days)
+              if t["theme"] not in facts_text and t["theme"] not in _norm(memory_text)]
+    for t in themes:
+        if classify_unsafe(t.get("sample")):
+            t["sample"] = "[hidden: suspicious content]"
+    return themes
+
+
+def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_needed, confirm, fact_decays,
+                conflicts):
+    """Stamp what this pass shows into the cooldown buckets of `seen` (only the published slices), then drop
+    stamps older than their cooldown. `confirm` is stamped and, as before 3.0, not pruned."""
+    mark_seen(new_facts, seen["new_facts"], now)
+    mark_seen(promotions, seen["promotions"], now)
+    mark_seen(trust_feedback, seen["trust_feedback"], now, key=_feedback_key)
+    mark_seen(keywords_needed, seen["keywords_needed"], now, key=_feedback_key)
+    mark_seen(confirm, seen["confirm"], now, key=_feedback_key)
+    mark_seen(fact_decays, seen["fact_decays"], now)
+    mark_seen(conflicts, seen["conflicts"], now)
+    for name in ("new_facts", "fact_decays", "conflicts"):
+        prune_seen(seen[name], now)
+    prune_seen(seen["promotions"], now, cooldown_days=SETTINGS.PROMOTION_COOLDOWN_DAYS)
+    prune_seen(seen["trust_feedback"], now)
+    prune_seen(seen["keywords_needed"], now)
+    # Stamped like the two above and never pruned: one key more for every fact ever offered for a confirmation. Past
+    # two cooldowns a stamp holds nothing back (`unseen` lets the fact through after one), so pruning changes no answer.
+    prune_seen(seen["confirm"], now)
+
 
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
@@ -4189,22 +3687,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     staged_text = _staged_text(pending_writes)
     staged_removals = _staged_removals(pending_writes)
 
-    scored = []
-    for f in facts:
-        score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store))
-        rejection = rejection_of(f["content"], rejected)
-        again = rejection is not None and said_again(f, meta, rejection)
-        scored.append({**f, "score": score, "signals": sig, "meta": meta,
-                       "unsafe": classify_unsafe(f["content"]),
-                       "in_memory": already_in_memory(f["content"], memory_text),
-                       "staged": bool(staged_text)
-                       and already_in_memory(f["content"], staged_text),
-                       "rejected": rejection is not None and not again,
-                       # said again after a human rejected it: a candidate once more, but one to ask about
-                       **({"previously_rejected": {"at": str(rejection.get("at") or rejection.get("rejected_at")
-                                                             or "")[:10],
-                                                   "reason": str(rejection.get("reason") or "")[:160]}}
-                          if again else {})})
+    scored = _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text)
 
     # Rejected by a human leaves through no section — not as a candidate, not
     # as a "new fact", not as a relevance question. Removed BEFORE quarantine:
@@ -4240,24 +3723,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     new_facts_suppressed = len(new_facts_pending) - len(new_facts)
     new_facts.sort(key=lambda s: (s["meta"]["days_old"], -s["score"]))
 
-    promotion_candidates = [
-        s for s in safe
-        if s["score"] >= MIN_SCORE and promotion_ready(s)
-        and not s["in_memory"] and not s["staged"]
-    ]
-    # Short rest after a promotion was actually shown (and the night acked): a
-    # candidate the agent could not write — approval gate, budget, a refusal —
-    # used to come back every single night.
-    promotions_before_cooldown = len(promotion_candidates)
-    promotion_candidates = unseen(promotion_candidates, seen_promotions, now,
-                                  cooldown_days=PROMOTION_COOLDOWN_DAYS)
-    promotions_suppressed = promotions_before_cooldown - len(promotion_candidates)
+    promotions, promotions_dups, ephemeral_events, promotions_suppressed = _select_promotions(
+        safe, seen_promotions, now)
     staged_suppressed = sum(1 for s in safe if s.get("staged"))
-    ephemeral_events = [s for s in promotion_candidates if is_ephemeral_fact(s["content"])]
-    promotions = [s for s in promotion_candidates if not is_ephemeral_fact(s["content"])]
-    promotions.sort(key=lambda s: -s["score"])
-    ephemeral_events.sort(key=lambda s: -s["score"])
-    promotions, promotions_dups = collapse_store_duplicates(promotions)
     # A fact already offered as a promotion is not repeated in new_facts: the
     # agent reviews it once (live case: 8 extracted facts arrived in both
     # sections, doubling the prompt for no extra work). A duplicate hidden
@@ -4268,7 +3736,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # a published representative are marked shown together with it (below);
     # twins of one cut by the cap wait for it.
     new_facts, new_facts_dups = collapse_store_duplicates(new_facts)
-    new_facts = new_facts[:NEW_FACTS_CAP]
+    new_facts = new_facts[:SETTINGS.NEW_FACTS_CAP]
     shown_twins = {i for s in new_facts for i in s.get("duplicates", ())}
     new_facts_dups = [s for s in new_facts_dups if s["fact_id"] in shown_twins]
 
@@ -4280,34 +3748,17 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # arrives with its own `nearest_entry`, so the agent sees the possible
     # update once, in one section (the head-match fix surfaced eight sibling
     # facts at once, each doubled as a "conflict" with an unrelated sibling).
-    conflicts_pending = []
-    for s in safe:
-        if s["fact_id"] in promoted_ids:
-            continue
-        if is_ephemeral_fact(s["content"]) or exact_or_alias_in_memory(s["content"], memory_text):
-            continue
-        hits = find_conflicts(s["content"], memory_text)
-        if hits:
-            conflicts_pending.append({**s, "conflicts": hits})
+    conflicts_pending = _conflict_candidates(safe, promoted_ids, memory_text)
     conflicts = unseen(conflicts_pending, seen_conflicts, now)
     conflicts_suppressed = len(conflicts_pending) - len(conflicts)
     conflicts.sort(key=lambda s: -s["score"])
 
-    decays_pending = [s for s in safe
-                      if (s["meta"]["rc"] == 0 and s["meta"]["mentions"] == 0
-                          and s["meta"]["days_old"] > window_days * 2
-                          and (s["trust_score"] if s["trust_score"] is not None else 0.5) <= 0.5
-                          and not s["in_memory"])]
+    decays_pending = _decay_candidates(safe, window_days)
     decays = unseen(decays_pending, seen_fact_decays, now)
     decays_suppressed = len(decays_pending) - len(decays)
     decays.sort(key=lambda s: -s["meta"]["days_old"])
 
-    facts_text = " ".join(_norm(f["content"]) for f in facts)
-    themes = [t for t in extract_themes(messages, window_days)
-              if t["theme"] not in facts_text and t["theme"] not in _norm(memory_text)]
-    for t in themes:
-        if classify_unsafe(t.get("sample")):
-            t["sample"] = "[hidden: suspicious content]"
+    themes = _new_themes(messages, window_days, facts, memory_text)
 
     # Rejected facts the store still trusts: offer the one call that teaches
     # retrieval. Shown at most once per cooldown, and never on a source without
@@ -4317,7 +3768,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     feedback_fresh = unseen(feedback_pending, seen_feedback, now, key=_feedback_key)
     # Only the shown slice is marked, so what the cap cuts off is not suppressed
     # — it simply comes tomorrow. The counter means "resting", nothing else.
-    feedback = feedback_fresh[:FEEDBACK_CAP]
+    feedback = feedback_fresh[:SETTINGS.FEEDBACK_CAP]
     feedback_suppressed = len(feedback_pending) - len(feedback_fresh)
 
     # Facts without keywords (holographic >= 0.6.0 searches them like text):
@@ -4327,34 +3778,25 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # every night; one that got keywords simply leaves the list.
     keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], fact_source())
     keywords_fresh = unseen(keywords_pending, seen_keywords, now, key=_feedback_key)
-    keywords_needed = keywords_fresh[:KEYWORDS_CAP]
+    keywords_needed = keywords_fresh[:SETTINGS.KEYWORDS_CAP]
 
     # Facts people said again on different days (holographic >= 0.15.0): a confirmation is worth giving while the
     # agent is awake, never a reason to wake it.
     confirm_pending = confirm_items(safe, all_messages, by_store, fact_source())
     confirm = unseen(confirm_pending, seen_confirm, now, key=_feedback_key)[:CONFIRM_CAP]
 
-    md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=PUBLISH_CAP,
+    md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=SETTINGS.PUBLISH_CAP,
                        staged_removals=staged_removals,
                        reask=reask_md)
 
     # Only published slices count as shown.
-    published_promotions = promotions[:PUBLISH_CAP]
-    published_decays = decays[:PUBLISH_CAP]
-    published_conflicts = conflicts[:PUBLISH_CAP]
+    published_promotions = promotions[:SETTINGS.PUBLISH_CAP]
+    published_decays = decays[:SETTINGS.PUBLISH_CAP]
+    published_conflicts = conflicts[:SETTINGS.PUBLISH_CAP]
     if seen_state_path:
-        mark_seen(new_facts + new_facts_dups, seen_new_facts, now)
-        mark_seen(published_promotions, seen_promotions, now)
-        mark_seen(feedback, seen_feedback, now, key=_feedback_key)
-        mark_seen(keywords_needed, seen_keywords, now, key=_feedback_key)
-        mark_seen(confirm, seen_confirm, now, key=_feedback_key)
-        mark_seen(published_decays, seen_fact_decays, now)
-        mark_seen(published_conflicts, seen_conflicts, now)
-        for bucket in (seen_new_facts, seen_fact_decays, seen_conflicts):
-            prune_seen(bucket, now)
-        prune_seen(seen_promotions, now, cooldown_days=PROMOTION_COOLDOWN_DAYS)
-        prune_seen(seen_feedback, now)
-        prune_seen(seen_keywords, now)
+        _mark_shown(seen, now, new_facts=new_facts + new_facts_dups, promotions=published_promotions,
+                    trust_feedback=feedback, keywords_needed=keywords_needed, confirm=confirm,
+                    fact_decays=published_decays, conflicts=published_conflicts)
     # The queue alert stamps its own cooldown into `seen`: computed before the state is written, or the stamp
     # never reached the file and the same alert woke the agent every night (Codex review of 2.7.2).
     queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
@@ -4405,8 +3847,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     result = {
         "generated_at": generated_at,
         "window_days": window_days, "corr_window_days": corr_days, "md_decay_days": md_decay_days,
-        "weights": WEIGHTS,
-        "gates": {"min_score": MIN_SCORE, "min_mentions": MIN_MENTIONS,
+        "weights": SETTINGS.WEIGHTS,
+        "gates": {"min_score": SETTINGS.MIN_SCORE, "min_mentions": SETTINGS.MIN_MENTIONS,
                   "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful",
                   # The store's own recall floor (provider `min_trust_threshold` unless
                   # overridden here): what `trust_feedback` has to push a fact below.
@@ -4446,9 +3888,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "alerts": alerts,
         "promotions": [_pub_near(s) for s in published_promotions],
         "new_facts": [_pub_near(s) for s in new_facts],
-        "ephemeral_events": [_pub(s) for s in ephemeral_events[:PUBLISH_CAP]],
+        "ephemeral_events": [_pub(s) for s in ephemeral_events[:SETTINGS.PUBLISH_CAP]],
         # Read-only: never in `precheck.actionable_keys`, so it opens no gate.
-        "expired_events": [_pub(s) for s in expired[:PUBLISH_CAP]],
+        "expired_events": [_pub(s) for s in expired[:SETTINGS.PUBLISH_CAP]],
         # Not in `precheck.actionable_keys` by default: a trust nudge is worth
         # doing when the agent is already awake, not worth waking it for.
         "trust_feedback": feedback,
@@ -4456,11 +3898,11 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "keywords_needed": keywords_needed,
         # Not actionable either: people said these again on different days.
         "confirm": confirm,
-        "fact_decays": [_pub(s) for s in decays[:PUBLISH_CAP]],
+        "fact_decays": [_pub(s) for s in decays[:SETTINGS.PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,
-        "emerging_themes": themes[:PUBLISH_CAP],
-        "quarantined": [_pub_quarantined(s) for s in quarantined[:PUBLISH_CAP]],
+        "emerging_themes": themes[:SETTINGS.PUBLISH_CAP],
+        "quarantined": [_pub_quarantined(s) for s in quarantined[:SETTINGS.PUBLISH_CAP]],
         "diary": diary,
     }
     # Present only when there is something to say: a single shared store keeps the output it always had.
@@ -4560,7 +4002,7 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
     ephemeral_events = ephemeral_events or []
     quarantined = quarantined or []
     conflicts = conflicts or []
-    lines = [f"{DIARY_HEADING} {_now().astimezone(LOCAL_TZ).strftime('%Y-%m-%d')}",
+    lines = [f"{SETTINGS.DIARY_HEADING} {_now().astimezone(SETTINGS.LOCAL_TZ).strftime('%Y-%m-%d')}",
              f"Theme window: {window} d · facts: {nfacts} · messages (corroboration): {nmsgs}.", ""]
     for a in alerts or []:
         lines.append(f"⚠️ {a.get('message')}")
@@ -4724,7 +4166,7 @@ def rotate_diary(path, keep=None):
     """Keep the last `keep` sections in the diary, move the rest to *.archive.md.
     Nothing is deleted; the diary is not loaded into the prompt, so this is
     hygiene, not token economy."""
-    keep = DIARY_KEEP_SECTIONS if keep is None else keep
+    keep = SETTINGS.DIARY_KEEP_SECTIONS if keep is None else keep
     if keep <= 0:
         return False
     try:
@@ -4732,7 +4174,7 @@ def rotate_diary(path, keep=None):
             text = f.read()
     except OSError:
         return False
-    starts = [m.start() for m in DIARY_SECTION_RE.finditer(text)]
+    starts = [m.start() for m in SETTINGS.DIARY_SECTION_RE.finditer(text)]
     if len(starts) <= keep:
         return False
     cut = starts[len(starts) - keep]
@@ -5161,20 +4603,7 @@ def forget_sweep(db=None, home=None):
     state_before = json.dumps(state, sort_keys=True)
     store_errors = []
     tombstones = load_forgotten(db, errors=store_errors)
-    facts = []
-    store = db or (fact_store_path() if fact_source() == "holographic" else None)
-    if store and os.path.exists(store):
-        try:
-            facts += _load_holographic(store)
-        except (sqlite3.Error, OSError) as exc:
-            print(f"[dream] warn: diary index not updated for the shared store: {exc}", file=sys.stderr)
-    if not db:
-        facts += load_chat_facts(home)  # indexed even without a shared store (scope chat may have none)
-    if facts:
-        try:
-            update_diary_index(index_path, facts)
-        except OSError as exc:
-            print(f"[dream] warn: diary index not updated: {exc}", file=sys.stderr)
+    _index_current_facts(db, home, index_path)
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
@@ -5188,118 +4617,18 @@ def forget_sweep(db=None, home=None):
     fingerprints = {fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])} \
         | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
 
-    payload_path = os.path.join(home, "cache", "dream.json")
-    payload = _load_state_file(payload_path)
-    if payload:
-        summary["payload"] = (_drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
-                              + _scrub_copies(payload, _preview_set(index), fingerprints))
-        if summary["payload"]:
-            _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
-
-    rejected_path = _state_default("DREAM_REJECTED_STATE", "rejected")
-    rejected = _load_state_file(rejected_path)
-    gone = [k for k, rec in rejected.items()
-            if k in fingerprints or (isinstance(rec, dict) and str(rec.get("fact_id")) in ids)]
-    for key in gone:
-        rejected.pop(key)
-    if gone:
-        summary["rejected"] = len(gone)
-        _write_private(rejected_path, json.dumps(rejected, ensure_ascii=False, indent=1) + "\n")
-
-    seen_path = _state_default("DREAM_SEEN_STATE", "seen")
-    seen = _load_state_file(seen_path)
-    for name, bucket in seen.items():
-        if name == "_pending" and isinstance(bucket, dict):
-            for key, values in (bucket.get("seen") or {}).items():
-                if isinstance(values, list):
-                    kept = [v for v in values if v not in fingerprints]
-                    summary["seen"] += len(values) - len(kept)
-                    bucket["seen"][key] = kept
-        elif isinstance(bucket, dict):
-            for key in [k for k, v in bucket.items()
-                        if k in fingerprints or (isinstance(v, dict) and str(v.get("fact_id")) in ids)]:
-                bucket.pop(key)
-                summary["seen"] += 1
-    if summary["seen"]:
-        _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
-
-    diary = os.path.join(home, DIARY_PATH)
-    for path in (diary, diary + ".archive.md"):
-        try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            summary["errors"].append(f"{path}: {exc}")
-            continue
-        cleaned, removed = scrub_diary_text(text, ids, index)
-        if removed:
-            summary["diary_lines"] += removed
-            _write_private(path, cleaned)
-
-    pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
-    for folder in _dream_job_dirs(home):
-        try:
-            names = os.listdir(folder)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            summary["errors"].append(f"{folder}: {exc}")
-            continue
-        hashes = _preview_set(index)
-        for name in names:
-            path = os.path.join(folder, name)
-            try:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-                # By id, and by a verbatim copy in any JSON string of the log: logs of the extraction pass before
-                # 2.7.3 carried `existing_facts` as bare strings, and a memory entry rides without an id.
-                if set(pattern.findall(text)) & ids or any(
-                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text)):
-                    os.remove(path)
-                    summary["cron_logs"] += 1
-            except OSError as exc:
-                summary["errors"].append(f"{path}: {exc}")
-
-    # Broken state files moved aside (`_load_state_file`): a copy of the reject list or the payload holds facts' text,
-    # and cleaning only the live files left a forgotten fact there for good while the sweep reported success (Codex
-    # review of the 2.9.9 changes). Such a copy cannot be parsed, and a write cut short cuts a fact's text anywhere —
-    # a fragment matches no id, fingerprint or preview hash, so "it does not mention the fact" cannot be proven.
-    # Hence: when a fact is forgotten for the first time (`new`), every set-aside copy goes — the human's "forget it"
-    # outweighs the evidence. On the runs after, a copy is deleted when it mentions a forgotten fact by its id, its
-    # fingerprint or its verbatim text (a live file is cleaned on every run, so a later copy of it is clean).
-    state_files = {p for p in (rejected_path, seen_path, payload_path, index_path, state_path,
-                               _state_default("DREAM_ASKED_STATE", "asked"),
-                               _state_default("DREAM_SNAPSHOT_STATE", "snapshot"),
-                               os.path.join(home, "cache", "dream-extract-state.json")) if p}
-    hashes = _preview_set(index)
+    # Each copy in turn, in this order: the night's payload, the reject list, the cooldowns, the diary, the logs, and
+    # last the broken state files set aside — the loads above may have just set one aside.
+    summary["payload"] = _sweep_payload(home, ids, index, fingerprints)
+    summary["rejected"] = _sweep_rejected(ids, fingerprints)
+    summary["seen"] = _sweep_seen(ids, fingerprints)
+    summary["diary_lines"] = _sweep_diary(home, ids, index, summary["errors"])
+    summary["cron_logs"] = _sweep_cron_logs(home, ids, index, summary["errors"])
     # A wipe that did not finish (a copy that could not be deleted) is owed until it does: the tombstone is recorded
     # as swept below, and without this a fragment in a copy kept on a failed run would never be looked for again.
     wipe_all = bool(new) or bool(state.get("corrupt_wipe_owed"))
     errors_before = len(summary["errors"])
-    by_dir = defaultdict(set)
-    for p in state_files:
-        by_dir[os.path.dirname(os.path.abspath(p))].add(os.path.basename(p) + CORRUPT_MARK)
-    for folder, prefixes in sorted(by_dir.items()):
-        try:
-            names = os.listdir(folder)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            summary["errors"].append(f"{folder}: {exc}")
-            continue
-        for name in sorted(n for n in names if n.startswith(tuple(prefixes))):
-            path = os.path.join(folder, name)
-            try:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-                if (wipe_all or set(pattern.findall(text)) & ids or any(fp in text for fp in fingerprints) or any(
-                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text))):
-                    os.remove(path)
-                    summary["corrupt_copies"] += 1
-            except OSError as exc:
-                summary["errors"].append(f"{path}: {exc}")
+    summary["corrupt_copies"] = _sweep_corrupt_copies(home, ids, index, fingerprints, wipe_all, summary["errors"])
     if wipe_all and len(summary["errors"]) > errors_before:
         state["corrupt_wipe_owed"] = True
     else:
@@ -5320,6 +4649,171 @@ def forget_sweep(db=None, home=None):
     if state_path and json.dumps(state, sort_keys=True) != state_before:
         _write_private(state_path, json.dumps(state, ensure_ascii=False))
     return summary
+
+
+def _index_current_facts(db, home, index_path):
+    """The diary index refreshed from the facts the stores hold now (`forget_sweep`). A store that cannot be read
+    leaves the index as it was, with a warning: the sweep itself goes on."""
+    facts = []
+    store = db or (fact_store_path() if fact_source() == "holographic" else None)
+    if store and os.path.exists(store):
+        try:
+            facts += _load_holographic(store)
+        except (sqlite3.Error, OSError) as exc:
+            print(f"[dream] warn: diary index not updated for the shared store: {exc}", file=sys.stderr)
+    if not db:
+        facts += load_chat_facts(home)  # indexed even without a shared store (scope chat may have none)
+    if facts:
+        try:
+            update_diary_index(index_path, facts)
+        except OSError as exc:
+            print(f"[dream] warn: diary index not updated: {exc}", file=sys.stderr)
+
+
+def _sweep_payload(home, ids, index, fingerprints):
+    """Forgotten facts out of the night's payload `cache/dream.json`; how many items and strings went."""
+    payload_path = os.path.join(home, "cache", "dream.json")
+    payload = _load_state_file(payload_path)
+    if not payload:
+        return 0
+    removed = (_drop_fact_items(payload, ids) + _scrub_strings(payload, ids, index)
+               + _scrub_copies(payload, _preview_set(index), fingerprints))
+    if removed:
+        _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
+    return removed
+
+
+def _sweep_rejected(ids, fingerprints):
+    """Records of forgotten facts out of the reject list; how many."""
+    rejected_path = _state_default("DREAM_REJECTED_STATE", "rejected")
+    rejected = _load_state_file(rejected_path)
+    gone = [k for k, rec in rejected.items()
+            if k in fingerprints or (isinstance(rec, dict) and str(rec.get("fact_id")) in ids)]
+    for key in gone:
+        rejected.pop(key)
+    if gone:
+        _write_private(rejected_path, json.dumps(rejected, ensure_ascii=False, indent=1) + "\n")
+    return len(gone)
+
+
+def _sweep_seen(ids, fingerprints):
+    """Forgotten facts out of the cooldowns and out of what tonight's pass showed (`_pending`); how many."""
+    seen_path = _state_default("DREAM_SEEN_STATE", "seen")
+    seen = _load_state_file(seen_path)
+    removed = 0
+    for name, bucket in seen.items():
+        if name == "_pending" and isinstance(bucket, dict):
+            for key, values in (bucket.get("seen") or {}).items():
+                if isinstance(values, list):
+                    kept = [v for v in values if v not in fingerprints]
+                    removed += len(values) - len(kept)
+                    bucket["seen"][key] = kept
+        elif isinstance(bucket, dict):
+            for key in [k for k, v in bucket.items()
+                        if k in fingerprints or (isinstance(v, dict) and str(v.get("fact_id")) in ids)]:
+                bucket.pop(key)
+                removed += 1
+    if removed:
+        _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
+    return removed
+
+
+def _sweep_diary(home, ids, index, errors):
+    """Lines about forgotten facts out of the diary and its archive; how many. What cannot be read goes to
+    `errors`."""
+    removed_all = 0
+    diary = os.path.join(home, SETTINGS.DIARY_PATH)
+    for path in (diary, diary + ".archive.md"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        cleaned, removed = scrub_diary_text(text, ids, index)
+        if removed:
+            removed_all += removed
+            _write_private(path, cleaned)
+    return removed_all
+
+
+def _sweep_cron_logs(home, ids, index, errors):
+    """Logs of the dream's own cron jobs that carry a forgotten fact, removed; how many. What cannot be read or
+    removed goes to `errors`."""
+    removed = 0
+    pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
+    for folder in _dream_job_dirs(home):
+        try:
+            names = os.listdir(folder)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{folder}: {exc}")
+            continue
+        hashes = _preview_set(index)
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                # By id, and by a verbatim copy in any JSON string of the log: logs of the extraction pass before
+                # 2.7.3 carried `existing_facts` as bare strings, and a memory entry rides without an id.
+                if set(pattern.findall(text)) & ids or any(
+                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text)):
+                    os.remove(path)
+                    removed += 1
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+    return removed
+
+
+def _sweep_corrupt_copies(home, ids, index, fingerprints, wipe_all, errors):
+    """Broken state files moved aside (`_load_state_file`) that may still hold a forgotten fact, removed; how many.
+    What cannot be read or removed goes to `errors`.
+
+    A copy of the reject list or the payload holds facts' text, and cleaning only the live files left a forgotten
+    fact there for good while the sweep reported success (Codex review of the 2.9.9 changes). Such a copy cannot be
+    parsed, and a write cut short cuts a fact's text anywhere — a fragment matches no id, fingerprint or preview hash,
+    so "it does not mention the fact" cannot be proven. Hence `wipe_all` (a fact forgotten for the first time, or a
+    wipe still owed): every set-aside copy goes — the human's "forget it" outweighs the evidence. Otherwise a copy is
+    deleted when it mentions a forgotten fact by its id, its fingerprint or its verbatim text (a live file is cleaned
+    on every run, so a later copy of it is clean)."""
+    state_files = {p for p in (_state_default("DREAM_REJECTED_STATE", "rejected"),
+                               _state_default("DREAM_SEEN_STATE", "seen"),
+                               os.path.join(home, "cache", "dream.json"),
+                               _state_default("DREAM_DIARY_INDEX", "diary_index"),
+                               _state_default("DREAM_FORGET_STATE", "forget_sweep"),
+                               _state_default("DREAM_ASKED_STATE", "asked"),
+                               _state_default("DREAM_SNAPSHOT_STATE", "snapshot"),
+                               os.path.join(home, "cache", "dream-extract-state.json")) if p}
+    pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
+    hashes = _preview_set(index)
+    by_dir = defaultdict(set)
+    for p in state_files:
+        by_dir[os.path.dirname(os.path.abspath(p))].add(os.path.basename(p) + CORRUPT_MARK)
+    removed = 0
+    for folder, prefixes in sorted(by_dir.items()):
+        try:
+            names = os.listdir(folder)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{folder}: {exc}")
+            continue
+        for name in sorted(n for n in names if n.startswith(tuple(prefixes))):
+            path = os.path.join(folder, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                if (wipe_all or set(pattern.findall(text)) & ids or any(fp in text for fp in fingerprints) or any(
+                        _carries_forgotten(_json_string(lit), hashes) for lit in _JSON_STRING_RE.findall(text))):
+                    os.remove(path)
+                    removed += 1
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+    return removed
 
 
 def forgotten_diary_index(ids):
@@ -5354,9 +4848,9 @@ def explain(fact_id, mem_md, corr_days):
     memory_text = load_durable_memory_text(mem_md)
     score, sig, meta = signals_for_fact(f, messages)
     print(f"fact {fact_id}: {f['content'][:200]}")
-    print(f"score {score} (gate {MIN_SCORE}); weights {WEIGHTS}")
+    print(f"score {score} (gate {SETTINGS.MIN_SCORE}); weights {SETTINGS.WEIGHTS}")
     for k, v in sig.items():
-        print(f"  {k:20s} {v:5.3f} * {WEIGHTS[k]:.2f} = {v * WEIGHTS[k]:.3f}")
+        print(f"  {k:20s} {v:5.3f} * {SETTINGS.WEIGHTS[k]:.2f} = {v * SETTINGS.WEIGHTS[k]:.3f}")
     print(f"  mentions {meta['mentions']} in {meta['ref_days']} day(s); retrievals {meta['rc']}; "
           f"days_old {meta['days_old']}")
     for e in meta.get("evidence") or []:
@@ -5417,7 +4911,8 @@ def dry_run_summary(result, source):
         lines.append(f"ALERT: {a.get('message') or a}")
     # The keys the gate wakes on, from the same config (`precheck.actionable_keys`): a list of its own here said
     # "would wake" while a gate with other keys stayed asleep (review of 2.9.8).
-    precheck = CONFIG.get("precheck") if isinstance(CONFIG.get("precheck"), dict) else {}
+    config = SETTINGS.CONFIG
+    precheck = config.get("precheck") if isinstance(config.get("precheck"), dict) else {}
     keys = precheck.get("actionable_keys") or DEFAULT_CONFIG["precheck"]["actionable_keys"]
     work = sum(st.get(k, 0) or 0 for k in keys if isinstance(k, str))
     lines.append("verdict: the nightly job would wake the agent" if work
@@ -5430,15 +4925,14 @@ def _state_default(env_name, cfg_key):
     p = os.environ.get(env_name)
     if p is not None:
         return p
-    p = (CONFIG.get("state") or {}).get(cfg_key)
+    p = (SETTINGS.CONFIG.get("state") or {}).get(cfg_key)
     if not p:
         return ""
     return p if os.path.isabs(os.path.expanduser(p)) else os.path.join(HOME, p)
 
 
 def main(argv=None):
-    global HOME
-    ap = argparse.ArgumentParser(description="Read-only dreaming pass over agent memory")
+    ap =argparse.ArgumentParser(description="Read-only dreaming pass over agent memory")
     ap.add_argument("--hermes-home", default=None,
                     help="Hermes home (default: $HERMES_HOME or ~/.hermes); the cron gates pass "
                          "the home they were installed into")
@@ -5470,13 +4964,11 @@ def main(argv=None):
                          "and print what was removed; every pass does this first")
     args = ap.parse_args(argv)
 
-    if args.hermes_home:
-        HOME = args.hermes_home
-    configure(load_config(args.config))
+    load_for_home(args.hermes_home or HOME, args.config)
     if args.explain is not None:
         return explain(args.explain, args.memory_md or os.path.join(HOME, "memories", "MEMORY.md"),
-                       args.corr_window or int((CONFIG.get("windows") or {}).get("corroboration_days", 60)))
-    windows = CONFIG.get("windows") or {}
+                       args.corr_window or int((SETTINGS.CONFIG.get("windows") or {}).get("corroboration_days", 60)))
+    windows = SETTINGS.CONFIG.get("windows") or {}
     window = args.window if args.window is not None else _env("DREAM_WINDOW_DAYS", int(windows.get("themes_days", 14)), int)
     corr = args.corr_window if args.corr_window is not None else _env("DREAM_CORR_DAYS", int(windows.get("corroboration_days", 60)), int)
     md_days = args.md_decay_days if args.md_decay_days is not None else _env("DREAM_MD_DECAY_DAYS", int(windows.get("md_decay_days", 60)), int)
@@ -5571,10 +5063,35 @@ def main(argv=None):
           file=sys.stderr)
 
 
-# Populate the effective settings at import: config from $DREAM_CONFIG /
-# $HERMES_HOME/dreaming.json (defaults when absent). `main()` re-applies with
-# `--config` when given.
-configure(load_config())
+# The effective settings at import are the defaults: importing reads no file of any home. `main()` and every
+# loader apply the config of the home they run for with `load_for_home()`.
+configure(_deep_merge(DEFAULT_CONFIG, {}))  # a copy, as load_config() gives: CONFIG is not DEFAULT_CONFIG
+
+
+def __getattr__(name):
+    """`dream.MIN_SCORE` and the other settings read from SETTINGS (see Settings)."""
+    if name in _SETTING_NAMES:
+        return getattr(SETTINGS, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class _DreamModule(types.ModuleType):
+    """This module once it is registered in sys.modules (an import, `python dream.py`, the tests' loaders): a
+    setting written on the module would be read by nobody, so it raises."""
+
+    def __setattr__(self, name, value):
+        if name in _SETTING_NAMES:
+            raise AttributeError(f"{name} is a setting: set SETTINGS.{name}, or call configure()")
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name):
+        if name in _SETTING_NAMES:
+            raise AttributeError(f"{name} is a setting: set SETTINGS.{name}, or call configure()")
+        super().__delattr__(name)
+
+
+if vars(sys.modules.get(__name__, sys)) is globals():
+    sys.modules[__name__].__class__ = _DreamModule
 
 if __name__ == "__main__":
     raise SystemExit(main() or 0)

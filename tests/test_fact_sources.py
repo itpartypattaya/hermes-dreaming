@@ -20,17 +20,17 @@ from test_extract_precheck import extract  # noqa: E402
 class FactSourceFixture(DreamFixture):
     def setUp(self):
         super().setUp()
-        self._old_config = dream.CONFIG
+        self._old_config = dream.SETTINGS.CONFIG
         self._old_env = os.environ.pop("DREAM_FACT_SOURCE", None)
 
     def tearDown(self):
-        dream.CONFIG = self._old_config
+        dream.SETTINGS.CONFIG = self._old_config
         if self._old_env is not None:
             os.environ["DREAM_FACT_SOURCE"] = self._old_env
         super().tearDown()
 
     def use(self, **cfg):
-        dream.CONFIG = dict(self._old_config, **cfg)
+        dream.SETTINGS.CONFIG = dict(self._old_config, **cfg)
 
 
 class SourceSelectionTests(FactSourceFixture):
@@ -203,7 +203,7 @@ class DryRunTests(DreamFixture):
         finally:
             dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, TEST_CONFIG))
             dream.HOME = str(self.home)
-            dream.TRUSTED_CHAT_IDS = {"-100111"}
+            dream.SETTINGS.TRUSTED_CHAT_IDS = {"-100111"}
         return rc, out.getvalue()
 
     def test_reports_and_writes_nothing(self):
@@ -252,7 +252,7 @@ class DryRunTests(DreamFixture):
                 from test_dream import TEST_CONFIG
                 dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, TEST_CONFIG))
                 dream.HOME = str(self.home)
-                dream.TRUSTED_CHAT_IDS = {"-100111"}
+                dream.SETTINGS.TRUSTED_CHAT_IDS = {"-100111"}
         self.assertEqual(rc, 0)
         self.assertIn("fact source: jsonl", out.getvalue())
         self.assertIn("facts: 1", out.getvalue())
@@ -261,6 +261,64 @@ class DryRunTests(DreamFixture):
         rc, out = self._main("--dry-run")
         self.assertEqual(rc, 0)
         self.assertIn("nothing to do", out)
+
+
+class LoadForHomeTests(unittest.TestCase):
+    """3.0: importing dream.py reads no home; `load_for_home` is the one call that applies a home's config."""
+
+    def _jsonl_home(self, tmp):
+        home = os.path.join(tmp, "other")
+        os.makedirs(home)
+        with open(os.path.join(home, "dreaming.json"), "w", encoding="utf-8") as f:
+            json.dump({"fact_source": "jsonl", "fact_store_path": "facts.jsonl"}, f)
+        with open(os.path.join(home, "facts.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "f-1", "content": "Фикус поливают по субботам"}, ensure_ascii=False) + "\n")
+        return home
+
+    @contextlib.contextmanager
+    def _env_home(self, home):
+        old = os.environ.get("HERMES_HOME"), os.environ.pop("DREAM_CONFIG", None)
+        os.environ["HERMES_HOME"] = home
+        try:
+            yield
+        finally:
+            if old[0] is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old[0]
+            if old[1] is not None:
+                os.environ["DREAM_CONFIG"] = old[1]
+
+    def test_import_reads_no_home_and_load_for_home_applies_one(self):
+        import tempfile
+        from test_dream import ROOT, _load
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self._jsonl_home(tmp)
+            with self._env_home(home):
+                mod = _load("_dream_load_for_home", ROOT / "scripts" / "dream.py")
+            self.assertEqual(mod.HOME, home)                  # the home is known…
+            self.assertEqual(mod.fact_source(), "holographic")  # …but its config is not read on import
+            mod.load_for_home(home)
+            self.assertEqual(mod.fact_source(), "jsonl")
+            self.assertEqual(mod.fact_store_path(), os.path.join(home, "facts.jsonl"))
+
+    def test_reject_reads_the_fact_store_of_the_given_home(self):
+        """dream-reject.py --hermes-home X took the home of X but the config of the environment's home, so a
+        fact id was looked up in another store (review of 2.9.8, B3)."""
+        import tempfile
+        from test_dream import ROOT, _load
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self._jsonl_home(tmp)
+            empty = os.path.join(tmp, "empty")
+            os.makedirs(empty)
+            with self._env_home(empty):
+                fresh = _load("_dream_reject_b3", ROOT / "scripts" / "dream-reject.py")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    rc = fresh.main(["f-1", "--hermes-home", home,
+                                     "--state", os.path.join(tmp, "rejected.json")])
+        self.assertEqual(rc, 0)
+        self.assertIn("Фикус поливают по субботам", out.getvalue())
 
 
 if __name__ == "__main__":

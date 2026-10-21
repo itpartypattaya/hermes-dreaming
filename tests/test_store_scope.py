@@ -18,8 +18,8 @@ CONFIG = "memory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n{b
 class StoreScopeTests(DreamFixture):
     def setUp(self):
         super().setUp()
-        self._cfg = dream.CONFIG
-        dream.configure(dict(dream.CONFIG, fact_source="holographic"))
+        self._cfg = dream.SETTINGS.CONFIG
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="holographic"))
 
     def tearDown(self):
         dream.configure(self._cfg)
@@ -56,7 +56,7 @@ class StoreScopeTests(DreamFixture):
 
     def test_other_fact_sources_are_quiet(self):
         self._config("    scope: chat\n")
-        dream.configure(dict(dream.CONFIG, fact_source="none"))
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="none"))
         self.assertIsNone(dream.fact_store_note())
 
     def test_note_reaches_the_report_and_the_diary(self):
@@ -111,8 +111,8 @@ class ProviderTrustFloorTests(DreamFixture):
 
     def setUp(self):
         super().setUp()
-        self._cfg = dream.CONFIG
-        dream.configure(dict(dream.CONFIG, fact_source="holographic"))
+        self._cfg = dream.SETTINGS.CONFIG
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="holographic"))
 
     def tearDown(self):
         dream.configure(self._cfg)
@@ -122,7 +122,7 @@ class ProviderTrustFloorTests(DreamFixture):
         (home or self.home).joinpath("config.yaml").write_text(CONFIG.format(body=body), encoding="utf-8")
 
     def _gates(self, **gates):
-        dream.configure(dict(dream.CONFIG, fact_source="holographic",
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="holographic",
                              gates=dict(dream.DEFAULT_CONFIG["gates"], **gates)))
 
     def _items(self, trust):
@@ -150,7 +150,7 @@ class ProviderTrustFloorTests(DreamFixture):
         became the provider's 0.9."""
         self._config("    min_trust_threshold: 0.9\n")
         self._gates(feedback_trust_floor=0.2, feedback_cap="bad")
-        self.assertEqual(dream.FEEDBACK_CAP, 5)
+        self.assertEqual(dream.SETTINGS.FEEDBACK_CAP, 5)
         self.assertEqual(dream.feedback_floor("holographic", str(self.home)), 0.2)
 
     def test_an_out_of_range_override_is_no_override(self):
@@ -158,7 +158,7 @@ class ProviderTrustFloorTests(DreamFixture):
         for bad in (2.0, -0.1, "abc"):
             with self.subTest(bad=bad):
                 self._gates(feedback_trust_floor=bad)
-                self.assertFalse(dream.FEEDBACK_FLOOR_EXPLICIT)
+                self.assertFalse(dream.SETTINGS.FEEDBACK_FLOOR_EXPLICIT)
                 self.assertEqual(dream.feedback_floor("holographic", str(self.home)), 0.5)
 
     def test_other_sources_keep_our_default(self):

@@ -339,7 +339,8 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
   cron session, with your model and your tools.
 - **Reads:** `state.db` (sessions and messages, opened read-only), the fact store (read-only, per-user
   and per-chat stores too), the memory files, `dreaming.json` and `config.yaml`, the approval queue
-  (`pending/memory`), `scripts/holo_screen.py`; the forget sweep also `cron/jobs.json` and the dream jobs' logs.
+  (`pending/memory`), `scripts/holo_screen.py`, `dream_lang.py` and `dream_yaml.py` next to it; the forget
+  sweep also `cron/jobs.json` and the dream jobs' logs.
 - **Script writes:** `~/.hermes/cache/dream*.json` (the night's payload `dream.json`, cooldowns, questions,
   reject list, snapshot, extraction cursor, diary index of line hashes, sweep state; mode 0600) and a lock
   file, `~/.hermes/memories/DREAMS.md` (diary; after 90 nights the older sections move to
@@ -381,6 +382,8 @@ plugin.json                          Agent Plugins v1 manifest
 skills/dreaming/
   SKILL.md                           agent instructions
   scripts/dream.py                   the pass (never writes memory)
+  scripts/dream_lang.py              stopwords, months, weekdays and dates of every language read
+  scripts/dream_yaml.py              config.yaml reader for a run without PyYAML
   scripts/holo_screen.py             the holographic provider's screen, a verbatim copy
   scripts/dream-precheck.py          nightly wake gate        → ~/.hermes/scripts/
   scripts/dream-extract-precheck.py  extraction gate          → ~/.hermes/scripts/

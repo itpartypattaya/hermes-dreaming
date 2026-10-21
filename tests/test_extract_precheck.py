@@ -71,7 +71,7 @@ class ExtractPrecheckTests(DreamFixture):
         super().setUp()
         self._old_home = extract.HOME
         extract.HOME = self.home
-        self.cfg = dict(dream.CONFIG, extract={"min_messages": 3, "max_messages": 4, "backfill_days": 30})
+        self.cfg = dict(dream.SETTINGS.CONFIG, extract={"min_messages": 3, "max_messages": 4, "backfill_days": 30})
         # the gate opens only on a provider read as holographic (2.9.6), as on a real install
         (self.home / "config.yaml").write_text("memory:\n  provider: holographic\n", encoding="utf-8")
 
@@ -85,16 +85,16 @@ class ExtractPrecheckTests(DreamFixture):
     def test_keywords_are_asked_for_only_when_enabled(self):
         for i in range(4):
             self.add_message(f"Сообщение номер {i} про утренний кофе", days_ago=4 - i)
-        saved = dream.KEYWORDS_ENABLED
+        saved = dream.SETTINGS.KEYWORDS_ENABLED
         try:
-            dream.KEYWORDS_ENABLED = False
+            dream.SETTINGS.KEYWORDS_ENABLED = False
             payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
             self.assertNotIn("keywords", payload)
-            dream.KEYWORDS_ENABLED = True
+            dream.SETTINGS.KEYWORDS_ENABLED = True
             payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
             self.assertIn("keywords=", payload["keywords"])
         finally:
-            dream.KEYWORDS_ENABLED = saved
+            dream.SETTINGS.KEYWORDS_ENABLED = saved
 
     def test_below_gate_returns_none(self):
         self.add_message("Люблю утренний кофе", days_ago=1)
@@ -156,7 +156,7 @@ class ExtractPrecheckTests(DreamFixture):
         """An alert thread of a trusted chat must neither wake extraction nor
         reach the payload: otherwise the agent wakes up to read its own
         notifications and answers [SILENT] at a cost."""
-        dream.EXCLUDED_THREADS = {FAMILY_CHAT: {"421"}}
+        dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {"421"}}
         for i in range(4):
             self.add_message(f"Алерт {i}: джоба упала", days_ago=1, thread_id="421")
         payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
@@ -205,17 +205,17 @@ class ExtractPrecheckTests(DreamFixture):
         """Run main() against the fixture home; returns the printed JSON."""
         import contextlib
         import io
-        cfg = dict(dream.CONFIG, extract=dict(self.cfg["extract"], **ext))
-        saved = (extract._dream, extract.STATE, dream.CONFIG)
+        cfg = dict(dream.SETTINGS.CONFIG, extract=dict(self.cfg["extract"], **ext))
+        saved = (extract._dream, extract.STATE, dream.SETTINGS.CONFIG)
         extract._dream = lambda: dream
         extract.STATE = self.home / "cache" / "dream-extract-state.json"
-        dream.CONFIG = cfg
+        dream.SETTINGS.CONFIG = cfg
         out, err = io.StringIO(), io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 extract.main()
         finally:
-            extract._dream, extract.STATE, dream.CONFIG = saved
+            extract._dream, extract.STATE, dream.SETTINGS.CONFIG = saved
         self.stderr = err.getvalue()
         return json.loads(out.getvalue().strip().splitlines()[-1])
 

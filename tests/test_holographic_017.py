@@ -211,8 +211,8 @@ class ScreenTests(unittest.TestCase):
 class _Holographic(DreamFixture):
     def setUp(self):
         super().setUp()
-        self._cfg = dream.CONFIG
-        dream.configure(dict(dream.CONFIG, fact_source="holographic"))
+        self._cfg = dream.SETTINGS.CONFIG
+        dream.configure(dict(dream.SETTINGS.CONFIG, fact_source="holographic"))
 
     def tearDown(self):
         dream.configure(self._cfg)

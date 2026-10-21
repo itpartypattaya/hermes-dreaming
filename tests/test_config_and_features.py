@@ -6,6 +6,8 @@ pinned entries, md_decays cap-before-mark, precheck config.
 Run:  python -m unittest discover -s tests   (from the skill directory)
 """
 
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -27,7 +29,7 @@ class ConfigTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "dreaming.json"
-        self._cfg = dream.CONFIG
+        self._cfg = dream.SETTINGS.CONFIG
 
     def tearDown(self):
         dream.configure(self._cfg)
@@ -57,7 +59,7 @@ class ConfigTests(unittest.TestCase):
         os.environ["DREAM_MIN_SCORE"] = "0.9"
         try:
             dream.configure(dream.load_config(str(self.path)))
-            self.assertEqual(dream.MIN_SCORE, 0.9)
+            self.assertEqual(dream.SETTINGS.MIN_SCORE, 0.9)
         finally:
             del os.environ["DREAM_MIN_SCORE"]
 
@@ -69,13 +71,13 @@ class ConfigTests(unittest.TestCase):
         try:
             diary = dream.build_diary(14, 0, 0, [], [], [], [])
             self.assertTrue(diary.startswith("## Dream 2026-07-10"))
-            self.assertTrue(dream.DIARY_SECTION_RE.match(diary))
+            self.assertTrue(dream.SETTINGS.DIARY_SECTION_RE.match(diary))
         finally:
             dream._now = real_now
 
     def test_unknown_timezone_falls_back_to_utc(self):
         dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {"timezone": "Mars/Olympus"}))
-        self.assertEqual(dream.LOCAL_TZ, timezone.utc)
+        self.assertEqual(dream.SETTINGS.LOCAL_TZ, timezone.utc)
 
     def test_group_chats_fail_closed_without_list(self):
         dream.configure(dream.DEFAULT_CONFIG)
@@ -115,7 +117,7 @@ class ConfigTests(unittest.TestCase):
             "trusted_chat_ids": ["-100555"],
             "excluded_threads": {"-100555": "421", "": ["1"], "-100777": []},
         }))
-        self.assertEqual(dream.EXCLUDED_THREADS, {})
+        self.assertEqual(dream.SETTINGS.EXCLUDED_THREADS, {})
         self.assertTrue(dream._trusted_message("telegram", "group", "-100555", "421"))
 
     def test_untrusted_sources_configurable_and_cron_always_in(self):
@@ -516,14 +518,14 @@ class ReviewFixesTests(DreamFixture):
             "    db_path: $HERMES_HOME/data/facts.db   # moved\n    hrr_dim: 1024\nmemory:\n  provider: holographic\n",
             encoding="utf-8")
         self.assertEqual(norm(dream.fact_store_path()), norm(str(self.home / "data" / "facts.db")))
-        old = dream.CONFIG
+        old = dream.SETTINGS.CONFIG
         try:
-            dream.CONFIG = dict(old, fact_store_path="~/elsewhere.db")
+            dream.SETTINGS.CONFIG = dict(old, fact_store_path="~/elsewhere.db")
             self.assertEqual(norm(dream.fact_store_path()), norm(os.path.expanduser("~/elsewhere.db")))
-            dream.CONFIG = dict(old, fact_store_path="rel/store.db")
+            dream.SETTINGS.CONFIG = dict(old, fact_store_path="rel/store.db")
             self.assertEqual(norm(dream.fact_store_path()), norm(str(self.home / "rel" / "store.db")))
         finally:
-            dream.CONFIG = old
+            dream.SETTINGS.CONFIG = old
         # …and run() actually reads from there
         (self.home / "data").mkdir()
         os.replace(self.home / "memory_store.db", self.home / "data" / "facts.db")
@@ -604,15 +606,15 @@ class ReviewFixesTests(DreamFixture):
                          datetime.now(timezone.utc).timestamp() - 86400 * (i + 1)))
         con.commit()
         con.close()
-        old = dream.TRUST_NO_CHAT
+        old = dream.SETTINGS.TRUST_NO_CHAT
         try:
-            dream.TRUST_NO_CHAT = True
+            dream.SETTINGS.TRUST_NO_CHAT = True
             msgs = dream.load_messages(str(self.home / "state.db"), 30)
             self.assertEqual([m["content"][-1] for m in msgs], ["2"], "only the non-cron session survives")
-            dream.TRUST_NO_CHAT = False
+            dream.SETTINGS.TRUST_NO_CHAT = False
             self.assertEqual(dream.load_messages(str(self.home / "state.db"), 30), [])
         finally:
-            dream.TRUST_NO_CHAT = old
+            dream.SETTINGS.TRUST_NO_CHAT = old
 
     def test_date_stamped_fact_matches_the_entry_written_from_it(self):
         """The agent writes entries without the fact's provenance stamp; the
@@ -893,7 +895,7 @@ class MessageSourceTests(unittest.TestCase):
         con.execute(self.SCHEMA_MESSAGES)
         con.commit()
         con.close()
-        self._cfg = dream.CONFIG
+        self._cfg = dream.SETTINGS.CONFIG
         dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
                                           {"trusted_chat_ids": ["-100777"], "timezone": "UTC"}))
 
@@ -1199,7 +1201,7 @@ class HermesConfigTests(unittest.TestCase):
         (self.home / "config.yaml").write_text(self.YAML, encoding="utf-8")
         self.mem = self.home / "memories" / "MEMORY.md"
         self.mem.write_text("Квартплата оплачивается до десятого числа.", encoding="utf-8")
-        self._old_home, self._cfg = dream.HOME, dream.CONFIG
+        self._old_home, self._cfg = dream.HOME, dream.SETTINGS.CONFIG
         dream.HOME = str(self.home)
 
     def tearDown(self):
@@ -1224,14 +1226,14 @@ class HermesConfigTests(unittest.TestCase):
 
     def test_limits_fall_back_to_hermes(self):
         self._load()
-        self.assertEqual(dream.MEMORY_CHAR_LIMITS,
+        self.assertEqual(dream.SETTINGS.MEMORY_CHAR_LIMITS,
                          {"memories/MEMORY.md": 12000, "memories/USER.md": 16000})
         usage = dream.memory_usage(str(self.mem))
         self.assertEqual(usage["memories/MEMORY.md"]["limit"], 12000)
 
     def test_own_limits_win(self):
         self._load({"memory_char_limits": {"memories/MEMORY.md": 4200}})
-        self.assertEqual(dream.MEMORY_CHAR_LIMITS, {"memories/MEMORY.md": 4200})
+        self.assertEqual(dream.SETTINGS.MEMORY_CHAR_LIMITS, {"memories/MEMORY.md": 4200})
 
     def test_explicit_timezone_is_not_overridden(self):
         """An explicit UTC in the config is a choice, not "unset"."""
@@ -1254,12 +1256,12 @@ class HermesConfigTests(unittest.TestCase):
         except Exception:  # noqa: BLE001 — no zone database (ImportError, ZoneInfoNotFoundError…): nothing to check
             self.skipTest("zoneinfo without tzdata")
         self._load()
-        self.assertIn("Lisbon", str(dream.LOCAL_TZ))
+        self.assertIn("Lisbon", str(dream.SETTINGS.LOCAL_TZ))
 
     def test_no_yaml_no_crash(self):
         (self.home / "config.yaml").write_text("not: [a valid: mapping", encoding="utf-8")
         self._load()
-        self.assertIsInstance(dream.MEMORY_CHAR_LIMITS, dict)
+        self.assertIsInstance(dream.SETTINGS.MEMORY_CHAR_LIMITS, dict)
 
 
 class ExpiredEventsTests(unittest.TestCase):
@@ -1382,16 +1384,16 @@ class TrustFeedbackTests(DreamFixture):
     def test_other_fact_sources_have_no_such_tool(self):
         """jsonl/sqlite/none have no fact_feedback, so there is nothing to offer."""
         self.add_fact(self.FACT, trust=0.5)
-        old = dream.CONFIG
+        old = dream.SETTINGS.CONFIG
         try:
-            dream.CONFIG = dict(old, fact_source="none")
+            dream.SETTINGS.CONFIG = dict(old, fact_source="none")
             self.assertEqual(
                 dream.trust_feedback_items(
                     [{"fact_id": 1, "content": self.FACT, "trust_score": 0.5}],
                     {}, dream.fact_source()),
                 [])
         finally:
-            dream.CONFIG = old
+            dream.SETTINGS.CONFIG = old
 
     def test_gate_passes_the_section_but_does_not_wake_for_it(self):
         payload = {"stats": {"facts": 1, "trust_feedback": 1},
@@ -1415,11 +1417,11 @@ class KeywordsTests(DreamFixture):
 
     def setUp(self):
         super().setUp()
-        self._old_kw = (dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP)
-        dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = True, 10
+        self._old_kw = (dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP)
+        dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP = True, 10
 
     def tearDown(self):
-        dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = self._old_kw
+        dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP = self._old_kw
         super().tearDown()
 
     def test_split_keywords(self):
@@ -1443,33 +1445,33 @@ class KeywordsTests(DreamFixture):
 
     def test_off_by_default_and_only_for_holographic(self):
         self.add_fact(self.FACT)
-        dream.KEYWORDS_ENABLED = False
+        dream.SETTINGS.KEYWORDS_ENABLED = False
         self.assertEqual(self.run_dream()["keywords_needed"], [],
                          "an older provider drops keywords silently — no section without the flag")
-        dream.KEYWORDS_ENABLED = True
-        old = dream.CONFIG
+        dream.SETTINGS.KEYWORDS_ENABLED = True
+        old = dream.SETTINGS.CONFIG
         try:
-            dream.CONFIG = dict(old, fact_source="none")
+            dream.SETTINGS.CONFIG = dict(old, fact_source="none")
             self.assertEqual(dream.keywords_needed_items(
                 [{"fact_id": 1, "content": self.FACT, "keywords": [], "meta": {"rc": 0}}],
                 dream.fact_source()), [])
         finally:
-            dream.CONFIG = old
+            dream.SETTINGS.CONFIG = old
         dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {}))
         try:
-            self.assertFalse(dream.KEYWORDS_ENABLED)
+            self.assertFalse(dream.SETTINGS.KEYWORDS_ENABLED)
             dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG,
                                               {"keywords": {"enabled": "yes", "cap": "x"}}))
-            self.assertFalse(dream.KEYWORDS_ENABLED, "only true turns it on, not any string")
-            self.assertEqual(dream.KEYWORDS_CAP, 10)
+            self.assertFalse(dream.SETTINGS.KEYWORDS_ENABLED, "only true turns it on, not any string")
+            self.assertEqual(dream.SETTINGS.KEYWORDS_CAP, 10)
         finally:
             dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, TEST_CONFIG))
-            dream.KEYWORDS_ENABLED, dream.KEYWORDS_CAP = True, 10
+            dream.SETTINGS.KEYWORDS_ENABLED, dream.SETTINGS.KEYWORDS_CAP = True, 10
 
     def test_most_recalled_first_and_capped(self):
         for i in range(4):
             self.add_fact(f"Аврора занимается рисованием по субботам, группа номер {i}", rc=i)
-        dream.KEYWORDS_CAP = 2
+        dream.SETTINGS.KEYWORDS_CAP = 2
         result = self.run_dream()
         self.assertEqual([i["retrieval_count"] for i in result["keywords_needed"]], [3, 2])
         self.assertEqual(result["stats"]["keywords_missing"], 4)
@@ -1661,6 +1663,90 @@ class PendingBatchTests(DreamFixture):
         self.assertIsNotNone(alert)
         self.assertEqual((alert["count"], alert["records"]), (5, 5))
         self.assertIn("5 memory write(s) are waiting", alert["message"])
+
+
+class SettingsObjectTests(unittest.TestCase):
+    """3.0: the settings configure() makes are one object, SETTINGS; the module names still read."""
+
+    def setUp(self):
+        self._saved = dream.SETTINGS
+
+    def tearDown(self):
+        dream.SETTINGS = self._saved
+
+    def test_a_setting_reads_through_the_module(self):
+        self.assertIs(dream.CONFIG, dream.SETTINGS.CONFIG)
+        self.assertEqual(dream.MIN_SCORE, dream.SETTINGS.MIN_SCORE)
+        self.assertEqual(getattr(dream, "KEYWORDS_ENABLED", None), dream.SETTINGS.KEYWORDS_ENABLED)  # the gates' way
+
+    def test_writing_a_setting_on_the_module_raises(self):
+        """It would change nothing the pass reads — a test that did it would pass without testing anything."""
+        for name in ("MIN_SCORE", "CONFIG", "LOCAL_TZ"):
+            with self.assertRaises(AttributeError):
+                setattr(dream, name, None)
+            with self.assertRaises(AttributeError):
+                delattr(dream, name)
+        self.assertEqual(dream.SETTINGS.MIN_SCORE, self._saved.MIN_SCORE)
+
+    def test_a_misspelt_setting_raises(self):
+        with self.assertRaises(AttributeError):
+            dream.SETTINGS.MIN_SCOR = 1
+
+    def test_configure_swaps_the_whole_object(self):
+        dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {"gates": {"min_score": 0.7}}))
+        self.assertIsNot(dream.SETTINGS, self._saved)
+        self.assertEqual(dream.SETTINGS.MIN_SCORE, 0.7)
+
+    def test_a_config_that_fails_half_way_changes_nothing(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(ValueError):
+            dream.configure(dream._deep_merge(dream.DEFAULT_CONFIG, {"gates": {"min_score": "high"}}))
+        self.assertIs(dream.SETTINGS, self._saved)
+
+
+class YamlScannerModuleTests(unittest.TestCase):
+    """3.0: the config.yaml scanner lives in dream_yaml.py next to dream.py and is loaded by path."""
+
+    def test_dream_re_exports_the_scanner(self):
+        self.assertIsNotNone(dream._YAML_SCANNER)
+        for name in ("_scan_block", "_plain", "_UNREAD", "_Unsure"):
+            self.assertIs(getattr(dream, name), getattr(dream._YAML_SCANNER, name), name)
+
+    def test_a_broken_copy_is_reported_and_not_loaded(self):
+        for body in ("raise NameError('x')\n", "def _scan_block(:\n"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "dream_yaml.py"
+                path.write_text(body, encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertIsNone(dream._load_yaml_scanner(str(path)), body)
+                self.assertIn("not loaded", err.getvalue())
+
+    def test_without_the_scanner_every_block_is_unread(self):
+        """dream.py without its neighbour still loads: with PyYAML the scanner is never asked, and without it a
+        block nobody can read counts as unread (None), not as empty."""
+        from test_dream import ROOT, _load
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("dream.py", "dream_lang.py"):
+                (Path(tmp) / name).write_bytes((ROOT / "scripts" / name).read_bytes())
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                mod = _load("_dream_without_yaml", Path(tmp) / "dream.py")
+        self.assertIsNone(mod._YAML_SCANNER)
+        self.assertIn("dream_yaml.py not loaded", err.getvalue())
+        self.assertIsNone(mod._scan_block("memory:\n  provider: holographic\n", ("memory",)))
+
+    def test_without_the_word_lists_the_import_fails(self):
+        """dream_lang.py has no stand-in: a pass without stopwords would corroborate anything, so it does not run."""
+        from test_dream import ROOT, _load
+        with tempfile.TemporaryDirectory() as tmp:
+            alone = Path(tmp) / "dream.py"
+            alone.write_bytes((ROOT / "scripts" / "dream.py").read_bytes())
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(FileNotFoundError):
+                _load("_dream_without_lang", alone)
+            sys.modules.pop("_dream_without_lang", None)
+
+    def test_dream_re_exports_the_word_lists(self):
+        for name in ("RU_STOP", "EN_STOP", "TEMPORAL_STOP", "FILLER_RUNS", "WEEKDAY_PREFIXES", "RU_SUFFIXES",
+                     "NEGATION_WORDS", "OTHER_MONTHS", "_WEEKDAY_NAMES", "EPHEMERAL_HINTS_RE", "THAI_DATE_RE"):
+            self.assertIs(getattr(dream, name), getattr(dream._LANG, name), name)
 
 
 if __name__ == "__main__":

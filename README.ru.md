@@ -314,8 +314,8 @@ tail -20 ~/.hermes/memories/DREAMS.md     # секция за сегодня
   вашей модели и с вашими тулами.
 - **Читает:** `state.db` (сессии и сообщения, только на чтение), хранилище фактов (только на
   чтение, включая хранилища по людям и чатам), файлы памяти, `dreaming.json` и `config.yaml`, очередь
-  одобрения (`pending/memory`), `scripts/holo_screen.py`; чистка забытого — ещё `cron/jobs.json` и
-  журналы задач сна.
+  одобрения (`pending/memory`), `scripts/holo_screen.py` и рядом `dream_lang.py`, `dream_yaml.py`; чистка забытого — ещё
+  `cron/jobs.json` и журналы задач сна.
 - **Скрипты пишут:** `~/.hermes/cache/dream*.json` (выдача ночи `dream.json`, кулдауны, вопросы,
   отказ-лист, снимок, курсор извлечения, индекс отпечатков строк дневника, состояние чистки; права
   0600) и файл блокировки, `~/.hermes/memories/DREAMS.md` (дневник; после 90 ночей старые разделы
@@ -355,6 +355,8 @@ plugin.json                          манифест Agent Plugins v1
 skills/dreaming/
   SKILL.md                           инструкции агенту
   scripts/dream.py                   прогон (память не пишет никогда)
+  scripts/dream_lang.py              стоп-слова, месяцы, дни недели и даты всех языков
+  scripts/dream_yaml.py              чтение config.yaml для запуска без PyYAML
   scripts/holo_screen.py             экран провайдера holographic, дословная копия
   scripts/dream-precheck.py          ночной гейт пробуждения  → ~/.hermes/scripts/
   scripts/dream-extract-precheck.py  гейт извлечения          → ~/.hermes/scripts/

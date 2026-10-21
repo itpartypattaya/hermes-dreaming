@@ -38,13 +38,14 @@ _DREAM = None
 
 
 def _dream():
-    """Load dream.py next to this file (fingerprint, classifier, config)."""
+    """Load dream.py next to this file (fingerprint, classifier, config), configured for HOME."""
     global _DREAM
     if _DREAM is None:
         spec = importlib.util.spec_from_file_location(
             "_dream_for_reject", os.path.join(os.path.dirname(os.path.abspath(__file__)), "dream.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        mod.load_for_home(HOME)
         _DREAM = mod
     return _DREAM
 
@@ -158,11 +159,7 @@ def main(argv=None):
         # ~/.hermes's lock while the dream held its own (Codex review of 2.7.5).
         global HOME
         HOME = os.path.abspath(os.path.expanduser(args.hermes_home))
-        _dream().HOME = HOME
-        # …and its config: dream.py configured itself at import for $HERMES_HOME / ~/.hermes, so `fact_source` and
-        # `fact_store_path` were that home's, and a fact of this one was "not found" (reproduced on two homes in the
-        # review of 2.9.8).
-        _dream().configure(_dream().load_config())
+        _dream().load_for_home(HOME)  # its config too: the fact store `fetch_content` reads is this home's
     if args.list:
         return _run(ap, args)
     # Read, change, write under the lock the nightly pass and the forget gate hold while they rewrite the

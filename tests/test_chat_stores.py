@@ -26,7 +26,7 @@ class ChatStoreBase(DreamFixture):
 
     def setUp(self):
         super().setUp()
-        self._cfg = dream.CONFIG
+        self._cfg = dream.SETTINGS.CONFIG
         (self.home / "config.yaml").write_text(
             f"memory:\n  provider: holographic\nplugins:\n  hermes-memory-store:\n    scope: {self.SCOPE}\n",
             encoding="utf-8")
@@ -39,8 +39,8 @@ class ChatStoreBase(DreamFixture):
     def configure(self, read, promote, **extra):
         cfg = dict(self._cfg, fact_source="holographic", chat_stores={"read": read, "promote_from": promote}, **extra)
         dream.configure(cfg)
-        dream.TRUSTED_CHAT_IDS = {"-100111"}
-        dream.EXCLUDED_THREADS = {}
+        dream.SETTINGS.TRUSTED_CHAT_IDS = {"-100111"}
+        dream.SETTINGS.EXCLUDED_THREADS = {}
 
     def chat_db(self, key, facts, forgotten=()):
         folder = self.home / "holographic-chats"

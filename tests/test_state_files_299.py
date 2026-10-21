@@ -186,6 +186,25 @@ class ThePassRunsOnPastABrokenState(DreamFixture):
         self.assertIn('"abc"', (seen.parent / aside).read_text(encoding="utf-8"))
 
 
+class ConfirmStampsAgeOut(DreamFixture):
+    def test_old_confirm_stamps_are_pruned_fresh_ones_kept(self):
+        """The `confirm` cooldowns were stamped and never pruned: the seen-state grew by one key per fact offered
+        for a confirmation, forever. Pruned now like `trust_feedback` and `keywords_needed`."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        seen = self.home / "cache" / "dream-seen.json"
+        seen.parent.mkdir(parents=True, exist_ok=True)
+        seen.write_text(json.dumps({"confirm": {
+            "old": {"at": (now - timedelta(days=60)).isoformat(timespec="seconds"), "fact_id": 1},
+            "fresh": {"at": (now - timedelta(days=1)).isoformat(timespec="seconds"), "fact_id": 2}}}),
+            encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            dream.run(14, 60, 60, str(self.mem_md), seen_state_path=str(seen))
+        bucket = json.loads(seen.read_text(encoding="utf-8"))["confirm"]
+        self.assertNotIn("old", bucket)
+        self.assertIn("fresh", bucket)
+
+
 class BrokenConfigStopsThePass(unittest.TestCase):
     """A dreaming.json that is there but broken stops the nightly pass (exit 2 → `dream_error` in the gate) instead
     of a night on the defaults; a missing one still means the defaults, and `--dry-run` still reads past it."""

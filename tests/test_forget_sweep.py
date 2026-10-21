@@ -58,14 +58,14 @@ class ForgetSweep(unittest.TestCase):
             con.execute("insert into facts (content) values (?)", (text,))
         con.commit()
         con.close()
-        self._old = (dream.HOME, dream.CONFIG)
+        self._old = (dream.HOME, dream.SETTINGS.CONFIG)
         dream.HOME = str(self.home)
         (self.home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
             {"id": "job-dream", "script": "dream-precheck.py"},
             {"id": "job-other", "script": "kid-reminder.py"}]}), encoding="utf-8")
 
     def tearDown(self):
-        dream.HOME, dream.CONFIG = self._old
+        dream.HOME, dream.SETTINGS.CONFIG = self._old
         self.tmp.cleanup()
 
     def path(self, rel):

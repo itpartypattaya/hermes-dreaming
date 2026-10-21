@@ -56,8 +56,7 @@ def _load_dream(home, cfg_path):
     spec = importlib.util.spec_from_file_location("_dream_for_install", SKILL_DIR / "scripts" / "dream.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.HOME = str(home)
-    mod.configure(mod.load_config(str(cfg_path)))
+    mod.load_for_home(home, str(cfg_path))
     return mod
 
 

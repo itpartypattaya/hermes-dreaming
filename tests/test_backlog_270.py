@@ -18,10 +18,10 @@ class RejectionReaskTests(DreamFixture):
     def setUp(self):
         super().setUp()
         self.state = self.home / "dream-rejected.json"
-        self._reask = dream.REJECT_REASK_DAYS
+        self._reask = dream.SETTINGS.REJECT_REASK_DAYS
 
     def tearDown(self):
-        dream.REJECT_REASK_DAYS = self._reask
+        dream.SETTINGS.REJECT_REASK_DAYS = self._reask
         super().tearDown()
 
     def _reject(self, days_ago):
@@ -63,7 +63,7 @@ class RejectionReaskTests(DreamFixture):
         self.assertEqual(result["stats"]["rejected_suppressed"], 1)
 
     def test_zero_turns_it_off(self):
-        dream.REJECT_REASK_DAYS = 0
+        dream.SETTINGS.REJECT_REASK_DAYS = 0
         self._reject(days_ago=400)
         self._said_again()
         result = self.run_dream(rejected_state=str(self.state))
@@ -88,11 +88,11 @@ class RejectionReaskTests(DreamFixture):
 class ProbeTests(DreamFixture):
     def setUp(self):
         super().setUp()
-        self._probes = dream.PROBES
+        self._probes = dream.SETTINGS.PROBES
         self.snapshot = self.home / "dream-snapshot.json"
 
     def tearDown(self):
-        dream.PROBES = self._probes
+        dream.SETTINGS.PROBES = self._probes
         super().tearDown()
 
     def _memory(self, *entries):
@@ -113,11 +113,11 @@ class ProbeTests(DreamFixture):
         self.assertTrue(dream.probe_found("allergic to peanuts", "Bob likes tea. Alice is allergic to peanuts."))
 
     def test_without_a_snapshot_probes_stay_quiet(self):
-        dream.PROBES = ["absent fact"]
+        dream.SETTINGS.PROBES = ["absent fact"]
         self.assertEqual(dream.check_memory_loss(None, None, "other"), [])
 
     def test_a_lost_probe_alerts_once_and_again_after_it_comes_back(self):
-        dream.PROBES = ["аллергия на арахис"]
+        dream.SETTINGS.PROBES = ["аллергия на арахис"]
         self._memory("У Лены аллергия на арахис, с собой антигистаминное.", "Балет по понедельникам.")
         self.assertEqual(self._alerts(), [])
         self._memory("Балет по понедельникам.")
@@ -131,7 +131,7 @@ class ProbeTests(DreamFixture):
         self.assertEqual(len(self._alerts()), 1)
 
     def test_no_probes_no_state(self):
-        dream.PROBES = []
+        dream.SETTINGS.PROBES = []
         self._memory("Балет по понедельникам.")
         self.assertEqual(self._alerts(), [])
         self.assertNotIn("_probes_missing", json.loads(self.snapshot.read_text(encoding="utf-8")))

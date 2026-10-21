@@ -938,7 +938,7 @@ class PluginBlockTests(unittest.TestCase):
         from unittest import mock
         text = ("memory:\n  provider: holographic\nplugins:\n  hermes-memory-store: {extra: " + "[" * 66 + "0" +
                 "]" * 66 + ", db_path: /right.db, scope: chat, cron_writes: false}\n")
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp),                 mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}),                 mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp),                 mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}),                 mock.patch.dict(dream.SETTINGS.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
             Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
             self.assertEqual(dream.hermes_config_unread(tmp), ("plugins.hermes-memory-store",))
             self.assertIsNone(dream.fact_store_path(tmp))
@@ -1070,7 +1070,7 @@ class PluginBlockTests(unittest.TestCase):
         text = "memory: !!map {provider: holographic}\nplugins:\n  hermes-memory-store:\n    db_path: /right.db\n"
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp), \
                 mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}), \
-                mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
+                mock.patch.dict(dream.SETTINGS.CONFIG, {"fact_store_path": ""}), mock.patch.dict(sys.modules, {"yaml": None}):
             Path(tmp, "config.yaml").write_text(text, encoding="utf-8")
             self.assertEqual(dream.hermes_config_unread(tmp), ("memory",))
             self.assertEqual(dream.hermes_memory_settings(tmp), {})
@@ -1088,7 +1088,7 @@ class PluginBlockTests(unittest.TestCase):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dream, "HOME", tmp), \
                 mock.patch.dict(os.environ, {"DREAM_FACT_SOURCE": "holographic"}), \
-                mock.patch.dict(dream.CONFIG, {"fact_store_path": ""}):
+                mock.patch.dict(dream.SETTINGS.CONFIG, {"fact_store_path": ""}):
             self.assertEqual(dream._hermes_config_text(tmp), "")
             self.assertEqual(dream.hermes_config_unread(tmp), ())
             Path(tmp, "config.yaml").write_bytes(b"memory:\n  provider: holographic  # \xff\n"
@@ -1103,7 +1103,7 @@ class PluginBlockTests(unittest.TestCase):
                 install.check_fact_source(Path(tmp), dream, install.Report())
             self.assertIn("cannot read", out.getvalue())
             self.assertNotIn("without PyYAML", out.getvalue())
-            with mock.patch.dict(dream.CONFIG, {"fact_store_path": "/named.db"}):
+            with mock.patch.dict(dream.SETTINGS.CONFIG, {"fact_store_path": "/named.db"}):
                 self.assertTrue((dream.fact_store_path(tmp) or "").endswith("named.db"))
                 self.assertIn("reads the store fact_store_path names", dream.fact_store_note(tmp) or "")
 
@@ -1116,11 +1116,11 @@ class PluginBlockTests(unittest.TestCase):
             mem.parent.mkdir()
             mem.write_text("hello", encoding="utf-8")
             with mock.patch.object(dream, "HOME", tmp), \
-                    mock.patch.object(dream, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 10 ** 400}):
+                    mock.patch.object(dream.SETTINGS, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 10 ** 400}):
                 usage = dream.memory_usage(str(mem))
             self.assertEqual(usage["memories/MEMORY.md"]["percent"], 0)
             with mock.patch.object(dream, "HOME", tmp), \
-                    mock.patch.object(dream, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 8}):
+                    mock.patch.object(dream.SETTINGS, "MEMORY_CHAR_LIMITS", {"memories/MEMORY.md": 8}):
                 self.assertEqual(dream.memory_usage(str(mem))["memories/MEMORY.md"]["percent"], 62)
 
     def test_timezone_is_read_without_pyyaml(self):
