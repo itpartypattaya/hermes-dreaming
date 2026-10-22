@@ -11,6 +11,21 @@ is the one in `plugin.json`.
   show different ones. Ties are now ordered by the word. Found by a golden record of two nights
   (`tests/test_golden_330.py`) taken before the refactor for 3.3.0; the record must stay the same through it.
 
+### Changed (internal — room for an optional cloud judge in 3.3.0; the night decides exactly as before)
+- **One rule per (fact, message) pair.** `_pair_counts` is the body of the count, and a pair has a stable id
+  (`PairId`: the fact id and a key of session, time and text). A set of vetoed pair ids removes exactly those pairs
+  from the count — of promotions, confirmations and everything else that reads it; memory-entry questions
+  (`md_decays`) never take a veto.
+- **The night's decisions are one function of explicit inputs.** `load_inputs()` reads the facts, messages, memory,
+  pending writes, rejections, the store's recent confirmations, the trust floor and the "already shown" state once;
+  `_decide()` turns them into every section that reads the mention count. It reads no clock, database, environment
+  or config file and leaves the settings alone (`settings_fingerprint`), so it can run twice in one night.
+- **A message keeps where it came from:** source, chat, thread, session, whether its session row exists and whether
+  the trust rules let it in. Messages are read in row order (`ORDER BY m.id`), so which compaction copy is kept no
+  longer follows the query plan.
+- **"Recently confirmed" uses the night's time**, not the database clock (`recent_confirmations(now=…)`).
+- Contract tests: `tests/test_refactor_330.py` (15). The golden record of two nights is unchanged.
+
 ## 3.2.0 — 2026-10-22
 
 From an experiment with decision models (Laya, mDeBERTa-xnli, OpenAI Decisions, Jev) on dirty pairs and on a live

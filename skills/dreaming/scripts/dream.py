@@ -25,6 +25,7 @@ timezone, diary heading, …) lives in a JSON config — see `load_config()` and
 from __future__ import annotations
 import argparse
 import contextlib
+import copy
 import functools
 import hashlib
 import importlib.util
@@ -38,7 +39,8 @@ import sys
 import tempfile
 import types
 import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, namedtuple
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
@@ -1409,7 +1411,8 @@ def load_messages(db, days):
         if sess_cols:
             cols += ["s.source", "s.chat_type", "s.chat_id",
                      "s.thread_id" if "thread_id" in sess_cols else "null",
-                     "s.user_id" if "user_id" in sess_cols else "null"]
+                     "s.user_id" if "user_id" in sess_cols else "null",
+                     "s.id"]  # not null exactly when the session row exists
             join = " left join sessions s on m.session_id = s.id"
         else:
             # No usable `sessions` table: the source of a message is unknown.
@@ -1420,10 +1423,11 @@ def load_messages(db, days):
             # same config switch as any other session lacking chat metadata.
             print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
                   "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
-            cols += ["null", "null", "null", "null", "null"]
+            cols += ["null", "null", "null", "null", "null", "null"]
             join = ""
+        # In row order: which compaction copy is kept, and everything downstream, must not follow the query plan.
         sql = (f"select {', '.join(cols)} from messages m{join} "
-               f"where {' and '.join(where)}")
+               f"where {' and '.join(where)} order by m.id")
         try:
             rows = list(c.execute(sql, (cutoff,)))
         except sqlite3.OperationalError as exc:
@@ -1439,14 +1443,15 @@ def load_messages(db, days):
     scope = holographic_scope() if promote else "profile"
     for row in rows:
         mid, role, content, ts, observed, sid = row[:6]
-        source, chat_type, chat_id, thread_id, user_id = row[6:11]
+        source, chat_type, chat_id, thread_id, user_id, session_row = row[6:12]
         if not sess_cols and str(sid or "").startswith("cron_"):
             source = "cron"
         if not content or not (role == "user" or observed == 1):
             continue
         store = _message_store(source, chat_id, thread_id, user_id, scope) if promote else None
         own_only = False
-        if not _trusted_message(source, chat_type, chat_id, thread_id):
+        trusted = _trusted_message(source, chat_type, chat_id, thread_id)
+        if not trusted:
             if store in promote and _own_store_message(source, chat_id, thread_id):
                 own_only = True
             else:
@@ -1463,9 +1468,13 @@ def load_messages(db, days):
         if key in seen_rows:
             continue
         seen_rows.add(key)
+        # Where the message came from stays with it (3.3.0): a cloud judge sends nothing of unknown origin.
         out.append({"id": mid, "content": content, "ts": ts, "day": _day_of(ts),
                     "tokens": sig_tokens(content), "store": store if store in promote else None,
-                    "own_only": own_only, "chat_type": chat_type, "user_id": user_id})
+                    "own_only": own_only, "chat_type": chat_type, "user_id": user_id,
+                    "source": source, "chat_id": chat_id, "thread_id": thread_id, "session_id": sid,
+                    "session_found": session_row is not None, "locally_trusted": trusted,
+                    "key": _message_key(sid, ts, content)})
     return out
 
 
@@ -1608,10 +1617,73 @@ def set_household(contents):
     _HOUSEHOLD = household_stems(contents)
 
 
-def corroborate(item_tokens, messages, content=None):
+class RulesContext(namedtuple("RulesContext", "household settings")):
+    """What the rules of one night read besides the settings: the household stems of its facts, and the settings
+    fingerprint they were taken under. Passed explicitly instead of the module's `_HOUSEHOLD` (3.3.0)."""
+
+
+def rules_context(contents):
+    """The RulesContext of a night whose shared facts are *contents*."""
+    return RulesContext(household_stems(list(contents)), settings_fingerprint())
+
+
+def settings_fingerprint():
+    """Identity, generation and every value of the module's Settings. Callers and tests set fields in place, so
+    the identity alone misses a change; a step that must leave the settings alone compares this before and after."""
+    s = SETTINGS
+    values = repr([(name, getattr(s, name, None)) for name in _SETTING_NAMES])
+    return id(s), SETTINGS_GENERATION, hashlib.sha256(values.encode("utf-8")).hexdigest()
+
+
+# A (fact, message) pair: what a cloud judge may veto. The message key does not depend on the row order or on which
+# compaction copy was kept — session, time and text are what make a message this one.
+PairId = namedtuple("PairId", "fact_id message_key")
+FactProbe = namedtuple("FactProbe", "item_stems own_item distinctive wide")
+
+
+def _message_key(session_id, ts, content):
+    return hashlib.sha256(f"{session_id}\x1f{ts!r}\x1f{content}".encode("utf-8")).hexdigest()[:32]
+
+
+def message_key(m):
+    """The stable key of message *m* (load_messages() stores it; a hand-built message gets it computed)."""
+    return m.get("key") or _message_key(m.get("session_id"), m.get("ts"), m.get("content"))
+
+
+def fact_probe(item_tokens, rules=None):
+    """What a fact brings to every pair, computed once: its stems, the ones that are its own (not household words),
+    the distinctive ones and whether it is read wide."""
+    household = _HOUSEHOLD if rules is None else rules.household
+    item_stems = _stems(item_tokens)
+    distinctive = {_distinctive_stem(t) for t in item_tokens if not is_gram(t)
+                   and len(t) >= (DISTINCTIVE_LATIN if latin_fold(t).isascii() else DISTINCTIVE_OTHER)
+                   and not t.startswith(WEEKDAY_PREFIXES) and _stem(t) not in household}
+    return FactProbe(item_stems, item_stems - household, distinctive, _is_wide(item_tokens))
+
+
+def _pair_counts(probe, m, content=None):
+    """Whether message *m* mentions the fact of *probe* — the one rule the count and the judge's candidates share.
+    With *content* (the fact's text), a message that negates it or gives it a new number is no mention."""
+    generation = (SETTINGS_GENERATION, id(SETTINGS))
+    own = _own_stems(m.get("content") or "", generation, probe.wide)
+    if own is not None and probe.own_item.isdisjoint(own):
+        return False  # a reply whose own words say nothing of this fact: the quote alone is no mention of it
+    msg_stems = _stems(m["tokens"])
+    if probe.wide:
+        msg_stems = msg_stems | _wide_stems(m.get("content") or "", generation)
+    inter = probe.item_stems & msg_stems
+    rare = bool(probe.distinctive) and not probe.distinctive.isdisjoint(
+        _distinctive_stem(t) for t in m["tokens"] if not is_gram(t))
+    if not rare and probe.own_item.isdisjoint(inter):
+        return False
+    return bool(rare or _mentions(inter)) and not (content and contradicts(content, m["content"]))
+
+
+def corroborate(item_tokens, messages, content=None, rules=None, veto=None, fact_id=None):
     """How many different days / messages mention the token set: (mentions, ref_days, last_ts). With *content* (the
     fact's text), a message that says the same with the opposite polarity ("не любит" against "любит") is no mention
-    (3.1.0, Antigravity review of 3.0.1).
+    (3.1.0, Antigravity review of 3.0.1). *rules*: the night's RulesContext (default: the module's household).
+    *veto*: PairIds of *fact_id* that do not count (3.3.0).
 
     Match: overlap ≥2 STEMS, or ≥1 "distinctive" stem. Stems, because Russian
     inflects: «Мы окончательно переехали, в Лиссабоне…» did not corroborate
@@ -1619,41 +1691,32 @@ def corroborate(item_tokens, messages, content=None):
     review, 2026-10-07). "Distinctive" means rare enough that one hit is
     evidence — and 8 characters is not rare in Russian (41-45% of words reach
     it: «например», «обязательно»), hence a higher bar for non-Latin."""
-    return _corroborate(item_tokens, messages, False, content)[:3]
+    return _corroborate(item_tokens, messages, False, content, rules, veto, fact_id)[:3]
 
 
-def corroborate_with_evidence(item_tokens, messages, content=None):
+def corroborate_with_evidence(item_tokens, messages, content=None, rules=None, veto=None, fact_id=None,
+                              counted=None):
     """`corroborate` plus the samples: (mentions, ref_days, last_ts, samples), where samples are up to
     EVIDENCE_MAX {day, text} snippets from different days — provenance for the reviewer ("why does the dream
-    think this is confirmed?"). Two functions, not a flag that changes the shape of the answer (3.0)."""
-    return _corroborate(item_tokens, messages, True, content)
+    think this is confirmed?"). Two functions, not a flag that changes the shape of the answer (3.0).
+    *counted*: a set that receives the PairId of every pair that counted."""
+    return _corroborate(item_tokens, messages, True, content, rules, veto, fact_id, counted)
 
 
-def _corroborate(item_tokens, messages, evidence, content=None):
+def _corroborate(item_tokens, messages, evidence, content=None, rules=None, veto=None, fact_id=None, counted=None):
     if not item_tokens:
         return 0, 0, None, []
-    item_stems = _stems(item_tokens)
     # The fact's own words: household stems still count towards a mention, but cannot make one alone.
-    own_item = item_stems - _HOUSEHOLD
-    distinctive = {_distinctive_stem(t) for t in item_tokens if not is_gram(t)
-                   and len(t) >= (DISTINCTIVE_LATIN if latin_fold(t).isascii() else DISTINCTIVE_OTHER)
-                   and not t.startswith(WEEKDAY_PREFIXES) and _stem(t) not in _HOUSEHOLD}
-    generation = (SETTINGS_GENERATION, id(SETTINGS))
-    wide = _is_wide(item_tokens)
+    probe = fact_probe(item_tokens, rules)
     days, mentions, last_ts, samples = set(), 0, None, []
     for m in messages:
-        own = _own_stems(m.get("content") or "", generation, wide)
-        if own is not None and own_item.isdisjoint(own):
-            continue  # a reply whose own words say nothing of this fact: the quote alone is no mention of it
-        msg_stems = _stems(m["tokens"])
-        if wide:
-            msg_stems = msg_stems | _wide_stems(m.get("content") or "", generation)
-        inter = item_stems & msg_stems
-        rare = bool(distinctive) and not distinctive.isdisjoint(
-            _distinctive_stem(t) for t in m["tokens"] if not is_gram(t))
-        if not rare and own_item.isdisjoint(inter):
-            continue
-        if (rare or _mentions(inter)) and not (content and contradicts(content, m["content"])):
+        if _pair_counts(probe, m, content):
+            if veto or counted is not None:
+                pair = PairId(fact_id, message_key(m))
+                if veto and pair in veto:
+                    continue
+                if counted is not None:
+                    counted.add(pair)
             mentions += 1
             # A message still counts as a mention, but its text travels to the
             # agent only when it is clean: the fact was screened by
@@ -1672,8 +1735,8 @@ def _snippet(text, n=100):
     return text[:n] + ("…" if len(text) > n else "")
 
 
-def signals_for_fact(f, messages):
-    now = _now()
+def signals_for_fact(f, messages, now=None, rules=None, veto=None, counted=None):
+    now = now or _now()
     rc = f.get("retrieval_count") or 0
     hc = f.get("helpful_count") or 0
     trust = f.get("trust_score")
@@ -1683,7 +1746,8 @@ def signals_for_fact(f, messages):
     tags = [t for t in re.split(r"[,\s]+", f.get("tags") or "") if t]
 
     toks = fact_tokens(f.get("content"))
-    mentions, ref_days, last_ts, evidence = corroborate_with_evidence(toks, messages, f.get("content"))
+    mentions, ref_days, last_ts, evidence = corroborate_with_evidence(
+        toks, messages, f.get("content"), rules=rules, veto=veto, fact_id=f.get("fact_id"), counted=counted)
 
     days_updated = (now - updated).total_seconds() / 86400 if updated else 999
     days_last_ref = (now.timestamp() - last_ts) / 86400 if last_ts else 999
@@ -2506,7 +2570,7 @@ def feedback_floor(fact_source_name=None, home=None):
     return SETTINGS.FEEDBACK_TRUST_FLOOR if provider is None else provider
 
 
-def trust_feedback_items(suppressed, rejected, fact_source_name):
+def trust_feedback_items(suppressed, rejected, fact_source_name, floor=None):
     """Rejected facts that the store still treats as trustworthy.
 
     `dream-reject.py` closes a question for the DREAM; the store knows nothing
@@ -2518,7 +2582,7 @@ def trust_feedback_items(suppressed, rejected, fact_source_name):
     Only for the holographic source: nobody else has that tool."""
     if fact_source_name != "holographic":
         return []
-    floor = feedback_floor(fact_source_name)
+    floor = feedback_floor(fact_source_name) if floor is None else floor
     out = []
     for s in suppressed:
         trust = s.get("trust_score")
@@ -2569,9 +2633,11 @@ CONFIRM_REST_DAYS = 30
 CONFIRM_MIN_COVERAGE = 0.6
 
 
-def recent_confirmations(db, rest_days=CONFIRM_REST_DAYS):
-    """Fact ids the store counts a confirmation of within *rest_days*; None when the store has no
-    `fact_confirmations` table (holographic older than 0.15.0: no `confirmed` call to offer). Read-only."""
+def recent_confirmations(db, rest_days=CONFIRM_REST_DAYS, now=None):
+    """Fact ids the store counts a confirmation of within *rest_days* before *now* (the night's time; without it,
+    the database clock); None when the store has no `fact_confirmations` table (holographic older than 0.15.0: no
+    `confirmed` call to offer). Read-only."""
+    when = "now" if now is None else now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     if not db or not os.path.exists(db):
         return None
     try:
@@ -2581,21 +2647,27 @@ def recent_confirmations(db, rest_days=CONFIRM_REST_DAYS):
                                 ).fetchone():
                 return None
             return {r[0] for r in conn.execute(
-                "SELECT DISTINCT fact_id FROM fact_confirmations WHERE julianday('now') - julianday(confirmed_at) < ?",
-                (rest_days,))}
+                "SELECT DISTINCT fact_id FROM fact_confirmations WHERE julianday(?) - julianday(confirmed_at) < ?",
+                (when, rest_days))}
         finally:
             conn.close()
     except sqlite3.Error:
         return None
 
 
-def confirm_items(safe, messages, by_store, fact_source_name, db=None):
+_NOT_READ = object()  # "the caller did not read the confirmations" (not the YAML scanner's _UNREAD)
+
+
+def confirm_items(safe, messages, by_store, fact_source_name, db=None, rules=None, now=None, veto=None,
+                  rested=_NOT_READ, counted=None):
     """Facts of the main store that people said again on different days (see CONFIRM_MIN_DAYS). Only for the
     holographic source with the confirmations table; chat-store facts get no call (a cron session cannot reach a
-    chat's database). The pass itself never writes the store."""
+    chat's database). The pass itself never writes the store. *rested*: the store's recent confirmations when
+    the caller read them already (None: no confirmations table); *veto* / *counted* as in corroborate."""
     if fact_source_name != "holographic":
         return []
-    rested = recent_confirmations(db or fact_store_path())
+    if rested is _NOT_READ:
+        rested = recent_confirmations(db or fact_store_path(), now=now)
     if rested is None:
         return []
     out = []
@@ -2609,11 +2681,15 @@ def confirm_items(safe, messages, by_store, fact_source_name, db=None):
         generation = (SETTINGS_GENERATION, id(SETTINGS))
         if not stems:
             continue
-        days = {m["day"] for m in messages_for(s, messages, by_store)
-                if corroborate(tokens, [m])[0]
-                and len(stems & (_stems(m["tokens"]) | (_wide_stems(m["content"], generation) if wide else frozenset())))
-                / len(stems) >= CONFIRM_MIN_COVERAGE
-                and not contradicts(s["content"], m["content"])}
+        days = set()
+        for m in messages_for(s, messages, by_store):
+            if (corroborate(tokens, [m], rules=rules, veto=veto, fact_id=s["fact_id"])[0]
+                    and len(stems & (_stems(m["tokens"]) | (_wide_stems(m["content"], generation) if wide
+                                                            else frozenset()))) / len(stems) >= CONFIRM_MIN_COVERAGE
+                    and not contradicts(s["content"], m["content"])):
+                days.add(m["day"])
+                if counted is not None:
+                    counted.add(PairId(s["fact_id"], message_key(m)))
         if len(days) >= CONFIRM_MIN_DAYS:
             out.append({"fact_id": s["fact_id"], "content": s["content"][:200], "days": len(days),
                         **({"origin": s["origin"]} if s.get("origin") else {}),
@@ -3730,7 +3806,7 @@ def _md_cooldown_end(rec):
 
 
 def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, reask=(),
-              staged_removals=()):
+              staged_removals=(), rules=None):
     """§-entries of MEMORY.md that have not surfaced in conversations for long
     → soft flag "still relevant?".
 
@@ -3784,7 +3860,7 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
             # lie — the answer was given, it is the queue that is stuck.
             continue
         toks = fact_tokens(entry)
-        mentions, ref_days, last_ts = corroborate(toks, messages, entry)
+        mentions, ref_days, last_ts = corroborate(toks, messages, entry, rules=rules)  # never a judge's veto
         days_since = (now_ts - last_ts) / 86400 if last_ts else None
         if not (mentions == 0 or (days_since is not None and days_since > decay_days)):
             continue
@@ -3853,14 +3929,16 @@ def memory_usage(mem_md):
 # Main pass
 # ---------------------------------------------------------------------------
 
-def _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text):
+def _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text, now=None, rules=None, veto=None,
+                 counted=None):
     """Every fact with its score and what the sections decide on: quarantine class, already in memory or staged
     for approval, rejected by a human — or rejected and said again since, which makes it a candidate to ask about."""
     scored = []
     for f in facts:
-        score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store))
+        score, sig, meta = signals_for_fact(f, messages_for(f, all_messages, by_store), now=now, rules=rules,
+                                            veto=veto, counted=counted)
         rejection = rejection_of(f["content"], rejected)
-        again = rejection is not None and said_again(f, meta, rejection)
+        again = rejection is not None and said_again(f, meta, rejection, now=now)
         scored.append({**f, "score": score, "signals": sig, "meta": meta,
                        "unsafe": classify_unsafe(f["content"]),
                        "in_memory": already_in_memory(f["content"], memory_text),
@@ -3953,36 +4031,115 @@ def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_ne
     prune_seen(seen["confirm"], now)
 
 
-def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
-        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
-    state_db = os.path.join(HOME, "state.db")
+BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedback", "keywords_needed", "confirm")
+
+
+@dataclass(frozen=True)
+class DecisionInputs:
+    """Everything the night's decisions read from the world, read once (3.3.0). `_decide` reads nothing else — no
+    clock, database, environment or config file; it reads the settings, which must not change while it runs
+    (`settings_fingerprint`). `seen` is a copy: deciding never marks anything shown."""
+    now: datetime
+    today: object
+    window_days: int
+    rules: RulesContext
+    facts: tuple
+    messages: tuple
+    by_store: types.MappingProxyType
+    memory_text: str
+    staged_text: str
+    pending_writes: tuple
+    rejected: types.MappingProxyType
+    recent_confirmations: object  # a frozenset of fact ids, or None: the store keeps no confirmations
+    feedback_floor: float
+    fact_source: str
+    seen: dict
+
+
+def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_state_path=None, seen=None, now=None):
+    """The DecisionInputs of a night. *seen*: the state after `_revert_unacked` when the pass has it already."""
     facts = load_all_facts()
-    set_household(f.get("content") for f in facts if not f.get("store"))
-    all_messages = load_messages(state_db, corr_days)
-    by_store = messages_by_store(all_messages)
-    messages = by_store[None]  # the trusted ones: shared facts, memory entries, themes
-    memory_text = load_durable_memory_text(mem_md)
-    rejected = load_rejected(rejected_state_path)
-    now = _now()
-    generated_at = now.isoformat(timespec="seconds")
-    seen = load_seen(seen_state_path)
-    reask_md = _revert_unacked(seen, state_db) if seen_state_path else set()
-    seen_new_facts = seen.setdefault("new_facts", {})
-    seen_fact_decays = seen.setdefault("fact_decays", {})
-    seen_conflicts = seen.setdefault("conflicts", {})
-    seen_promotions = seen.setdefault("promotions", {})
-    seen_feedback = seen.setdefault("trust_feedback", {})
-    seen_keywords = seen.setdefault("keywords_needed", {})
-    seen_confirm = seen.setdefault("confirm", {})
+    all_messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
+    now = now or _now()
+    source = fact_source()
     # A write waiting for approval is not in memory yet, but it IS the answer to
     # the candidate that produced it: offering it again every night only grows
     # the queue. The staged texts are treated as a second memory file — the same
     # dedupe decides "already covered".
     pending_writes = load_pending_writes()
-    staged_text = _staged_text(pending_writes)
-    staged_removals = _staged_removals(pending_writes)
+    rested = recent_confirmations(fact_store_path(), now=now) if source == "holographic" else None
+    return DecisionInputs(
+        now=now, today=now.astimezone(SETTINGS.LOCAL_TZ).date(), window_days=window_days,
+        rules=rules_context(f.get("content") for f in facts if not f.get("store")),
+        facts=tuple(facts), messages=tuple(all_messages),
+        by_store=types.MappingProxyType({k: tuple(v) for k, v in messages_by_store(all_messages).items()}),
+        memory_text=load_durable_memory_text(mem_md), staged_text=_staged_text(pending_writes),
+        pending_writes=tuple(pending_writes), rejected=types.MappingProxyType(load_rejected(rejected_state_path)),
+        recent_confirmations=None if rested is None else frozenset(rested),
+        feedback_floor=feedback_floor(source), fact_source=source,
+        seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen))
 
-    scored = _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text)
+
+@dataclass(frozen=True)
+class Decisions:
+    """What one night decides from the mention count, before anything is marked shown. The sections named as in
+    the payload are the published slices; `all_*` are the whole lists (stats, diary). `counted`: the PairIds that
+    counted, per path ("promotion": the facts' signals; "confirm": confirm_items)."""
+    scored: list
+    suppressed: list
+    quarantined: list
+    expired: list
+    expired_ids: set
+    new_facts_window: list
+    new_facts: list
+    new_facts_dups: list
+    new_facts_suppressed: int
+    all_promotions: list
+    promotions_dups: list
+    all_ephemeral: list
+    promotions_suppressed: int
+    staged_suppressed: int
+    all_conflicts: list
+    conflicts_suppressed: int
+    all_decays: list
+    decays_suppressed: int
+    trust_feedback: list
+    feedback_suppressed: int
+    keywords_needed: list
+    keywords_pending: list
+    confirm: list
+    counted: dict
+    publish_cap: int
+
+    @property
+    def promotions(self):
+        return self.all_promotions[:self.publish_cap]
+
+    @property
+    def ephemeral_events(self):
+        return self.all_ephemeral[:self.publish_cap]
+
+    @property
+    def conflicts(self):
+        return self.all_conflicts[:self.publish_cap]
+
+    @property
+    def fact_decays(self):
+        return self.all_decays[:self.publish_cap]
+
+
+def _decide(inputs, vetoes=frozenset()):
+    """The night's decisions from *inputs*, with the PairIds in *vetoes* not counted (a cloud judge's verdicts;
+    empty: the rules alone). Pure: called twice it gives the same answer and it touches nothing outside *inputs*."""
+    now, window_days, source = inputs.now, inputs.window_days, inputs.fact_source
+    facts, all_messages, by_store = inputs.facts, inputs.messages, inputs.by_store
+    rejected, memory_text, staged_text = inputs.rejected, inputs.memory_text, inputs.staged_text
+    (seen_new_facts, seen_fact_decays, seen_conflicts, seen_promotions, seen_feedback, seen_keywords,
+     seen_confirm) = (inputs.seen.get(name) or {} for name in BUCKETS)
+    counted = {"promotion": set(), "confirm": set()}
+
+    scored = _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text, now=now,
+                          rules=inputs.rules, veto=vetoes, counted=counted["promotion"])
 
     # Rejected by a human leaves through no section — not as a candidate, not
     # as a "new fact", not as a relevance question. Removed BEFORE quarantine:
@@ -4002,7 +4159,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # («страница», «тест», "example") vanished from every section silently
     # (external review, 2026-10-07). It is now listed in its own read-only
     # section and in the diary; it still wakes nobody.
-    expired = [s for s in safe if is_expired_event(s["content"])]
+    expired = [s for s in safe if is_expired_event(s["content"], today=inputs.today)]
     expired_ids = {s["fact_id"] for s in expired}
     safe = [s for s in safe if s["fact_id"] not in expired_ids]
 
@@ -4053,13 +4210,12 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     decays_suppressed = len(decays_pending) - len(decays)
     decays.sort(key=lambda s: -s["meta"]["days_old"])
 
-    themes = _new_themes(messages, window_days, facts, memory_text)
-
     # Rejected facts the store still trusts: offer the one call that teaches
     # retrieval. Shown at most once per cooldown, and never on a source without
     # the tool.
     # Chat-store facts get neither call: a cron session cannot reach a chat's database.
-    feedback_pending = trust_feedback_items([s for s in suppressed if not s.get("store")], rejected, fact_source())
+    feedback_pending = trust_feedback_items([s for s in suppressed if not s.get("store")], rejected, source,
+                                            floor=inputs.feedback_floor)
     feedback_fresh = unseen(feedback_pending, seen_feedback, now, key=_feedback_key)
     # Only the shown slice is marked, so what the cap cuts off is not suppressed
     # — it simply comes tomorrow. The counter means "resting", nothing else.
@@ -4071,18 +4227,59 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # expired facts are not offered — `safe` already left them out. A fact the
     # agent found nothing for rests like any shown item instead of coming back
     # every night; one that got keywords simply leaves the list.
-    keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], fact_source())
+    keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], source)
     keywords_fresh = unseen(keywords_pending, seen_keywords, now, key=_feedback_key)
     keywords_needed = keywords_fresh[:SETTINGS.KEYWORDS_CAP]
 
     # Facts people said again on different days (holographic >= 0.15.0): a confirmation is worth giving while the
     # agent is awake, never a reason to wake it.
-    confirm_pending = confirm_items(safe, all_messages, by_store, fact_source())
+    confirm_pending = confirm_items(safe, all_messages, by_store, source, rules=inputs.rules, now=now,
+                                    veto=vetoes, rested=inputs.recent_confirmations,
+                                    counted=counted["confirm"])
     confirm = unseen(confirm_pending, seen_confirm, now, key=_feedback_key)[:CONFIRM_CAP]
+
+
+    return Decisions(
+        scored=scored, suppressed=suppressed, quarantined=quarantined, expired=expired, expired_ids=expired_ids,
+        new_facts_window=new_facts_window, new_facts=new_facts, new_facts_dups=new_facts_dups,
+        new_facts_suppressed=new_facts_suppressed, all_promotions=promotions, promotions_dups=promotions_dups,
+        all_ephemeral=ephemeral_events, promotions_suppressed=promotions_suppressed,
+        staged_suppressed=staged_suppressed, all_conflicts=conflicts, conflicts_suppressed=conflicts_suppressed,
+        all_decays=decays, decays_suppressed=decays_suppressed, trust_feedback=feedback,
+        feedback_suppressed=feedback_suppressed, keywords_needed=keywords_needed, keywords_pending=keywords_pending,
+        confirm=confirm, counted={k: frozenset(v) for k, v in counted.items()}, publish_cap=SETTINGS.PUBLISH_CAP)
+
+
+def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
+        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
+    state_db = os.path.join(HOME, "state.db")
+    now = _now()
+    generated_at = now.isoformat(timespec="seconds")
+    seen = load_seen(seen_state_path)
+    reask_md = _revert_unacked(seen, state_db) if seen_state_path else set()
+    for name in BUCKETS:
+        seen.setdefault(name, {})
+    inputs = load_inputs(window_days, corr_days, mem_md, rejected_state_path=rejected_state_path, seen=seen,
+                         now=now)
+    facts, memory_text, pending_writes = inputs.facts, inputs.memory_text, inputs.pending_writes
+    messages = inputs.by_store[None]  # the trusted ones: shared facts, memory entries, themes
+    staged_removals = _staged_removals(pending_writes)
+
+    d = _decide(inputs)
+    suppressed, quarantined, expired, expired_ids = d.suppressed, d.quarantined, d.expired, d.expired_ids
+    new_facts_window, new_facts, new_facts_dups = d.new_facts_window, d.new_facts, d.new_facts_dups
+    new_facts_suppressed = d.new_facts_suppressed
+    promotions, promotions_dups, ephemeral_events = d.all_promotions, d.promotions_dups, d.all_ephemeral
+    promotions_suppressed, staged_suppressed = d.promotions_suppressed, d.staged_suppressed
+    conflicts, conflicts_suppressed = d.all_conflicts, d.conflicts_suppressed
+    decays, decays_suppressed = d.all_decays, d.decays_suppressed
+    feedback, feedback_suppressed = d.trust_feedback, d.feedback_suppressed
+    keywords_needed, keywords_pending, confirm = d.keywords_needed, d.keywords_pending, d.confirm
+    themes = _new_themes(messages, window_days, facts, memory_text)
 
     md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=SETTINGS.PUBLISH_CAP,
                        staged_removals=staged_removals,
-                       reask=reask_md)
+                       reask=reask_md, rules=inputs.rules)
 
     # Only published slices count as shown.
     published_promotions = promotions[:SETTINGS.PUBLISH_CAP]
