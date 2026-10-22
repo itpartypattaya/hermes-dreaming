@@ -4407,12 +4407,21 @@ def judge_permission(fact, m, js=None):
     return "chat"
 
 
+# What the judge's words lose besides URL_RE's links (http(s)://, www.): any other scheme (tg://, mailto:) and a bare
+# host with a path — t.me/…, example.com/zapis?token=… (Codex review of 3.3.0). A bare domain without a path stays:
+# it names a service and carries nothing of a link. Only the judge's copy: the rules keep counting as in 3.2.0.
+JUDGE_LINK_RE = re.compile(r"(?:\b[a-z][a-z0-9+.-]*://|\bmailto:)\S+|(?<![\w@.-])(?:[\w-]+\.)+[^\W\d_]{2,}/\S*",
+                           re.IGNORECASE)
+
+
 def judge_texts(fact, m):
     """(fact text, words, None) as the judge receives them, or (None, None, why not). The fact as stored; the
     person's own words — the reply quote left out, a voice transcript unwrapped, links and [service brackets]
-    removed (as phase 0 measured). Neither may hold a secret or an instruction, or run long."""
+    removed (as phase 0 measured; since 3.3.0's review, links without a scheme too). Neither may hold a secret
+    or an instruction, or run long."""
     text = fact.get("content") or ""
-    words = re.sub(r"\[[^\]]*\]", " ", URL_RE.sub(" ", _own_words(m.get("content") or "")))
+    words = JUDGE_LINK_RE.sub(" ", URL_RE.sub(" ", _own_words(m.get("content") or "")))
+    words = re.sub(r"\[[^\]]*\]", " ", words)
     words = re.sub(r"\s+", " ", words).strip()
     if not words:
         return None, None, "empty"
@@ -4435,7 +4444,8 @@ def _decision_diff(a, b):
 
 
 def _judge_replay(path):
-    """{(provider, fact, words): recorded answer} of a `--judge-replay` file (JSON lines); a broken line is skipped."""
+    """{(provider, fact, words): recorded answer} of a `--judge-replay` file (JSON lines); a broken line, or one
+    whose provider, fact or words is not a text, is skipped."""
     out = {}
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -4443,8 +4453,8 @@ def _judge_replay(path):
                 rec = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(rec, dict):
-                out[(rec.get("provider"), rec.get("fact"), rec.get("words"))] = rec
+            if isinstance(rec, dict) and all(isinstance(rec.get(k), str) for k in ("provider", "fact", "words")):
+                out[(rec["provider"], rec["fact"], rec["words"])] = rec
     return out
 
 
@@ -4478,8 +4488,15 @@ def _judge_pass(inputs, d, jrun, now):
         # Only a live night may move a broken cache aside; a dry run reads around it.
         cache = _load_state_file(jrun.files.cache) if jrun.live else _read_state_file(jrun.files.cache)[0]
     replay = _judge_replay(jrun.replay) if jrun.replay else None
-    night = J.judge(items, js.providers, js.tau, js.max_attempts, js.max_cost_usd, jrun.deadline, cache, now,
-                    live=jrun.live and replay is None, replay=replay, home=HOME)
+    try:
+        night = J.judge(items, js.providers, js.tau, js.max_attempts, js.max_cost_usd, jrun.deadline, cache, now,
+                        live=jrun.live and replay is None, replay=replay, home=HOME)
+    except Exception as exc:  # noqa: BLE001 — the judge is optional: whatever it meets must not cost the night
+        # Only the type: a message may quote what came back. No verdicts, so the night is degraded below.
+        print(f"[dream] warn: the cloud judge failed ({type(exc).__name__}) — no verdicts tonight, the rules "
+              f"decide alone", file=sys.stderr)
+        night = J.Night({}, [], 0, 0.0, 0, {p: {} for p in js.providers}, set(), f"error: {type(exc).__name__}",
+                        {})
     eligible, judged = Counter(), Counter()
     for it in items:
         for path in it.paths:

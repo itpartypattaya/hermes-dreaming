@@ -14,7 +14,7 @@ is the one in `plugin.json`.
   memory-entry questions never take a veto. Measured before the code on a frozen holdout of 360 pairs: at τ 0.50
   the judge removed 84 % (Jev) / 75 % (OpenAI) of the false confirmations the rules counted, and no true one.
 - **What leaves the machine, and only when turned on.** The fact's text and the person's own words — no reply
-  quote, link, id, sender or time — of the chats and sources listed in `send_from` / `send_sources`
+  quote, link (with or without a scheme: `t.me/…`, `mailto:`), id, sender or time — of the chats and sources listed in `send_from` / `send_sources`
   (`"trusted"` = the trusted group and private chats); a promoted chat store's pairs only by that chat's id and
   `send_fact_stores`; sessions without a chat only with `send_no_chat_sessions`. Nothing with a secret or an
   instruction, nothing long. To OpenRouter (model Jev by TypeSafe) and, listed second, to OpenAI as the fallback:
@@ -24,16 +24,20 @@ is the one in `plugin.json`.
   pass it), 120 s, and never past the gate's deadline (`dream-precheck.py` passes `--deadline`). HTTPS to fixed
   endpoints, no proxy, no redirect. A provider without a key, or that refuses it, is off for the night.
 - **Never on a half-judged night.** A night that judged under half of what it could send applies no veto; three
-  such nights without two good ones between raise one `judge_degraded` alert a week.
+  such nights without two good ones between raise one `judge_degraded` alert a week. An answer, cache, health or
+  replay file of the wrong shape is unusable, not fatal; anything else that fails inside the judge leaves the night
+  to the rules (degraded, with a warning that names only the error's type).
 - **Its files** (`cache/`, 0600): verdicts for 90 days (hashes and fact ids, no text), reused only for the same pair
   with the same text that may still be sent; a journal of every pair sent, as sent, for 90 days; a health record.
   A night with the judge off deletes the journal and the health record; the forget sweep cleans all of them, even
   with the judge off. `--dry-run` and `--explain` send nothing; `--judge-replay FILE` judges from recorded answers.
 - **Deciding between shadow and veto:** `--judge-export OUT` writes a blind review sample (one pair per fact) and
   `--judge-score LABELS` applies the rule: ready when the upper 95 % bound of wrong vetoes is ≤ 10 %, of lost
-  confirmations ≤ 20 %, coverage ≥ 90 % and no wrong veto changed a decision. `install.py --check` reports the
+  confirmations ≤ 20 %, coverage ≥ 90 % and no wrong veto changed a decision; when the fallback gave over a fifth
+  of the sample's verdicts (those left for a person included), each provider must pass on its own.
+  `install.py --check` reports the
   judge's mode, recipients and keys (never their values).
-- Tests: `tests/test_judge_330.py` (64) against a provider on 127.0.0.1 — permissions row by row, the payload, the
+- Tests: `tests/test_judge_330.py` (71) against a provider on 127.0.0.1 — permissions row by row, the payload, the
   key, every failure, the fallback, money, time, cache, journal, health, export, the rule.
 
 ### Fixed
@@ -55,6 +59,9 @@ is the one in `plugin.json`.
   the trust rules let it in. Messages are read in row order (`ORDER BY m.id`), so which compaction copy is kept no
   longer follows the query plan.
 - **"Recently confirmed" uses the night's time**, not the database clock (`recent_confirmations(now=…)`).
+- **The night's decisions use one time, taken before the databases are read** (3.2.0 took it after reading, and
+  some decisions read the clock again). Only a pass that runs across midnight can tell: it decides by the time it
+  began (Codex review of 3.3.0, kept on purpose).
 - Contract tests: `tests/test_refactor_330.py` (15). The golden record of two nights is unchanged.
 
 ## 3.2.0 — 2026-10-22

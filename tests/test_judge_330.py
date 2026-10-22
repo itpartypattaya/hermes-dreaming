@@ -438,6 +438,24 @@ class PayloadTests(JudgeHome):
         self.assertIn("Гоша тренирует юниоров клуба по средам в малом зале, подтверждаю", words)
         self.assertIn("Гоша тренирует юниоров по средам в малом зале", words)  # the voice message, unwrapped
 
+    def test_links_without_a_scheme_do_not_leave_either(self):
+        # Codex review of 3.3.0: only http(s):// and www. links were taken out.
+        self.msg("Гоша тренирует юниоров клуба по средам в малом зале, запись t.me/klub_junior?start=abc и "
+                 "klub.example/zapis?token=x9, вопросы mailto:gosha@example.org или tg://resolve?domain=klub", 3)
+        self.judged_night()
+        words = [w for _p, _f, w in self.server.sent()]
+        # A link runs to the next space, as URL_RE's do (its trailing comma goes with it).
+        self.assertIn("Гоша тренирует юниоров клуба по средам в малом зале, запись и вопросы или", words)
+        for bad in ("t.me", "klub_junior", "start=abc", "klub.example", "token", "mailto", "gosha@", "tg:", "resolve"):
+            self.assertFalse(any(bad in w for w in words), bad)
+        # A bare domain without a path names a service and carries nothing of a link; an address is not a link.
+        for text, want in (("заказали на ozon.ru, как всегда", "заказали на ozon.ru, как всегда"),
+                           ("пиши Гоше на gosha@example.org", "пиши Гоше на gosha@example.org"),
+                           ("см. Госуслуги.рф/запись и vk.com/klub", "см. и"),
+                           ("Node.js и e.g. т.е. 18.30", "Node.js и e.g. т.е. 18.30")):
+            with self.subTest(text=text):
+                self.assertEqual(dream.judge_texts({"content": PROMOTED}, {"content": text})[1], want)
+
     def test_a_secret_an_overlong_text_or_a_forgotten_fact_does_not_leave(self):
         self.msg("Гоша тренирует юниоров клуба по средам в малом зале, пароль от зала: Qw7!zz2026", 3)
         self.msg("Гоша тренирует юниоров клуба по средам в 18:00 в малом зале. " + "Очень длинный рассказ. " * 30, 4)
@@ -549,6 +567,56 @@ class FailureTests(JudgeHome):
         st = self.judged_night()["stats"]["judge"]
         self.assertEqual(st["outcomes"]["jev"]["unknown"], 3)
         self.assertEqual(len(self.server.sent("/openai")), 3)
+
+    def test_an_answer_of_the_wrong_types_goes_to_the_fallback_and_the_night_goes_on(self):
+        # Valid JSON, wrong types: Jev's API is an alpha (Codex review of 3.3.0 — a list here took the night down).
+        listed = jev_answer("unrelated")
+        listed["answers"]["rel"]["choice"] = ["C"]
+        keyed = jev_answer("unrelated")
+        keyed["answers"]["rel"]["probabilities"] = [{"value": ["A"], "probability": 0.05},
+                                                    {"value": "B", "probability": 0.05},
+                                                    {"value": "C", "probability": 0.9}]
+        mapped = jev_answer("unrelated")
+        mapped["answers"]["rel"]["choice"] = {"C": 1}
+        self.server.queue["/jev"] = [{"json": listed}, {"json": keyed}, {"json": mapped}]
+        st = self.judged_night()["stats"]["judge"]
+        self.assertEqual(st["outcomes"]["jev"]["unknown"], 3)
+        self.assertEqual(len(self.server.sent("/openai")), 3)
+        self.assertEqual(st["judged"], st["eligible"])
+
+    def test_the_validator_reads_any_json_without_failing(self):
+        J = self.J
+        cases = []
+        for value in ([], ["A"], {"A": 1}, None, 1, True):
+            jev = jev_answer("unrelated")
+            jev["answers"]["rel"]["choice"] = value
+            oa = openai_answer("unrelated")
+            oa["answers"][0]["choice"] = value
+            oa_value = openai_answer("unrelated")
+            oa_value["answers"][0]["probabilities"][0]["value"] = value
+            jev_list = jev_answer("unrelated")
+            jev_list["answers"]["rel"]["probabilities"] = [{"value": value, "probability": 0.9}]
+            cases += [("jev", jev), ("openai", oa), ("openai", oa_value), ("jev", jev_list)]
+        for provider, data in cases:
+            with self.subTest(provider=provider, data=data):
+                self.assertIsNone(J.validate(provider, data)[0])
+                self.assertIsNone(J.replay_answer({"response": data}, provider))
+        for label in ([], {"x": 1}, None, 3):
+            with self.subTest(label=label):
+                self.assertNotEqual(J.check_answer(label, 0.9, {k: 1 / 3 for k in LABELS}), "ok")
+
+    def test_a_judge_that_fails_unexpectedly_costs_no_night(self):
+        self.set_judge(mode="veto")
+        self.veto_facts(RENT)
+        err = io.StringIO()
+        with mock.patch.object(self.J, "judge", side_effect=RuntimeError("boom")), contextlib.redirect_stderr(err):
+            result = self.judged_night()
+        st = result["stats"]["judge"]
+        self.assertEqual((st["effective"], st["vetoes"], st["judged"]), ("degraded", 0, 0))
+        self.assertIn("RuntimeError", st["degraded"])
+        self.assertIn("cloud judge failed (RuntimeError)", err.getvalue())
+        rent = self.fact_id(RENT)
+        self.assertGreater(next(c["mentions"] for c in result["conflicts"] if c["fact_id"] == rent), 0)
 
     def test_the_validator_takes_only_a_well_formed_answer(self):
         J = self.J
@@ -680,6 +748,22 @@ class CacheTests(JudgeHome):
         second = self.judged_night()
         self.assertEqual(self.server.requests, [])
         self.assertEqual((second["stats"]["judge"]["vetoes"], mentions(second)), (1, 2))  # the dm's verdict only
+
+    def test_a_cache_of_the_wrong_shape_is_read_around_and_written_anew(self):
+        # A JSON object, but not the cache's: the night asks again and leaves a good cache behind.
+        at = self.clock.isoformat()
+        bad_entry = {"provider": "jev", "label": ["unrelated"], "confidence": 0.9, "probs": {}, "at": at,
+                     "fact_ref": "1"}
+        for cache in ({"version": 1, "entries": []}, {"version": 1, "entries": "x"},
+                      {"version": 1, "entries": {"k": bad_entry, "j": ["not", "a", "record"]}}):
+            with self.subTest(cache=cache):
+                Path(self.files.cache).write_text(json.dumps(cache), encoding="utf-8")
+                self.server.requests.clear()
+                st = self.judged_night()["stats"]["judge"]
+                self.assertEqual((st["cache_hits"], st["sent"], st["judged"]), (0, st["eligible"], st["eligible"]))
+                written = json.loads(Path(self.files.cache).read_text(encoding="utf-8"))
+                self.assertEqual(len(written["entries"]), st["eligible"])
+                self.assertNotIn("k", written["entries"])
 
     def test_a_verdict_of_a_provider_no_longer_configured_is_not_used(self):
         self.judged_night()
@@ -835,6 +919,14 @@ class ModeTests(JudgeHome):
         self.assertEqual(result["stats"]["judge"]["vetoes"], 2)
         for path in self.files:
             self.assertFalse(os.path.exists(path), path)
+        # Lines of the wrong types are skipped, not fatal: a list where a text goes, a label that is a list.
+        odd = [dict(recorded[0], provider=["jev"]), dict(recorded[1], fact={"x": 1}),
+               {k: v for k, v in recorded[2].items() if k != "response"} | {"label": ["unrelated"],
+                                                                            "confidence": 0.9, "probs": {}}]
+        replay.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in odd + recorded[3:]),
+                          encoding="utf-8")
+        st = self.judged_night(live=False, replay=str(replay))["stats"]["judge"]
+        self.assertEqual(st["judged"], len(recorded) - 3)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -947,6 +1039,13 @@ class HealthTests(JudgeHome):
     def test_two_healthy_nights_in_a_row_reset_the_count(self):
         self.assertEqual([len(a) for a in self.nights("DDHHDD")], [0, 0, 0, 0, 0, 0])
         self.assertEqual([len(a) for a in self.nights("HD")], [0, 1])  # D D H D: one healthy night resets nothing
+
+    def test_a_health_file_of_the_wrong_shape_is_started_again(self):
+        Path(self.files.health).write_text(json.dumps({"nights": 5, "alerted_at": ["x"]}), encoding="utf-8")
+        result = self.judged_night()
+        self.assertEqual(result["stats"]["judge"]["effective"], "shadow")
+        health = json.loads(Path(self.files.health).read_text(encoding="utf-8"))
+        self.assertEqual([n["degraded"] for n in health["nights"]], [False])
 
     def test_a_second_run_on_the_same_night_does_not_count_twice(self):
         os.environ.pop("OPENROUTER_API_KEY")
@@ -1140,6 +1239,17 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "continue")
         self.assertNotIn("by_provider", self.J.readiness(self.rows(0, 40, 30) + self.rows(0, 2, 1,
                                                                                          provider="openai"), cov))
+
+    def test_the_fallbacks_share_counts_its_verdicts_left_for_a_person_too(self):
+        # Codex review of 3.3.0: the fallback gave 21 of 100 verdicts, 10 of them left for Anton ("?").
+        cov = {"promotion": 1.0}
+        rows = self.rows(0, 40, 39) + self.rows(0, 6, 5, provider="openai")
+        rows += [{"label": "?", "veto": True, "changed": False, "provider": "openai"}] * 10
+        self.assertEqual(self.J.readiness(rows[:79] + rows[79:90], cov)["verdict"], "ready")  # 11 of 90: no check
+        report = self.J.readiness(rows, cov)
+        self.assertEqual(set(report.get("by_provider") or ()), {"jev", "openai"})
+        self.assertEqual(report["by_provider"]["openai"]["verdict"], "continue")
+        self.assertEqual(report["verdict"], "continue")
 
 
 if __name__ == "__main__":

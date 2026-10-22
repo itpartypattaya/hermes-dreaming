@@ -108,8 +108,9 @@ def _number(v):
 
 def check_answer(label, confidence, probs):
     """"ok", or why the answer cannot be used: one of the three labels, a probability for each of the three (finite,
-    0..1, summing to 1 within 0.02), the label among the most probable, a confidence 0..1."""
-    if label not in LABELS:
+    0..1, summing to 1 within 0.02), the label among the most probable, a confidence 0..1. Any JSON may come in:
+    a list where a label goes is "label", not a TypeError (Codex review of 3.3.0)."""
+    if not isinstance(label, str) or label not in LABELS:
         return "label"
     if not isinstance(probs, dict) or set(probs) != set(LABELS):
         return "probs_keys"
@@ -137,11 +138,14 @@ def validate(provider, data):
         a = answers[0]
         if a.get("type") == "refusal":
             return None, None, None, "refusal"
-        label, probs = a.get("choice"), {}
-        for p in a.get("probabilities") or []:
-            if not isinstance(p, dict) or p.get("value") in probs:
+        label, probs, raw = a.get("choice"), {}, a.get("probabilities")
+        if not isinstance(raw, list):
+            return None, None, None, "probs_shape"
+        for p in raw:
+            value = p.get("value") if isinstance(p, dict) else None
+            if not isinstance(value, str) or value in probs:
                 return None, None, None, "probs_shape"
-            probs[p.get("value")] = p.get("probability")
+            probs[value] = p.get("probability")
     else:
         answers = data.get("answers")
         if not isinstance(answers, dict) or set(answers) != {"rel"} or not isinstance(answers["rel"], dict):
@@ -149,10 +153,14 @@ def validate(provider, data):
         a = answers["rel"]
         if a.get("type") == "refusal":
             return None, None, None, "refusal"
-        label = JEV_KEYS.get(a.get("choice"))
+        choice = a.get("choice")
+        label = JEV_KEYS.get(choice) if isinstance(choice, str) else None
         raw = a.get("probabilities")
         if isinstance(raw, list):
-            raw = {p.get("value") or p.get("label"): p.get("probability") for p in raw if isinstance(p, dict)}
+            pairs = [(p.get("value") or p.get("label"), p.get("probability")) for p in raw if isinstance(p, dict)]
+            if not all(isinstance(k, str) for k, _v in pairs):
+                return None, None, None, "probs_shape"
+            raw = dict(pairs)
         if not isinstance(raw, dict):
             return None, None, None, "probs_shape"
         probs = {JEV_KEYS.get(k, k): v for k, v in raw.items()}
@@ -405,7 +413,7 @@ def _age_days(at, now):
 
 def cache_get(cache, key, providers, now, ttl_days=TTL_DAYS):
     """The cached verdict under *key* when a provider configured now gave it within *ttl_days*, else None."""
-    rec = ((cache or {}).get("entries") or {}).get(key)
+    rec = _entries(cache).get(key)
     if not isinstance(rec, dict) or rec.get("provider") not in providers:
         return None
     age = _age_days(rec.get("at"), now)
@@ -422,11 +430,19 @@ def cache_record(fact_ref, verdict, now):
             "at": now.isoformat(timespec="seconds") if now else None}
 
 
+def _entries(cache):
+    """The entries of a cache file, {} when the file holds something else (a list, a text)."""
+    entries = cache.get("entries") if isinstance(cache, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
 def cache_merge(cache, updates, now, forgotten=frozenset(), ttl_days=TTL_DAYS):
-    """The cache to write: the old entries still within the TTL plus tonight's, none of a forgotten fact."""
+    """The cache to write: the old entries still within the TTL plus tonight's, none of a forgotten fact and none
+    that is not a usable verdict."""
     entries = {}
-    for key, rec in list(((cache or {}).get("entries") or {}).items()) + list(updates.items()):
-        if not isinstance(rec, dict) or str(rec.get("fact_ref")) in forgotten:
+    for key, rec in list(_entries(cache).items()) + list(updates.items()):
+        if not isinstance(rec, dict) or str(rec.get("fact_ref")) in forgotten \
+                or check_answer(rec.get("label"), rec.get("confidence"), rec.get("probs")) != "ok":
             continue
         age = _age_days(rec.get("at"), now)
         if age is not None and age <= ttl_days:
@@ -445,7 +461,8 @@ HEALTH_KEEP = 30
 
 def health_record(health, day, degraded, reason):
     """The health file with tonight's night: one record a date (a second run that night replaces the first)."""
-    nights = [n for n in (health or {}).get("nights") or [] if isinstance(n, dict) and n.get("date") != day]
+    nights = (health or {}).get("nights")
+    nights = [n for n in (nights if isinstance(nights, list) else []) if isinstance(n, dict) and n.get("date") != day]
     nights.append({"date": day, "degraded": bool(degraded), "reason": reason})
     nights.sort(key=lambda n: str(n.get("date")))
     return dict(health or {}, nights=nights[-HEALTH_KEEP:])
@@ -578,13 +595,12 @@ def readiness(rows, coverage):
     """The plan's rule on labeled rows ({label S/C/U/?, veto, changed, provider}): `ready` for veto when the upper
     95 % bound of wrong vetoes is at most 10 %, that of lost confirmations at most 20 %, coverage at least 90 % on
     every path and no wrong veto changed a decision; `not_ready` when the lower bound of wrong vetoes is over 10 %;
-    `continue` otherwise. "?" rows (for Anton) are left out. When the fallback gave over a fifth of the verdicts,
-    each provider must pass on its own."""
+    `continue` otherwise. "?" rows (for Anton) are left out. When the fallback gave over a fifth of the verdicts —
+    counted over every row, "?" ones too (Codex review of 3.3.0) — each provider must pass on its own."""
     out = _rule(rows, coverage)
     out["for_a_person"] = sum(1 for r in rows if r.get("label") == "?")
-    labeled = [r for r in rows if r.get("label") in ("S", "C", "U")]
-    shares = Counter(r.get("provider") for r in labeled)
-    if len(shares) > 1 and sorted(shares.values())[-2] / len(labeled) > MAX_FALLBACK_SHARE:
+    shares = Counter(r.get("provider") for r in rows if r.get("provider"))
+    if len(shares) > 1 and sorted(shares.values())[-2] / sum(shares.values()) > MAX_FALLBACK_SHARE:
         out["by_provider"] = {p: _rule([r for r in rows if r.get("provider") == p], coverage) for p in sorted(shares)}
         verdicts = {v["verdict"] for v in out["by_provider"].values()} | {out["verdict"]}
         out["verdict"] = ("not_ready" if "not_ready" in verdicts else
