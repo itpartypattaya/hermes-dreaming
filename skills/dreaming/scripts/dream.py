@@ -38,7 +38,7 @@ import sys
 import tempfile
 import types
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
@@ -1059,27 +1059,38 @@ def run_grams(run):
     return {g for g in (run[i:i + n] for i in range(len(run) - n + 1)) if gram_weight(g) > 0}
 
 
-def _keep_token(tok):
+# The wide tokenizer (3.2.0) keeps words of three letters and more: a fact of short words («Гоша пьёт кофе по
+# утрам», "Bob likes tea") had one token or none under the usual minimum, and nothing ever mentioned it (Laya
+# experiment, 2026-10-22). Only such facts are read wide, and the messages are read wide only against them; the
+# short function words the usual minimum used to drop are WIDE_STOP.
+WIDE_TOKEN_MIN = 3
+WIDE_STOP = _LANG.WIDE_STOP
+
+
+def _keep_token(tok, wide=False):
     if tok in SETTINGS.STOPWORDS:
         return False
+    if wide:
+        return len(tok) >= WIDE_TOKEN_MIN and tok not in WIDE_STOP
     if tok.isascii():
         return len(tok) >= SETTINGS.TOKEN_MIN_LATIN
     return len(tok) >= SETTINGS.TOKEN_MIN_OTHER
 
 
-def _raw_tokens(text):
+def _raw_tokens(text, wide=False):
     """Significant tokens of an already unwrapped string (brackets are metadata): words, and the n-grams of the
     runs of unsegmented script (cut out first, so "ACME的老板" gives the word "acme" and the pair "老板")."""
     low = re.sub(r"\[[^\]]*\]", " ", strip_urls(_fold(text))).lower()
     grams = set()
     for run in UNSEGMENTED_RE.findall(low):
         grams |= run_grams(run)
-    words = {w for w in TOKEN_RE.findall(UNSEGMENTED_RE.sub(" ", low)) if _keep_token(w)}
+    words = {w for w in TOKEN_RE.findall(UNSEGMENTED_RE.sub(" ", low)) if _keep_token(w, wide)}
     return words | (grams - SETTINGS.STOPWORDS)
 
 
-def sig_tokens(text):
-    """Signature tokens: Unicode words without stopwords (Latin ≥4, other ≥5 chars).
+def sig_tokens(text, wide=False):
+    """Signature tokens: Unicode words without stopwords (Latin ≥4, other ≥5 chars; with *wide*, ≥3 — see
+    WIDE_TOKEN_MIN).
 
     Reply quotes and voice transcripts are unwrapped BEFORE bracket blocks are
     cut: a family reply to a message about an entry is a mention of the entry
@@ -1093,7 +1104,7 @@ def sig_tokens(text):
     # 2026-10-07). The live case that put the unwrapping here ("Да, всё ещё
     # Vespa") keeps working: its tail has its own tokens.
     tail = VOICE_QUOTE_RE.sub(" ", REPLY_QUOTE_RE.sub(" ", raw))
-    tail_tokens = _raw_tokens(tail)
+    tail_tokens = _raw_tokens(tail, wide)
     quoted = " ".join(m.group(1) for m in REPLY_QUOTE_RE.finditer(raw))
     if not tail_tokens and quoted:
         return set()
@@ -1103,7 +1114,28 @@ def sig_tokens(text):
         return tail_tokens
     unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", raw)
     unwrapped = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", unwrapped)
-    return _raw_tokens(unwrapped)
+    return _raw_tokens(unwrapped, wide)
+
+
+def fact_tokens(text):
+    """The tokens a fact is corroborated by: sig_tokens, or the wide ones for a fact of short words (fewer than two
+    word stems the usual way, and no n-grams)."""
+    toks = sig_tokens(text)
+    if any(is_gram(t) for t in toks) or len({_stem(t) for t in toks}) >= 2:
+        return toks
+    return sig_tokens(text, wide=True)
+
+
+def _is_wide(item_tokens):
+    """Whether a fact's tokens came from the wide tokenizer (a word under the usual minimum among them)."""
+    return any(not is_gram(t) and len(t) < (SETTINGS.TOKEN_MIN_LATIN if t.isascii() else SETTINGS.TOKEN_MIN_OTHER)
+               for t in item_tokens)
+
+
+@functools.lru_cache(maxsize=16384)
+def _wide_stems(text, generation):
+    """Stems of a message read wide, for comparing it with a fact of short words. *generation*: see _sentence_stems."""
+    return frozenset(_stems(sig_tokens(text, wide=True)))
 
 
 MACHINE_QUOTE_RE = re.compile(
@@ -1530,6 +1562,47 @@ def _distinctive_stem(token):
     return ("latin", latin[:DISTINCTIVE_PREFIX_LATIN]) if latin.isascii() else ("other", _stem(token))
 
 
+# A reply carries the message it answers (`[Replying to: "…"]`, mostly the agent's own text), and sig_tokens unwraps
+# the quote so that "Да, всё ещё Vespa" under a question about the bike is a mention of the bike. On a live install
+# 46 % of human messages were replies, the quotes ran 523 characters against 63 of the person's own, and they
+# corroborated what the person never spoke of: 535 fact-message mentions from 81 replies, 64 with the quote left out
+# (Laya experiment, 2026-10-22). The quote now counts for a fact only when the person's own words share a stem with it.
+@functools.lru_cache(maxsize=16384)
+def _own_stems(text, generation):
+    """Stems of the person's own words in a reply (quote left out, voice transcript kept); None for a text without a
+    reply quote. *generation* keys the cache to the settings' stopwords, as in _sentence_stems."""
+    if not REPLY_QUOTE_RE.search(text):
+        return None
+    own = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", text))
+    return frozenset(_stems(_raw_tokens(own)))
+
+
+# Words nearly every fact of a home shares ("чат", "ветка", "Telegram", "сообщения" in a store of thread rules) made a
+# mention between any two of them: after the quotes, they carried most of the remaining false mentions on a live
+# install (8 stems in a fifth of its 59 facts; Laya experiment, 2026-10-22). A stem in HOUSEHOLD_SHARE of the facts
+# or more still counts towards a mention but cannot make one alone: a name is such a stem too (李雷 in a fifth of the
+# facts), and "李雷" + "有车" stays a mention. A store under HOUSEHOLD_MIN_FACTS facts has none — too few to tell.
+HOUSEHOLD_SHARE = 0.2
+HOUSEHOLD_MIN_FACTS = 10
+_HOUSEHOLD = frozenset()
+
+
+def household_stems(contents):
+    """The stems in HOUSEHOLD_SHARE of *contents* (fact texts) or more."""
+    contents = [c for c in contents if c]
+    if len(contents) < HOUSEHOLD_MIN_FACTS:
+        return frozenset()
+    df = Counter(s for c in contents for s in _stems(sig_tokens(c)))
+    return frozenset(s for s, n in df.items() if n >= max(2, HOUSEHOLD_SHARE * len(contents)))
+
+
+def set_household(contents):
+    """Make the household stems of *contents* the ones corroboration does not let make a mention alone (the pass
+    calls it with its facts)."""
+    global _HOUSEHOLD
+    _HOUSEHOLD = household_stems(contents)
+
+
 def corroborate(item_tokens, messages, content=None):
     """How many different days / messages mention the token set: (mentions, ref_days, last_ts). With *content* (the
     fact's text), a message that says the same with the opposite polarity ("не любит" against "любит") is no mention
@@ -1555,15 +1628,27 @@ def _corroborate(item_tokens, messages, evidence, content=None):
     if not item_tokens:
         return 0, 0, None, []
     item_stems = _stems(item_tokens)
+    # The fact's own words: household stems still count towards a mention, but cannot make one alone.
+    own_item = item_stems - _HOUSEHOLD
     distinctive = {_distinctive_stem(t) for t in item_tokens if not is_gram(t)
                    and len(t) >= (DISTINCTIVE_LATIN if latin_fold(t).isascii() else DISTINCTIVE_OTHER)
-                   and not t.startswith(WEEKDAY_PREFIXES)}
+                   and not t.startswith(WEEKDAY_PREFIXES) and _stem(t) not in _HOUSEHOLD}
+    generation = (SETTINGS_GENERATION, id(SETTINGS))
+    wide = _is_wide(item_tokens)
     days, mentions, last_ts, samples = set(), 0, None, []
     for m in messages:
-        inter = item_stems & _stems(m["tokens"])
+        own = _own_stems(m.get("content") or "", generation)
+        if own is not None and own_item.isdisjoint(own):
+            continue  # a reply whose own words say nothing of this fact: the quote alone is no mention of it
+        msg_stems = _stems(m["tokens"])
+        if wide:
+            msg_stems = msg_stems | _wide_stems(m.get("content") or "", generation)
+        inter = item_stems & msg_stems
         rare = bool(distinctive) and not distinctive.isdisjoint(
             _distinctive_stem(t) for t in m["tokens"] if not is_gram(t))
-        if (rare or _mentions(inter)) and not (content and polarity_differs(content, m["content"])):
+        if not rare and own_item.isdisjoint(inter):
+            continue
+        if (rare or _mentions(inter)) and not (content and contradicts(content, m["content"])):
             mentions += 1
             # A message still counts as a mention, but its text travels to the
             # agent only when it is clean: the fact was screened by
@@ -1592,7 +1677,7 @@ def signals_for_fact(f, messages):
     updated = _parse_ts(f.get("updated_at")) or created
     tags = [t for t in re.split(r"[,\s]+", f.get("tags") or "") if t]
 
-    toks = sig_tokens(f.get("content"))
+    toks = fact_tokens(f.get("content"))
     mentions, ref_days, last_ts, evidence = corroborate_with_evidence(toks, messages, f.get("content"))
 
     days_updated = (now - updated).total_seconds() / 86400 if updated else 999
@@ -1804,11 +1889,31 @@ def _latin_root(word):
     return word
 
 
+# A negation is often said in another tense than the fact: "eats" / "hasn't eaten", "курит" / "никогда не курил",
+# "любит" / "не любила" — the 5- or 6-character stem kept them apart, and the flip was lost (Laya experiment,
+# 2026-10-22). Only for comparing what two texts negate, like _latin_root; a root keeps three letters at least.
+_LATIN_TENSE_ENDINGS = ("ing", "ed", "en", "e")
+_RU_TENSE_ENDINGS = ("ила", "ило", "или", "ела", "ело", "ели", "ала", "ало", "али", "ил", "ел", "ал",
+                     "ит", "ет", "ат", "ят", "ют", "ут")
+
+
+def _tense_root(word, endings):
+    for end in endings:
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            return word[: -len(end)]
+    return word
+
+
 @functools.lru_cache(maxsize=65536)
 def _neg_stem(word):
-    """The stem a negation is compared by: _stem, after _latin_root for a Latin word."""
+    """The stem a negation is compared by: _stem, after _latin_root and the tense ending for a Latin word, after the
+    tense ending for a Cyrillic one."""
+    if is_gram(word):
+        return _stem(word)
     latin = latin_fold(word)
-    return _stem(_latin_root(latin)) if latin.isascii() and not is_gram(word) else _stem(word)
+    if latin.isascii():
+        return _stem(_tense_root(_latin_root(latin), _LATIN_TENSE_ENDINGS))
+    return _stem(_tense_root(word, _RU_TENSE_ENDINGS) if _CYRILLIC_RE.match(word) else word)
 
 
 def _stems(tokens):
@@ -1977,11 +2082,19 @@ _CJK_NEGATION_RE = re.compile(r"(?:没有|沒有|无法|無法|不|没|沒|别|�
 _CJK_NEGATION_CHARS = "不没沒别別未无無"
 
 
+# An aspect particle after the negated verb is no part of the thing negated: "不吃肉了", "没抽过烟", "再也不打网球了" negate
+# 吃肉, 抽烟, 打网球, and with the particle kept the other text never held the piece (Laya experiment, 2026-10-22). Only
+# past the first character: 过敏, 了解, 着急 begin with it.
+_CJK_ASPECT = "了过過着著"
+
+
 def _cjk_negated(text):
     """{"喜欢苹": "不喜欢苹"}: what *text* negates, by the characters after each negation."""
     out = {}
     for m in _CJK_NEGATION_RE.finditer(text):
-        out.setdefault(m.group(1), m.group(0))
+        what = m.group(1)
+        what = what[0] + "".join(c for c in what[1:] if c not in _CJK_ASPECT)
+        out.setdefault(what, m.group(0))
     return out
 
 
@@ -2215,6 +2328,42 @@ def _numbers(text):
     return {n for n in nums if n} | _month_markers(normalized) | _weekday_markers(normalized)
 
 
+def _number_kinds(text):
+    """The numbers of *text* (as _numbers) grouped by kind: times, dates, whole numbers by size, months, weekdays —
+    a number is compared with numbers of its own kind only ("18 октября" is no other weekday, "2 сетки" no other
+    time)."""
+    body = LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
+    normalized = THOUSANDS_RE.sub("", _norm(body))
+    out = {}
+    for n in {n.strip(".,:") for n in NUMBER_RE.findall(normalized)}:
+        if not n:
+            continue
+        kind = "time" if ":" in n else "date" if any(c in n for c in "./-") else (
+            "int1" if len(n) <= 2 else "int3" if len(n) <= 4 else "int5")
+        out.setdefault(kind, set()).add(n)
+    for kind, found in (("month", _month_markers(normalized)), ("weekday", _weekday_markers(normalized))):
+        if found:
+            out[kind] = set(found)
+    return out
+
+
+# A message that gives the same thing a new number says the fact no longer holds: «абонемент теперь 1500» under
+# «1200 рублей в месяц», «тихий режим с 00:30» under «между 23:30 и 06:30». It corroborated the old number (0 of 14 such
+# pairs; Laya experiment, 2026-10-22). Changed: for some kind, the person's own words hold a number the fact lacks
+# and lack one it holds — a number restated beside an extra one ("в 19:00, взяли 2 сетки") is no change.
+def numbers_changed(content, text):
+    """True when *text* (a message; its reply quote and [bracketed] metadata left out, as for the tokens) changes a
+    number of the fact *content*."""
+    own = re.sub(r"\[[^\]]*\]", " ", REPLY_QUOTE_RE.sub(" ", text or ""))
+    fact, own = _number_kinds(content), _number_kinds(own)
+    return any(own.get(kind) and (own[kind] - nums) and (nums - own[kind]) for kind, nums in fact.items())
+
+
+def contradicts(content, text):
+    """A message that says the fact otherwise: the opposite polarity, or a changed number. It corroborates nothing."""
+    return polarity_differs(content, text) or numbers_changed(content, text)
+
+
 def find_conflicts(content, memory_text):
     """Memory chunks that look like the same subject with different numbers/dates,
     or with the opposite negation (see polarity_differs)."""
@@ -2439,14 +2588,17 @@ def confirm_items(safe, messages, by_store, fact_source_name, db=None):
         if s.get("store") or s.get("unsafe") or s["fact_id"] in rested \
                 or (s.get("meta") or {}).get("ref_days", 0) < CONFIRM_MIN_DAYS:
             continue
-        tokens = sig_tokens(s["content"])
+        tokens = fact_tokens(s["content"])
         stems = _stems(tokens)
+        wide = _is_wide(tokens)
+        generation = (SETTINGS_GENERATION, id(SETTINGS))
         if not stems:
             continue
         days = {m["day"] for m in messages_for(s, messages, by_store)
                 if corroborate(tokens, [m])[0]
-                and len(stems & _stems(m["tokens"])) / len(stems) >= CONFIRM_MIN_COVERAGE
-                and not polarity_differs(s["content"], m["content"])}
+                and len(stems & (_stems(m["tokens"]) | (_wide_stems(m["content"], generation) if wide else frozenset())))
+                / len(stems) >= CONFIRM_MIN_COVERAGE
+                and not contradicts(s["content"], m["content"])}
         if len(days) >= CONFIRM_MIN_DAYS:
             out.append({"fact_id": s["fact_id"], "content": s["content"][:200], "days": len(days),
                         **({"origin": s["origin"]} if s.get("origin") else {}),
@@ -3614,7 +3766,7 @@ def md_decays(mem_md, messages, decay_days, asked_state_path=None, cap=None, rea
             # again is noise, and "still here, so it is confirmed" would be a
             # lie — the answer was given, it is the queue that is stuck.
             continue
-        toks = sig_tokens(entry)
+        toks = fact_tokens(entry)
         mentions, ref_days, last_ts = corroborate(toks, messages, entry)
         days_since = (now_ts - last_ts) / 86400 if last_ts else None
         if not (mentions == 0 or (days_since is not None and days_since > decay_days)):
@@ -3788,6 +3940,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
     state_db = os.path.join(HOME, "state.db")
     facts = load_all_facts()
+    set_household(f.get("content") for f in facts if not f.get("store"))
     all_messages = load_messages(state_db, corr_days)
     by_store = messages_by_store(all_messages)
     messages = by_store[None]  # the trusted ones: shared facts, memory entries, themes
@@ -4969,6 +5122,7 @@ def explain(fact_id, mem_md, corr_days):
         print(f"fact {fact_id} not found", file=sys.stderr)
         return 1
     f = facts[0]
+    set_household(g.get("content") for g in load_all_facts() if not g.get("store"))
     messages = messages_for(f, load_messages(os.path.join(HOME, "state.db"), corr_days))
     memory_text = load_durable_memory_text(mem_md)
     score, sig, meta = signals_for_fact(f, messages)

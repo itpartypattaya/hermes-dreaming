@@ -48,6 +48,14 @@ here please today okay yes
 telegram thread threads topic topics chat chats group groups message messages channel
 https http www""".split())
 
+# Short function words (three or four letters) that the tokenizer never had to know about: they become tokens only
+# for a fact of short words, read with the wide tokenizer (dream.fact_tokens, 3.2.0) — «Гоша пьёт кофе по утрам».
+WIDE_STOP = {w.replace("ё", "е") for w in """the and for you are was has had his her him its our ours but not nor all any
+can did does got get let may one two who why how out off own yet too via per its it's she he's i'm you're isn
+don won ago each both such than then them this that with from have been were what when your
+вас ваш наш мой моя мое мои твой кто где чем чей тот той тем том эту эти тех кого кем ему ней них нем ним
+еще ещё все всё уже сам сама само сами раз два три мол вон ага угу ого""".split()}
+
 # The other languages the holographic store reads (German, Spanish, French, Portuguese, Italian, Dutch, Turkish,
 # Polish, Indonesian): function words of four letters and more — shorter ones never become tokens. Without them two
 # unrelated Polish lines met on «dobra» + «wieczorem», two Dutch ones on «gaat» + «naar» (2026-10-13). Words that

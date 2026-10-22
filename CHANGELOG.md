@@ -3,6 +3,55 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.2.0 — 2026-10-22
+
+From an experiment with decision models (Laya, mDeBERTa-xnli, OpenAI Decisions, Jev) on dirty pairs and on a live
+family install, measured in aggregate. The polarity rules were not the weak part: in 60 days of live messages no
+message flipped a fact, while 59 of 60 sampled corroborations were about something else. Corroboration counts
+differently, hence a minor release. Still deterministic, no model, no network.
+
+### Changed
+
+- **A reply quote counts only when the person's own words touch the fact.** A reply carries the message it answers
+  (`[Replying to: "…"]`, mostly the agent's own text), and the quote is unwrapped so that "yes, still the Vespa"
+  under a question about the bike is a mention. On the live install 46 % of human messages were replies, the quotes
+  ran 523 characters against 63 of the person's own, and they corroborated facts the person never spoke of: 535
+  fact-message mentions from 81 replies, 64 without the quote. The quote now counts for a fact only when the
+  person's own words share a stem with it. The `your previous message` pointer and the Discord note in front of it
+  are quotes too (Hermes's own format, `gateway/run_inbound.py`).
+- **Words nearly every fact of a home shares make no mention by themselves.** A stem in a fifth of the facts or more
+  ("чат", "ветка", "Telegram" in a store of thread rules; a name) still counts towards a mention, but a mention needs
+  at least one of the fact's own words too. A store under ten facts has none. A first, strict version dropped such
+  stems altogether and lost names (李雷 + 有车 stopped being a mention).
+- **A new number for the same thing is no corroboration.** «теперь 1500» under «1200 в месяц», «с 00:30» under «между
+  23:30 и 06:30» corroborated the old number. A message whose own words hold a number the fact lacks and lack one it
+  holds, of the same kind (times with times, dates, whole numbers of a similar size, months, weekdays), now counts
+  as saying the fact otherwise, like a negation, for the fact's score, a memory entry's decay and confirmations. A
+  number restated beside an extra one is no change; a number in the quote or in [bracketed] metadata does not count.
+  On the live install it removed 77 of 324 mentions; ten of them read by hand were all mentions of something else
+  (pasted reports, long texts), none a real confirmation.
+- **A fact of short words is read with a wide tokenizer.** «Гоша пьёт кофе по утрам», "Bob likes tea" had one token
+  or none under the usual minimum (Latin ≥ 4, other ≥ 5 letters), and nothing ever mentioned them. A fact with fewer
+  than two word stems is read with words of three letters and more, against messages read the same way; the short
+  function words that minimum used to drop are a new list, `WIDE_STOP`.
+
+### Fixed
+
+- **Chinese aspect particles after a negation.** "不吃肉了", "没抽过烟", "再也不打网球了" negate 吃肉, 抽烟, 打网球; with 了 / 过
+  / 着 kept as part of the negated piece the other text never held it, and the flip was lost. They are dropped past
+  the first character (过敏, 了解, 着急 stay words).
+- **Another tense under a negation.** "eats" / "hasn't eaten", «курит» / «никогда не курил», «любит» / «не любила»
+  met no flip: the stem kept them apart. A tense ending is cut where negations are compared (a root keeps three
+  letters); the 3.1.0 exceptions (class, bus, Paris) stand.
+
+### Measured
+
+Accuracy of "supports / contradicts / unrelated" for the rules of 3.1.1 → 3.2.0: 80 pseudonymised live pairs
+0.26 → 0.79 (false "supports" 59 → 13 of 79); 300 pairs written to look like a Hermes memory 0.45 → 0.58; 150 pairs
+written independently by Codex 0.33 → 0.47; 81 dirty pairs 0.38 → 0.47. On the live install the night's
+fact-message mentions went from 852 to 250. Short facts still meet the old limits of the rules (a double negation,
+another person with the same short predicate); a sarcastic or paraphrased message is still beyond them.
+
 ## 3.1.1 — 2026-10-21
 
 ### Fixed
