@@ -1568,13 +1568,18 @@ def _distinctive_stem(token):
 # corroborated what the person never spoke of: 535 fact-message mentions from 81 replies, 64 with the quote left out
 # (Laya experiment, 2026-10-22). The quote now counts for a fact only when the person's own words share a stem with it.
 @functools.lru_cache(maxsize=16384)
-def _own_stems(text, generation):
-    """Stems of the person's own words in a reply (quote left out, voice transcript kept); None for a text without a
-    reply quote. *generation* keys the cache to the settings' stopwords, as in _sentence_stems."""
+def _own_stems(text, generation, wide=False):
+    """Stems of the person's own words in a reply (quote left out, voice transcript kept), read *wide* against a fact
+    of short words; None for a text without a reply quote. *generation* keys the cache to the settings' stopwords, as
+    in _sentence_stems."""
     if not REPLY_QUOTE_RE.search(text):
         return None
-    own = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", text))
-    return frozenset(_stems(_raw_tokens(own)))
+    return frozenset(_stems(_raw_tokens(_own_words(text), wide)))
+
+
+def _own_words(text):
+    """The person's own words of a message: the reply quote left out, a voice transcript unwrapped (it is speech)."""
+    return VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", text or ""))
 
 
 # Words nearly every fact of a home shares ("чат", "ветка", "Telegram", "сообщения" in a store of thread rules) made a
@@ -1592,7 +1597,7 @@ def household_stems(contents):
     contents = [c for c in contents if c]
     if len(contents) < HOUSEHOLD_MIN_FACTS:
         return frozenset()
-    df = Counter(s for c in contents for s in _stems(sig_tokens(c)))
+    df = Counter(s for c in contents for s in _stems(fact_tokens(c)))
     return frozenset(s for s, n in df.items() if n >= max(2, HOUSEHOLD_SHARE * len(contents)))
 
 
@@ -1637,7 +1642,7 @@ def _corroborate(item_tokens, messages, evidence, content=None):
     wide = _is_wide(item_tokens)
     days, mentions, last_ts, samples = set(), 0, None, []
     for m in messages:
-        own = _own_stems(m.get("content") or "", generation)
+        own = _own_stems(m.get("content") or "", generation, wide)
         if own is not None and own_item.isdisjoint(own):
             continue  # a reply whose own words say nothing of this fact: the quote alone is no mention of it
         msg_stems = _stems(m["tokens"])
@@ -1898,9 +1903,15 @@ _RU_TENSE_ENDINGS = ("ила", "ило", "или", "ела", "ело", "ели",
 
 
 def _tense_root(word, endings):
-    for end in endings:
-        if word.endswith(end) and len(word) - len(end) >= 3:
-            return word[: -len(end)]
+    # Twice at most, so that an ending on an ending meets the shorter form: "listened" → "listen" → "list", as
+    # "listens" → "listen" → "list" (Codex review of 3.2.0).
+    for _ in range(2):
+        for end in endings:
+            if word.endswith(end) and len(word) - len(end) >= 3:
+                word = word[: -len(end)]
+                break
+        else:
+            break
     return word
 
 
@@ -2340,6 +2351,8 @@ def _number_kinds(text):
             continue
         kind = "time" if ":" in n else "date" if any(c in n for c in "./-") else (
             "int1" if len(n) <= 2 else "int3" if len(n) <= 4 else "int5")
+        if kind in ("time", "date"):
+            n = re.sub(r"\d+", lambda m: str(int(m.group())), n)  # 09:00 is 9:00, 07.03 is 7.3 (Codex review)
         out.setdefault(kind, set()).add(n)
     for kind, found in (("month", _month_markers(normalized)), ("weekday", _weekday_markers(normalized))):
         if found:
@@ -2354,7 +2367,7 @@ def _number_kinds(text):
 def numbers_changed(content, text):
     """True when *text* (a message; its reply quote and [bracketed] metadata left out, as for the tokens) changes a
     number of the fact *content*."""
-    own = re.sub(r"\[[^\]]*\]", " ", REPLY_QUOTE_RE.sub(" ", text or ""))
+    own = re.sub(r"\[[^\]]*\]", " ", _own_words(text))
     fact, own = _number_kinds(content), _number_kinds(own)
     return any(own.get(kind) and (own[kind] - nums) and (nums - own[kind]) for kind, nums in fact.items())
 

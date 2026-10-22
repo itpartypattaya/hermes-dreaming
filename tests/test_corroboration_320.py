@@ -35,8 +35,12 @@ class ReplyQuoteNeedsOwnWordsTests(unittest.TestCase):
         self.assertEqual(mentions(ARCHIVE, QUOTE + "собери все ответы в md файл и пришли мне"), 0)
 
     def test_own_words_about_the_fact_let_the_quote_count(self):
+        """One shared word of the person's own lets the quote supply the rest (Codex review of 3.2.0: the first fixture
+        passed without its quote)."""
         fact = "По средам у Фёдора после работы тренировка; в среду утром напоминать взять ракетку."
-        self.assertEqual(mentions(fact, QUOTE + "да, тренировка в среду как обычно, ракетку взял"), 1)
+        quote = '[Replying to: "Напомнить Фёдору завтра утром про тренировку после работы?"]\n\n'
+        self.assertEqual(mentions(fact, "да, ракетку взял"), 0)  # alone, one shared word is no mention
+        self.assertEqual(mentions(fact, quote + "да, ракетку взял"), 1)
 
     def test_the_own_marked_pointer_and_a_discord_note_are_quotes_too(self):
         for prefix in ('[Replying to your previous message: "' + QUOTE[len('[Replying to: "'):],
@@ -111,6 +115,12 @@ class TenseUnderNegationTests(unittest.TestCase):
             with self.subTest(message):
                 self.assertIsNotNone(dream.polarity_flip(fact, message))
 
+    def test_an_ending_on_an_ending_still_meets(self):
+        """Codex review of 3.2.0: "listens" lost "-s" and "-en" (list), "listened" only "-ed" (liste) — 3.1.1 met them."""
+        self.assertIsNotNone(dream.polarity_flip("Alice listens to music", "Alice has not listened to music"))
+        self.assertEqual(mentions("Alice listens to music to relax every evening",
+                                  "Alice has not listened to music to relax this evening"), 0)
+
     def test_both_negated_in_different_tenses_agree(self):
         self.assertIsNone(dream.polarity_flip("Гоша не курил", "Гоша не курит"))
         self.assertIsNone(dream.polarity_flip("Bob has never smoked", "Bob does not smoke"))
@@ -141,6 +151,17 @@ class ShortFactTests(unittest.TestCase):
     def test_a_short_word_alone_is_no_mention(self):
         self.assertEqual(_scored("Гоша пьёт кофе по утрам", "купи кофе домой"), 0)
 
+    def test_a_reply_about_a_short_fact_is_read_wide_too(self):
+        """Codex review of 3.2.0: the own words of a reply were read the usual way, and "Bob tea" had none."""
+        self.assertEqual(_scored("Bob likes tea", "Bob tea"), 1)
+        self.assertEqual(_scored("Bob likes tea", '[Replying to: "Bob likes tea"]\n\nBob tea'), 1)
+
+    def test_short_words_count_for_the_household_too(self):
+        facts = ["Bob likes tea", "Bob brews tea"] + [f"Длинный факт номер {w} про совершенно другое" for w in
+                                                       ("первый", "второй", "третий", "четвёртый", "пятый", "шестой",
+                                                        "седьмой", "восьмой")]
+        self.assertTrue({dream._stem("bob"), dream._stem("tea")} <= dream.household_stems(facts))
+
     def test_short_function_words_are_not_tokens(self):
         toks = dream.fact_tokens("Bob and the cat")
         self.assertNotIn("the", toks)
@@ -168,6 +189,20 @@ class ChangedNumberTests(unittest.TestCase):
 
     def test_an_extra_number_beside_the_fact_number_still_corroborates(self):
         self.assertEqual(_scored(STORE, "в пятницу Ирина выдала инвентарь со склада клуба в 19:00, взяли 2 сетки"), 1)
+
+    def test_the_fact_number_restated_beside_another_of_its_kind_is_no_change(self):
+        """Codex review of 3.2.0: the other extra-number test used a number of another kind."""
+        self.assertEqual(_scored(STORE, "в пятницу Ирина выдала инвентарь со склада клуба в 19:00, второй раз в 20:00"),
+                         1)
+
+    def test_one_time_spelled_two_ways_is_no_change(self):
+        self.assertFalse(dream.numbers_changed("The swimming lesson starts at 09:00", "The swimming lesson starts at 9:00"))
+        self.assertFalse(dream.numbers_changed("Сбор в 07.03 у входа", "сбор 7.3 у входа"))
+
+    def test_a_voice_transcript_is_speech_with_its_numbers(self):
+        """Codex review of 3.2.0: the [bracketed] metadata cut took the whole transcript with it."""
+        voice = '[The user sent a voice message~ Here is what they said: "Абонемент Фёдора в бассейн теперь 1500 рублей"]'
+        self.assertTrue(dream.numbers_changed(POOL, voice))
 
     def test_a_number_only_in_the_quote_does_not_count(self):
         reply = ('[Replying to: "Записала: абонемент Фёдора в бассейн 1500 рублей за два месяца"]\n\n'

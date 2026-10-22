@@ -49,8 +49,13 @@ differently, hence a minor release. Still deterministic, no model, no network.
 Accuracy of "supports / contradicts / unrelated" for the rules of 3.1.1 → 3.2.0: 80 pseudonymised live pairs
 0.26 → 0.79 (false "supports" 59 → 13 of 79); 300 pairs written to look like a Hermes memory 0.45 → 0.58; 150 pairs
 written independently by Codex 0.33 → 0.47; 81 dirty pairs 0.38 → 0.47. On the live install the night's
-fact-message mentions went from 852 to 250. Short facts still meet the old limits of the rules (a double negation,
+fact-message mentions went from 852 to 247. Short facts still meet the old limits of the rules (a double negation,
 another person with the same short predicate); a sarcastic or paraphrased message is still beyond them.
+
+A Codex review of the release found five holes, fixed before it went out: an ending on an ending ("listened" against
+"listens", which 3.1.0 met) lost its flip; a voice transcript lost its numbers with the [bracketed] metadata; the own
+words of a reply were read the usual way against a fact of short words; 09:00 and 9:00 were two times; household
+stems were counted without the short words.
 
 ## 3.1.1 — 2026-10-21
 
