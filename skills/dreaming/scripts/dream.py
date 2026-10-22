@@ -2351,8 +2351,10 @@ def _number_kinds(text):
             continue
         kind = "time" if ":" in n else "date" if any(c in n for c in "./-") else (
             "int1" if len(n) <= 2 else "int3" if len(n) <= 4 else "int5")
-        if kind in ("time", "date"):
-            n = re.sub(r"\d+", lambda m: str(int(m.group())), n)  # 09:00 is 9:00, 07.03 is 7.3 (Codex review)
+        if kind == "time" or (kind == "date" and len(re.findall(r"[./-]", n)) >= 2):
+            # 09:00 is 9:00, 07.03.2026 is 7.3.2026 (Codex review); a lone dot may be a decimal ("1.01" is no "1.1",
+            # second Codex pass) and is compared as written.
+            n = re.sub(r"\d+", lambda m: str(int(m.group())), n)
         out.setdefault(kind, set()).add(n)
     for kind, found in (("month", _month_markers(normalized)), ("weekday", _weekday_markers(normalized))):
         if found:

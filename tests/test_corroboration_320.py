@@ -197,7 +197,11 @@ class ChangedNumberTests(unittest.TestCase):
 
     def test_one_time_spelled_two_ways_is_no_change(self):
         self.assertFalse(dream.numbers_changed("The swimming lesson starts at 09:00", "The swimming lesson starts at 9:00"))
-        self.assertFalse(dream.numbers_changed("Сбор в 07.03 у входа", "сбор 7.3 у входа"))
+        self.assertFalse(dream.numbers_changed("Сбор 07.03.2026 у входа", "сбор 7.3.2026 у входа"))
+
+    def test_a_decimal_is_compared_as_written(self):
+        """Second Codex pass: "1.01" and "1.1" were both normalised to 1.1 (a lone dot may be a decimal or a date)."""
+        self.assertTrue(dream.numbers_changed("Взнос за мяч — 1.01 доллара", "взнос за мяч теперь 1.1 доллара"))
 
     def test_a_voice_transcript_is_speech_with_its_numbers(self):
         """Codex review of 3.2.0: the [bracketed] metadata cut took the whole transcript with it."""

@@ -55,7 +55,9 @@ another person with the same short predicate); a sarcastic or paraphrased messag
 A Codex review of the release found five holes, fixed before it went out: an ending on an ending ("listened" against
 "listens", which 3.1.0 met) lost its flip; a voice transcript lost its numbers with the [bracketed] metadata; the own
 words of a reply were read the usual way against a fact of short words; 09:00 and 9:00 were two times; household
-stems were counted without the short words.
+stems were counted without the short words. A second pass found that the normalisation merged decimals ("1.01" and
+"1.1"): only times and full dates are normalised now. Known limit, as in 3.1.0: a noun and a verb of one root meet
+under a negation ("sees the garden" / "has not gardened").
 
 ## 3.1.1 — 2026-10-21
 
