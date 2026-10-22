@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 def _hermes_home():
@@ -249,9 +250,12 @@ def main():
         OUT.parent.mkdir(parents=True, exist_ok=True)
         # --hermes-home: this gate may have found its home without HERMES_HOME
         # (installed into <home>/scripts); dream.py on its own would read ~/.hermes.
+        # --deadline: when the timeout below kills the pass, so that the optional
+        # cloud judge (3.3.0) stops early enough for the rest of the night.
+        deadline = ["--deadline", f"{time.time() + timeout:.0f}"] if timeout else []
         proc = subprocess.run(
             [sys.executable, str(DREAM), "--hermes-home", str(HOME),
-             "--out", str(OUT), "--diary", str(DIARY)],
+             "--out", str(OUT), "--diary", str(DIARY), *deadline],
             check=True,
             timeout=timeout,
             capture_output=True,

@@ -267,6 +267,35 @@ def check_fact_source(home, dream, r):
         _check_holographic_settings(home, dream, r)
 
 
+def check_judge(home, dream, r):
+    """The optional cloud judge (3.3.0): off sends nothing; on, say to whom, from which chats, and whether each
+    provider's key is there (never its value). A section the pass refuses is a problem: the judge stays off."""
+    js = dream.SETTINGS.JUDGE
+    if js.problem:
+        r.bad(f"{js.problem} — the cloud judge stays off until dreaming.json is fixed")
+        return
+    if js.mode == "off":
+        r.ok("cloud judge off (the default): nothing leaves this machine")
+        return
+    judge = dream._load_judge()
+    keyed = []
+    for p in js.providers:
+        env = judge.PROVIDERS[p]["env"]
+        if judge.api_key(env, str(home)):
+            keyed.append(p)
+        else:
+            r.warn(f"cloud judge: no {env} in the environment or in {home / '.env'} — {p} is off every night")
+    chats = ("the trusted and private chats" if js.send_trusted
+             else ", ".join(sorted(js.send_from)) or "no chat")
+    r.ok(f"cloud judge {js.mode}: asks {' then '.join(js.providers)}; may send the fact and the person's own "
+         f"words from {chats}, sources {', '.join(sorted(js.send_sources)) or 'none'}"
+         + (", sessions without a chat" if js.send_no_chat_sessions else ""))
+    if not keyed:
+        r.bad("cloud judge: no provider has a key — every night is degraded and the agent is alerted")
+    if not js.send_sources or not (js.send_trusted or js.send_from or js.send_no_chat_sessions):
+        r.warn("cloud judge: send_from / send_sources leave nothing to send — nothing is judged")
+
+
 def _load_install_cron(home):
     spec = importlib.util.spec_from_file_location("_install_cron_for_check",
                                                   SKILL_DIR / "scripts" / "install_cron.py")
@@ -368,6 +397,7 @@ def main(argv=None):
     check_dry_run(dream, cfg, r)
     check_core(home, r)
     check_fact_source(home, dream, r)
+    check_judge(home, dream, r)
     check_jobs(home, args.check, r)
 
     print(f"\n== {r.ok_n} ok, {r.warn_n} warning(s), {r.bad_n} problem(s) ==")

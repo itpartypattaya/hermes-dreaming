@@ -64,7 +64,8 @@ def main():
               f"{'; '.join(summary.get('errors') or []) or proc.stderr.strip()[-400:]}", file=sys.stderr)
         return 1
     parts = [f"{summary[k]} {label}" for k, label in (("payload", "payload items"), ("rejected", "reject records"),
-                                                      ("seen", "cooldowns"), ("diary_lines", "diary lines"),
+                                                      ("seen", "cooldowns"), ("judge", "cloud judge records"),
+                                                      ("diary_lines", "diary lines"),
                                                       ("cron_logs", "cron logs"),
                                                       ("corrupt_copies", "set-aside broken state files"))
              if summary.get(k)]

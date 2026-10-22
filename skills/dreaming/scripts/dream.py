@@ -37,6 +37,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unicodedata
 from collections import Counter, defaultdict, namedtuple
@@ -192,6 +193,17 @@ DEFAULT_CONFIG = {
     # scope thread, "<platform>:<user id>" with scope user, or the database's file name. Their facts are
     # corroborated only by messages of their own chat (or user), and their messages corroborate nothing else.
     "chat_stores": {"read": False, "promote_from": []},
+    # An optional cloud judge (3.3.0), off by default: a decision model is asked whether a counted mention really
+    # confirms the fact, and may take it out of the count — never add one. `shadow` only reports what it would
+    # change; `veto` applies it. What may leave the machine is listed here and nothing else: `send_from` —
+    # "trusted" (the trusted group chats and, with trust_private_chats, private chats) or a list of chat ids;
+    # `send_sources` — the session sources (e.g. "telegram"); `send_fact_stores` — promoted chat stores whose
+    # facts' text may be sent (as in chat_stores.promote_from); `send_no_chat_sessions` — sessions without a chat.
+    # Only the fact's text and the person's own words are sent (no reply quote, link, id, sender or time) — to
+    # OpenRouter (model Jev by TypeSafe) and, listed second, to OpenAI as the fallback. Keys: OPENROUTER_API_KEY /
+    # OPENAI_API_KEY in the environment or in $HERMES_HOME/.env. `max_cost_usd` is a soft cap per night.
+    "judge": {"mode": "off", "providers": ["jev"], "tau": 0.5, "send_from": [], "send_sources": [],
+              "send_fact_stores": [], "send_no_chat_sessions": False, "max_attempts": 250, "max_cost_usd": 0.05},
     "state": {"asked": "cache/dream-asked.json",
               "rejected": "cache/dream-rejected.json",
               "seen": "cache/dream-seen.json",
@@ -199,7 +211,13 @@ DEFAULT_CONFIG = {
               # holographic >= 0.8.0 `forget`: which tombstones were swept, and
               # hashes of the diary previews of every fact (old lines carry no id).
               "forget_sweep": "cache/dream-forget-sweep.json",
-              "diary_index": "cache/dream-diary-index.json"},
+              "diary_index": "cache/dream-diary-index.json",
+              # The judge's (3.3.0): its verdicts (hashes, no text), the pairs it sent (text, 90 days), its health,
+              # and the key of a review sample (`--judge-export`).
+              "judge_cache": "cache/dream-judge.json",
+              "judge_journal": "cache/dream-judge-journal.jsonl",
+              "judge_health": "cache/dream-judge-health.json",
+              "judge_manifest": "cache/dream-judge-export-manifest.json"},
     "precheck": {"max_content": 300,
                  "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
                                      "md_decays", "conflicts", "quarantined", "alerts"]},
@@ -780,8 +798,72 @@ _SETTING_NAMES = (
     "PINNED_MARKERS", "PROBES", "REJECT_REASK_DAYS", "MEMORY_LOSS_ALERT_FRACTION", "DIARY_PATH",
     "PROMOTION_COOLDOWN_DAYS", "PENDING_DIR", "PENDING_ALERT_MIN", "PENDING_ALERT_DAYS",
     "FEEDBACK_TRUST_FLOOR", "FEEDBACK_CAP", "KEYWORDS_ENABLED", "KEYWORDS_CAP",
-    "FEEDBACK_FLOOR_EXPLICIT",
+    "FEEDBACK_FLOOR_EXPLICIT", "JUDGE",
 )
+
+
+JUDGE_MODES = ("off", "shadow", "veto")
+# The names only: dream_judge.py holds the endpoints and is not loaded while the judge is off.
+JUDGE_PROVIDERS = ("jev", "openai")
+# Phase 0 measured the judge down to 0.50; below it a veto rests on answers nobody checked.
+JUDGE_MIN_TAU = 0.5
+JudgeSettings = namedtuple("JudgeSettings", "mode providers tau send_trusted send_from send_sources "
+                                            "send_fact_stores send_no_chat_sessions max_attempts max_cost_usd problem")
+
+
+def _plain_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def judge_settings(raw):
+    """The JudgeSettings of a `judge` section (3.3.0). The schema is strict: a section it does not understand turns
+    the judge off, and `problem` says why — nothing is sent on a guess."""
+    def off(why):
+        return JudgeSettings("off", ("jev",), 0.5, False, frozenset(), frozenset(), frozenset(), False, 0, 0.0,
+                             f"judge: {why}")
+
+    if not isinstance(raw, dict):
+        return off("the section is not an object")
+    unknown = sorted(set(raw) - set(DEFAULT_CONFIG["judge"]))
+    if unknown:
+        return off(f"unknown key(s) {', '.join(map(str, unknown))}")
+    mode = raw.get("mode", "off")
+    if mode not in JUDGE_MODES:
+        return off(f"mode {mode!r} is not one of {', '.join(JUDGE_MODES)}")
+    providers = raw.get("providers")
+    if (not isinstance(providers, list) or not providers or len(set(map(str, providers))) != len(providers)
+            or any(p not in JUDGE_PROVIDERS for p in providers)):
+        return off(f"providers must list {' and / or '.join(JUDGE_PROVIDERS)}, each once (the first is asked first)")
+    tau = raw.get("tau", 0.5)
+    if not _plain_number(tau) or not JUDGE_MIN_TAU <= tau <= 1:
+        return off(f"tau must be a number from {JUDGE_MIN_TAU} to 1")
+    send_from = raw.get("send_from", [])
+    if send_from == "trusted":
+        trusted, chats = True, frozenset()
+    elif isinstance(send_from, list) and all(
+            (isinstance(c, str) and c.strip()) or (isinstance(c, int) and not isinstance(c, bool)) for c in send_from):
+        trusted, chats = False, frozenset(str(c).strip() for c in send_from)
+    else:
+        return off('send_from must be "trusted" or a list of chat ids')
+    names = {}
+    for key in ("send_sources", "send_fact_stores"):
+        value = raw.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+            return off(f"{key} must be a list of names")
+        names[key] = value
+    no_chat = raw.get("send_no_chat_sessions", False)
+    if not isinstance(no_chat, bool):
+        return off("send_no_chat_sessions must be true or false")
+    attempts = raw.get("max_attempts", 250)
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
+        return off("max_attempts must be a whole number, 0 or more")
+    cost = raw.get("max_cost_usd", 0.05)
+    if not _plain_number(cost) or cost < 0:
+        return off("max_cost_usd must be a number, 0 or more")
+    return JudgeSettings(mode, tuple(providers), float(tau), trusted, chats,
+                         frozenset(v.strip() for v in names["send_sources"]),
+                         frozenset(_promote_key(v) for v in names["send_fact_stores"]), no_chat, attempts,
+                         float(cost), None)
 
 
 class Settings:
@@ -901,6 +983,9 @@ def configure(cfg):
         s.MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
     except (TypeError, ValueError):
         s.MEMORY_LOSS_ALERT_FRACTION = 0.25
+    s.JUDGE = judge_settings(cfg.get("judge"))
+    if s.JUDGE.problem:
+        print(f"[dream] warn: {s.JUDGE.problem} — the cloud judge is off", file=sys.stderr)
     SETTINGS = s
     SETTINGS_GENERATION += 1
 
@@ -4250,8 +4335,373 @@ def _decide(inputs, vetoes=frozenset()):
         confirm=confirm, counted={k: frozenset(v) for k, v in counted.items()}, publish_cap=SETTINGS.PUBLISH_CAP)
 
 
+# ---------------------------------------------------------------------------
+# The cloud judge (3.3.0, optional): what may leave, the night's pass, its files
+# ---------------------------------------------------------------------------
+# The rules count a pair (fact, message) as a mention when they share enough words; the judge (dream_judge.py) asks
+# a decision model whether the message confirms the fact and may take the pair out of the count. Here: which pairs
+# may be sent and with which text, what the night does with the verdicts, and the judge's files — read and written
+# by the pass like its other state, and cleaned by the forget sweep even while the judge is off.
+
+JudgeFiles = namedtuple("JudgeFiles", "cache journal health manifest")
+# How a pass may use the judge. `live`: send what the cache does not answer and write the judge's files — a real
+# night. Otherwise only the cache is read (or the recorded answers of `replay`) and nothing of the judge is written:
+# a dry run, a replay, a direct call of run().
+JudgeRun = namedtuple("JudgeRun", "files live deadline replay", defaults=(False, None, None))
+JUDGE_FACT_MAX, JUDGE_WORDS_MAX = 400, 600
+# A night that judged under half of what it could send applies no veto: a part of the pairs judged would bias the
+# count towards whatever the network let through.
+JUDGE_MIN_COVERAGE = 0.5
+JUDGE_KEEP_DAYS = 90  # the journal of sent pairs and a review manifest
+# The sections whose membership the count decides (the diff of a night with and without the vetoes).
+_DIFF_SECTIONS = ("promotions", "ephemeral_events", "new_facts", "conflicts", "fact_decays", "confirm",
+                  "trust_feedback")
+_JUDGE = None
+
+
+def judge_files():
+    """The judge's files of this home (dreaming.json `state`, `$DREAM_JUDGE_CACHE` etc.)."""
+    return JudgeFiles(*(_state_default(f"DREAM_JUDGE_{name.upper()}", f"judge_{name}") for name in JudgeFiles._fields))
+
+
+def _load_judge(path=None):
+    """dream_judge.py next to this file, loaded once — and only when the judge is on or a review command runs."""
+    global _JUDGE
+    if _JUDGE is None or path:
+        path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "dream_judge.py")
+        spec = importlib.util.spec_from_file_location("_dream_judge", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _JUDGE = mod
+    return _JUDGE
+
+
+def judge_permission(fact, m, js=None):
+    """None when the pair (*fact*, message *m*) may be sent to the judge, else why not (plan §3). Only what the
+    owner listed leaves. The message's origin must be known (its session row, session id and source) and its source
+    listed. A trusted chat leaves by "trusted" or by its id, a private chat (trust_private_chats) the same way; a
+    promoted chat outside the trusted list only by its own id with its store in `send_fact_stores`; a session
+    without a chat only with `send_no_chat_sessions`; a chat type without a chat id never. A chat-store fact's text
+    leaves only from a listed store; memory entries are never candidates."""
+    js = js or SETTINGS.JUDGE
+    store = fact.get("store")
+    if store and store not in js.send_fact_stores:
+        return "fact_store"
+    source = str(m.get("source") or "").strip()
+    if not m.get("session_found") or not str(m.get("session_id") or "").strip() or not source:
+        return "origin"
+    if source not in js.send_sources:
+        return "source"
+    cid, ctype = str(m.get("chat_id") or "").strip(), str(m.get("chat_type") or "").strip()
+    named = bool(cid) and cid in js.send_from
+    if m.get("own_only"):
+        return None if named and store else "chat"
+    if not m.get("locally_trusted"):
+        return "chat"
+    if cid and cid in SETTINGS.TRUSTED_CHAT_IDS:
+        return None if js.send_trusted or named else "chat"
+    if cid and ctype in ("dm", "private") and SETTINGS.TRUST_PRIVATE:
+        return None if js.send_trusted or named else "chat"
+    if not cid and not ctype and SETTINGS.TRUST_NO_CHAT:
+        return None if js.send_no_chat_sessions else "chat"
+    return "chat"
+
+
+def judge_texts(fact, m):
+    """(fact text, words, None) as the judge receives them, or (None, None, why not). The fact as stored; the
+    person's own words — the reply quote left out, a voice transcript unwrapped, links and [service brackets]
+    removed (as phase 0 measured). Neither may hold a secret or an instruction, or run long."""
+    text = fact.get("content") or ""
+    words = re.sub(r"\[[^\]]*\]", " ", URL_RE.sub(" ", _own_words(m.get("content") or "")))
+    words = re.sub(r"\s+", " ", words).strip()
+    if not words:
+        return None, None, "empty"
+    if classify_unsafe(text) or classify_unsafe(m.get("content")) or classify_unsafe(words):
+        return None, None, "unsafe"
+    if len(text) > JUDGE_FACT_MAX or len(words) > JUDGE_WORDS_MAX:
+        return None, None, "length"
+    return text, words, None
+
+
+def _decision_diff(a, b):
+    """{section: {"removed": [fact ids], "added": [fact ids]}} between the published sections of two Decisions."""
+    out = {}
+    for name in _DIFF_SECTIONS:
+        x, y = [i["fact_id"] for i in getattr(a, name)], [i["fact_id"] for i in getattr(b, name)]
+        removed, added = [i for i in x if i not in y], [i for i in y if i not in x]
+        if removed or added:
+            out[name] = {"removed": removed, "added": added}
+    return out
+
+
+def _judge_replay(path):
+    """{(provider, fact, words): recorded answer} of a `--judge-replay` file (JSON lines); a broken line is skipped."""
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                out[(rec.get("provider"), rec.get("fact"), rec.get("words"))] = rec
+    return out
+
+
+def _judge_pass(inputs, d, jrun, now):
+    """The judge's part of a night over the pairs *d* (the rules alone) counted: which may be sent, the verdicts
+    (cache, replay or live), and whether the night may apply them. Writes nothing (see _judge_write)."""
+    js, J = SETTINGS.JUDGE, _load_judge()
+    started = time.monotonic()
+    paths = defaultdict(set)
+    for path, pairs in d.counted.items():
+        for p in pairs:
+            paths[p].add(path)
+    facts = {f["fact_id"]: f for f in inputs.facts}
+    messages = {message_key(m): m for m in inputs.messages}
+    # A fact forgotten since the pass loaded it is not sent; the writes look again (see _judge_write).
+    forgotten = {str(i) for i in load_forgotten()} if paths else set()
+    blocked, items = Counter(), []
+    for pair in sorted(paths, key=lambda p: (str(p.fact_id), p.message_key)):
+        fact, m = facts[pair.fact_id], messages[pair.message_key]
+        why = judge_permission(fact, m, js)
+        if why is None and str(pair.fact_id) in forgotten:
+            why = "tombstone"
+        if why is None:
+            text, words, why = judge_texts(fact, m)
+        if why:
+            blocked[why] += 1
+            continue
+        items.append(J.Item(pair, tuple(sorted(paths[pair])), text, words, str(pair.fact_id)))
+    cache = {}
+    if jrun.files.cache:
+        # Only a live night may move a broken cache aside; a dry run reads around it.
+        cache = _load_state_file(jrun.files.cache) if jrun.live else _read_state_file(jrun.files.cache)[0]
+    replay = _judge_replay(jrun.replay) if jrun.replay else None
+    night = J.judge(items, js.providers, js.tau, js.max_attempts, js.max_cost_usd, jrun.deadline, cache, now,
+                    live=jrun.live and replay is None, replay=replay, home=HOME)
+    eligible, judged = Counter(), Counter()
+    for it in items:
+        for path in it.paths:
+            eligible[path] += 1
+            judged[path] += it.pair in night.verdicts
+    covered = sum(it.pair in night.verdicts for it in items)
+    reason = None
+    if set(js.providers) <= night.providers_off:
+        reason = "every provider is off: " + ", ".join(
+            f"{p} {'/'.join(o for o in night.outcomes.get(p, {}) if o != 'ok') or 'off'}" for p in js.providers)
+    elif items and covered / len(items) < JUDGE_MIN_COVERAGE:
+        reason = f"{covered} of {len(items)} pair(s) judged" + (f", stopped: {night.stop_reason}"
+                                                                if night.stop_reason else "")
+    return {"night": night, "items": items, "candidates": len(paths), "blocked": blocked, "cache": cache,
+            "eligible": eligible, "judged": judged, "covered": covered, "reason": reason,
+            "effective": "degraded" if reason else js.mode,
+            "vetoes": frozenset(p for p, v in night.verdicts.items() if v.veto), "started": started}
+
+
+def _judge_stats(jn):
+    """`stats.judge`: what the judge did tonight — counts, no text."""
+    night = jn["night"]
+    return {"mode": SETTINGS.JUDGE.mode, "effective": jn["effective"], "providers": list(SETTINGS.JUDGE.providers),
+            "candidates": jn["candidates"], "eligible": len(jn["items"]),
+            "blocked": dict(sorted(jn["blocked"].items())), "cache_hits": night.cache_hits,
+            "sent": len({s.item.pair for s in night.sends}), "attempts": night.attempts, "outcomes": night.outcomes,
+            "judged": jn["covered"], "vetoes": len(jn["vetoes"]), "uncovered": jn["candidates"] - jn["covered"],
+            "coverage": {p: round(jn["judged"][p] / n, 3) for p, n in sorted(jn["eligible"].items())},
+            "decisions_changed": sum(len(c["removed"]) + len(c["added"]) for c in jn["diff"].values()),
+            "cost_usd": round(night.cost_usd, 6), "seconds": round(time.monotonic() - jn["started"], 2),
+            "stop_reason": night.stop_reason, **({"degraded": jn["reason"]} if jn["reason"] else {})}
+
+
+def _judge_line(st):
+    """The judge's line of the diary and of a dry run."""
+    if st.get("problem"):
+        return f"Judge off: {st['problem'].split(': ', 1)[-1]}."
+    tail = f" — degraded ({st['degraded']}), no veto applied" if st["effective"] == "degraded" else ""
+    return (f"Judge ({st['mode']}): {st['judged']} of {st['eligible']} pair(s) judged, {st['vetoes']} veto(es), "
+            f"{st['decisions_changed']} decision(s) {'would change' if st['mode'] == 'shadow' else 'changed'}; "
+            f"${st['cost_usd']:.4f}{tail}.")
+
+
+def _age_days(stamp, now):
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (now - when).total_seconds() / 86400
+
+
+def _journal_read(path):
+    """The judge's journal records (JSON lines); a line cut short or broken is skipped."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("kind") in ("pair", "night"):
+                    out.append(rec)
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def _journal_without(records, ids):
+    """The journal without the facts *ids*: their pairs leave; a night record keeps its coverage and loses them."""
+    out = []
+    for rec in records:
+        refs = {str(r) for r in rec.get("fact_refs") or []}
+        diff = rec.get("diff") or {}
+        hit = refs & ids or any(str(i) in ids for c in diff.values() for k in ("removed", "added")
+                                for i in c.get(k) or [])
+        if not hit:
+            out.append(rec)
+        elif rec.get("kind") == "night":
+            kept = {}
+            for name, change in diff.items():
+                left = {k: [i for i in change.get(k) or [] if str(i) not in ids] for k in ("removed", "added")}
+                if left["removed"] or left["added"]:
+                    kept[name] = left
+            out.append(dict(rec, fact_refs=sorted(refs - ids), diff=kept))
+    return out
+
+
+def _judge_write(files, jn, now, generated_at):
+    """The judge's files after a live night, written like the pass's other state: the cache (tonight's verdicts
+    added, those past their TTL dropped), the journal (tonight's sent pairs and the night appended, 90 days kept),
+    the health record. A fact forgotten while the night ran is left out of all of them. Returns the health alert."""
+    J, js, night = _load_judge(), SETTINGS.JUDGE, jn["night"]
+    forgotten = {str(i) for i in load_forgotten()}
+    alert = None
+    try:
+        for path in (files.cache, files.journal, files.health):
+            if path:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        if files.cache:
+            merged = J.cache_merge(jn["cache"], night.cache_updates, now, forgotten)
+            _write_private(files.cache, json.dumps(merged, ensure_ascii=False))
+        if files.journal:
+            changed = defaultdict(set)  # fact id -> the sections it moved in or out of
+            for name, change in jn["diff"].items():
+                for fid in change["removed"] + change["added"]:
+                    changed[str(fid)].add(name)
+            records = _journal_read(files.journal)
+            for s in night.sends:
+                v = s.verdict
+                records.append({"kind": "pair", "night": generated_at, "mode": js.mode,
+                                "fact_refs": [s.item.fact_ref], "pair": list(s.item.pair), "paths": list(s.item.paths),
+                                "fact": s.item.fact, "words": s.item.words, "provider": s.provider,
+                                "outcome": s.outcome, "veto": bool(v and v.veto),
+                                **({"label": v.label, "confidence": v.confidence} if v else {}),
+                                "fact_changed": sorted(changed.get(s.item.fact_ref, ()))})
+            records.append({"kind": "night", "night": generated_at, "mode": js.mode, "effective": jn["effective"],
+                            "fact_refs": sorted(changed),
+                            "paths": {p: {"eligible": n, "judged": jn["judged"][p]}
+                                      for p, n in sorted(jn["eligible"].items())},
+                            "diff": jn["diff"]})
+            kept = []
+            for r in _journal_without(records, forgotten):
+                age = _age_days(r.get("night"), now)
+                if age is not None and age <= JUDGE_KEEP_DAYS:
+                    kept.append(r)
+            _write_private(files.journal, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
+        if files.health:
+            health = J.health_record(_load_state_file(files.health),
+                                     now.astimezone(SETTINGS.LOCAL_TZ).date().isoformat(), jn["reason"] is not None,
+                                     jn["reason"])
+            alert = J.health_alert(health, now)
+            _write_private(files.health, json.dumps(health, ensure_ascii=False))
+    except OSError as e:
+        print(f"[dream] warn: the judge's files not written: {e}", file=sys.stderr)
+    _judge_expire_manifest(files.manifest, now)
+    return alert
+
+
+def _judge_expire_manifest(path, now):
+    """A review manifest older than JUDGE_KEEP_DAYS goes: its labels never came."""
+    if not path or not os.path.exists(path):
+        return
+    age = _age_days(_read_state_file(path)[0].get("created"), now)
+    if age is not None and age > JUDGE_KEEP_DAYS:
+        try:
+            os.remove(path)
+        except OSError as e:
+            print(f"[dream] warn: old review manifest not removed: {e}", file=sys.stderr)
+
+
+def _judge_off(files, now):
+    """A night with the judge off: the journal of sent pairs and the health record go — nothing is being judged.
+    The cache (hashes, no text) lives out its TTL; a review manifest waits for its labels."""
+    for path in (files.journal, files.health):
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                print(f"[dream] warn: {path} not removed: {e}", file=sys.stderr)
+    _judge_expire_manifest(files.manifest, now)
+
+
+def judge_export(out):
+    """`--judge-export OUT`: a review sample of the journal — one judged pair per fact, picked at random — with only
+    an id, the fact and the words in OUT. What the judge did with each (and the seed) goes to the manifest, which
+    the person who labels does not get."""
+    J, files = _load_judge(), judge_files()
+    with _sweep_lock(HOME):
+        try:
+            with open(files.journal, "rb") as f:
+                raw = f.read()
+        except (FileNotFoundError, TypeError):
+            raw = b""
+        records = _journal_read(files.journal) if raw else []
+        seed = int.from_bytes(os.urandom(4), "big")
+        rows, entries = J.export_sample(records, seed)
+        if not rows:
+            print("[dream] the judge's journal holds no judged pair to review", file=sys.stderr)
+            return 1
+        manifest = {"version": 1, "created": _now().isoformat(timespec="seconds"), "seed": seed,
+                    "journal_sha256": hashlib.sha256(raw).hexdigest(), "coverage": J.coverage_of(records),
+                    "entries": entries}
+        _write_private(out, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        os.makedirs(os.path.dirname(files.manifest) or ".", exist_ok=True)
+        _write_private(files.manifest, json.dumps(manifest, ensure_ascii=False, indent=1))
+    print(json.dumps({"sample": len(rows), "out": out}, ensure_ascii=False))
+    return 0
+
+
+def judge_score(labels_path):
+    """`--judge-score LABELS`: the labels (JSON lines {"id", "label": S / C / U / ?}) joined with the manifest, and
+    the rule's verdict on them; the manifest goes once every row is labeled."""
+    J, files = _load_judge(), judge_files()
+    with _sweep_lock(HOME):
+        manifest = _read_state_file(files.manifest)[0] if files.manifest else {}
+        entries = manifest.get("entries") or {}
+        if not entries:
+            print("[dream] no review manifest — run --judge-export first", file=sys.stderr)
+            return 1
+        labels = {}
+        with open(labels_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("id") in entries and rec.get("label") in ("S", "C", "U", "?"):
+                    labels[rec["id"]] = rec["label"]
+        report = J.readiness([dict(entries[i], label=labels[i]) for i in sorted(labels)],
+                             manifest.get("coverage") or {})
+        report["unlabeled"] = sorted(set(entries) - set(labels))
+        if not report["unlabeled"]:
+            os.remove(files.manifest)
+    print(json.dumps(report, ensure_ascii=False, indent=1))
+    return 0
+
+
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
-        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None):
+        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None, judge=None):
     state_db = os.path.join(HOME, "state.db")
     now = _now()
     generated_at = now.isoformat(timespec="seconds")
@@ -4266,6 +4716,18 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     staged_removals = _staged_removals(pending_writes)
 
     d = _decide(inputs)
+    # The cloud judge (3.3.0): the rules' night gives the candidates; with `veto` (and a night it covered) the
+    # night counted without the vetoed pairs is the one published, with `shadow` it is only compared.
+    judge = judge or JudgeRun(judge_files())
+    judged = None
+    if SETTINGS.JUDGE.mode != "off":
+        judged = _judge_pass(inputs, d, judge, now)
+        vetoed = _decide(inputs, judged["vetoes"]) if judged["vetoes"] else d
+        judged["diff"] = _decision_diff(d, vetoed)
+        if judged["effective"] == "veto":
+            d = vetoed
+    elif judge.live:
+        _judge_off(judge.files, now)
     suppressed, quarantined, expired, expired_ids = d.suppressed, d.quarantined, d.expired, d.expired_ids
     new_facts_window, new_facts, new_facts_dups = d.new_facts_window, d.new_facts, d.new_facts_dups
     new_facts_suppressed = d.new_facts_suppressed
@@ -4314,15 +4776,26 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         except OSError as e:
             print(f"[dream] warn: seen-state not written: {e}", file=sys.stderr)
 
+    judge_alert, judge_stats = None, None
+    if judged is not None:
+        if judge.live:
+            judge_alert = _judge_write(judge.files, judged, now, generated_at)
+        judge_stats = _judge_stats(judged)
+        print(f"[dream] {_judge_line(judge_stats)}", file=sys.stderr)
+    elif SETTINGS.JUDGE.problem:
+        judge_stats = {"mode": "off", "problem": SETTINGS.JUDGE.problem}
+
     usage = memory_usage(mem_md)
     alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
     if queue_alert:
         alerts.append(queue_alert)
+    if judge_alert:
+        alerts.append(judge_alert)
     store_note = fact_store_note()
     chat_stores = chat_stores_overview(window_days)
     diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
                         ephemeral_events, quarantined, len(suppressed), conflicts=published_conflicts,
-                        alerts=alerts, note=store_note, chat_stores=chat_stores)
+                        alerts=alerts, note=store_note, chat_stores=chat_stores, judge=judge_stats)
 
     memory_sources = load_durable_memory_sources(mem_md)
 
@@ -4397,6 +4870,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "quarantined": [_pub_quarantined(s) for s in quarantined[:SETTINGS.PUBLISH_CAP]],
         "diary": diary,
     }
+    if judge_stats:
+        result["stats"]["judge"] = judge_stats  # counts only; present when the judge is on (or set but broken)
     # Present only when there is something to say: a single shared store keeps the output it always had.
     if store_note:
         result["fact_store_note"] = store_note  # why the fact store cannot fill up; not work
@@ -4490,7 +4965,8 @@ def chat_stores_line(cs):
 
 
 def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephemeral_events=None,
-                quarantined=None, suppressed=0, conflicts=None, alerts=None, note=None, chat_stores=None):
+                quarantined=None, suppressed=0, conflicts=None, alerts=None, note=None, chat_stores=None,
+                judge=None):
     ephemeral_events = ephemeral_events or []
     quarantined = quarantined or []
     conflicts = conflicts or []
@@ -4502,6 +4978,8 @@ def build_diary(window, nfacts, nmsgs, promotions, decays, themes, md_dec, ephem
         lines.append(f"ℹ️ {note}.")
     if chat_stores and chat_stores.get("stores") is not None:
         lines.append(chat_stores_line(chat_stores))
+    if judge:
+        lines.append(_judge_line(judge))
 
     def _line(p):
         if "meta" in p:
@@ -5099,7 +5577,7 @@ def forget_sweep(db=None, home=None):
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
-               "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0, "errors": store_errors}
+               "judge": 0, "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0, "errors": store_errors}
     if not tombstones:
         return summary
     ids = {str(i) for i in tombstones}
@@ -5114,6 +5592,7 @@ def forget_sweep(db=None, home=None):
     summary["payload"] = _sweep_payload(home, ids, index, fingerprints)
     summary["rejected"] = _sweep_rejected(ids, fingerprints)
     summary["seen"] = _sweep_seen(ids, fingerprints)
+    summary["judge"] = _sweep_judge(ids)
     summary["diary_lines"] = _sweep_diary(home, ids, index, summary["errors"])
     summary["cron_logs"] = _sweep_cron_logs(home, ids, index, summary["errors"])
     # A wipe that did not finish (a copy that could not be deleted) is owed until it does: the tombstone is recorded
@@ -5210,6 +5689,34 @@ def _sweep_seen(ids, fingerprints):
     return removed
 
 
+def _sweep_judge(ids):
+    """Forgotten facts out of the cloud judge's files, read here without the judge (it may be off): their verdicts
+    in the cache, their pairs in the journal (and their ids in its night records), their rows in a review manifest;
+    how many records. A broken journal line goes too: it may hold a fact cut short."""
+    files = judge_files()
+    removed = 0
+    for path in (files.cache, files.manifest):
+        data = _load_state_file(path)
+        entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
+        gone = [k for k, rec in entries.items() if isinstance(rec, dict) and str(rec.get("fact_ref")) in ids]
+        for key in gone:
+            entries.pop(key)
+        if gone:
+            _write_private(path, json.dumps(data, ensure_ascii=False))
+            removed += len(gone)
+    if files.journal and os.path.exists(files.journal):
+        with open(files.journal, encoding="utf-8", errors="replace") as f:
+            lines = [line for line in f.read().splitlines() if line.strip()]
+        records = _journal_read(files.journal)
+        kept = _journal_without(records, ids)
+        broken = len(lines) - len(records)
+        pairs = sum(r.get("kind") == "pair" for r in records) - sum(r.get("kind") == "pair" for r in kept)
+        if kept != records or broken:
+            removed += pairs + broken
+            _write_private(files.journal, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
+    return removed
+
+
 def _sweep_diary(home, ids, index, errors):
     """Lines about forgotten facts out of the diary and its archive; how many. What cannot be read goes to
     `errors`."""
@@ -5279,6 +5786,7 @@ def _sweep_corrupt_copies(home, ids, index, fingerprints, wipe_all, errors):
                                _state_default("DREAM_FORGET_STATE", "forget_sweep"),
                                _state_default("DREAM_ASKED_STATE", "asked"),
                                _state_default("DREAM_SNAPSHOT_STATE", "snapshot"),
+                               *judge_files(),
                                os.path.join(home, "cache", "dream-extract-state.json")) if p}
     pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
     hashes = _preview_set(index)
@@ -5400,6 +5908,9 @@ def dry_run_summary(result, source):
     for d in md[:8]:
         lines.append("  - " + re.sub(r"\s+", " ", d.get("entry") or "")[:110])
     lines.append(f"quarantined (secrets / injection, content hidden): {st.get('quarantined', 0)}")
+    if st.get("judge"):
+        lines.append(_judge_line(st["judge"]) + ("" if st["judge"].get("problem")
+                                                 else " (cached verdicts only: nothing was sent)"))
     for a in result.get("alerts") or []:
         lines.append(f"ALERT: {a.get('message') or a}")
     # The keys the gate wakes on, from the same config (`precheck.actionable_keys`): a list of its own here said
@@ -5455,9 +5966,28 @@ def main(argv=None):
     ap.add_argument("--forget-sweep", action="store_true",
                     help="only clean the copies of facts the store has forgotten (holographic >= 0.8.0) "
                          "and print what was removed; every pass does this first")
+    ap.add_argument("--deadline", type=float, default=None, metavar="EPOCH",
+                    help="when the gate kills the pass (Unix time; dream-precheck.py passes it): the cloud judge "
+                         "stops early enough for the rest of the pass")
+    ap.add_argument("--judge-replay", default=None, metavar="FILE",
+                    help="the cloud judge takes its answers from FILE (JSON lines of recorded answers) instead of "
+                         "the network; none of the judge's files is written")
+    ap.add_argument("--judge-export", default=None, metavar="OUT",
+                    help="write a review sample of the judge's journal to OUT (one pair per fact: id, fact, "
+                         "words) and keep what the judge did with it in the manifest, then exit")
+    ap.add_argument("--judge-score", default=None, metavar="LABELS",
+                    help="join the labels of a review sample (JSON lines: id, label S / C / U / ?) with the "
+                         "manifest and print whether the judge is ready for veto, then exit")
     args = ap.parse_args(argv)
 
     load_for_home(args.hermes_home or HOME, args.config)
+    if args.judge_export:
+        return judge_export(args.judge_export)
+    if args.judge_score:
+        return judge_score(args.judge_score)
+    if args.judge_replay and not os.path.isfile(args.judge_replay):
+        print(f"[dream] error: --judge-replay {args.judge_replay} is not a file", file=sys.stderr)
+        return 2
     if args.explain is not None:
         return explain(args.explain, args.memory_md or os.path.join(HOME, "memories", "MEMORY.md"),
                        args.corr_window or int((SETTINGS.CONFIG.get("windows") or {}).get("corroboration_days", 60)))
@@ -5487,7 +6017,8 @@ def main(argv=None):
                 paths.append(copy)
             result = run(window, corr, md_days, mem_md, asked_state_path=paths[0],
                          rejected_state_path=paths[1], seen_state_path=paths[2],
-                         snapshot_state_path=paths[3])
+                         snapshot_state_path=paths[3],
+                         judge=JudgeRun(judge_files(), False, None, args.judge_replay))
         finally:
             shutil.rmtree(sandbox, ignore_errors=True)
         print(dry_run_summary(result, fact_source()))
@@ -5510,7 +6041,8 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 — a sweep hiccup must not cost the night's pass
             swept = {"errors": [f"{type(e).__name__}: {e}"]}
         if not args.forget_sweep and (swept.get("errors") or any(
-                swept.get(k) for k in ("payload", "rejected", "seen", "diary_lines", "cron_logs", "corrupt_copies"))):
+                swept.get(k) for k in ("payload", "rejected", "seen", "judge", "diary_lines", "cron_logs",
+                                       "corrupt_copies"))):
             print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
         return swept
 
@@ -5527,7 +6059,8 @@ def main(argv=None):
                      asked_state_path=asked or None,
                      rejected_state_path=rejected or None,
                      seen_state_path=seen or None,
-                     snapshot_state_path=snapshot or None)
+                     snapshot_state_path=snapshot or None,
+                     judge=JudgeRun(judge_files(), not args.judge_replay, args.deadline, args.judge_replay))
 
         scrub_result(result)  # a fact forgotten while the pass ran never reaches its output
         text = json.dumps(result, ensure_ascii=False, indent=2)

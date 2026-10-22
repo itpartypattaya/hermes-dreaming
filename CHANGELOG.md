@@ -5,6 +5,37 @@ is the one in `plugin.json`.
 
 ## Unreleased
 
+### Added — an optional cloud judge, off by default (`judge` in dreaming.json)
+- **What it does.** The rules count a message as a mention of a fact when they share enough words, and many such
+  mentions confirm nothing ("Гоша тренирует юниоров" counted for "Гоша не пьёт кофе"). The judge asks a decision
+  model whether the message confirms the fact, contradicts it, or neither, and may take a counted pair out of the
+  count — never add one. `shadow` only reports what it would change; `veto` applies it to everything the count
+  decides (promotions, confirmations, fact decays, "said again" after a rejection, new facts, conflicts, evidence);
+  memory-entry questions never take a veto. Measured before the code on a frozen holdout of 360 pairs: at τ 0.50
+  the judge removed 84 % (Jev) / 75 % (OpenAI) of the false confirmations the rules counted, and no true one.
+- **What leaves the machine, and only when turned on.** The fact's text and the person's own words — no reply
+  quote, link, id, sender or time — of the chats and sources listed in `send_from` / `send_sources`
+  (`"trusted"` = the trusted group and private chats); a promoted chat store's pairs only by that chat's id and
+  `send_fact_stores`; sessions without a chat only with `send_no_chat_sessions`. Nothing with a secret or an
+  instruction, nothing long. To OpenRouter (model Jev by TypeSafe) and, listed second, to OpenAI as the fallback:
+  when the first gives no answer, the same pair reaches both. Keys: `OPENROUTER_API_KEY` / `OPENAI_API_KEY` from
+  the environment or their line in `$HERMES_HOME/.env` (Hermes keeps provider keys out of cron scripts).
+- **Within limits.** At most 250 attempts and $0.05 a night by the providers' own prices (soft: the last call may
+  pass it), 120 s, and never past the gate's deadline (`dream-precheck.py` passes `--deadline`). HTTPS to fixed
+  endpoints, no proxy, no redirect. A provider without a key, or that refuses it, is off for the night.
+- **Never on a half-judged night.** A night that judged under half of what it could send applies no veto; three
+  such nights without two good ones between raise one `judge_degraded` alert a week.
+- **Its files** (`cache/`, 0600): verdicts for 90 days (hashes and fact ids, no text), reused only for the same pair
+  with the same text that may still be sent; a journal of every pair sent, as sent, for 90 days; a health record.
+  A night with the judge off deletes the journal and the health record; the forget sweep cleans all of them, even
+  with the judge off. `--dry-run` and `--explain` send nothing; `--judge-replay FILE` judges from recorded answers.
+- **Deciding between shadow and veto:** `--judge-export OUT` writes a blind review sample (one pair per fact) and
+  `--judge-score LABELS` applies the rule: ready when the upper 95 % bound of wrong vetoes is ≤ 10 %, of lost
+  confirmations ≤ 20 %, coverage ≥ 90 % and no wrong veto changed a decision. `install.py --check` reports the
+  judge's mode, recipients and keys (never their values).
+- Tests: `tests/test_judge_330.py` (64) against a provider on 127.0.0.1 — permissions row by row, the payload, the
+  key, every failure, the fallback, money, time, cache, journal, health, export, the rule.
+
 ### Fixed
 - **Emerging themes with the same count came out in an order that depended on `PYTHONHASHSEED`.** A message's
   tokens are a set, so two runs of the same night could list tied themes differently — and, under the publish cap,
