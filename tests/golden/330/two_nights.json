@@ -1,0 +1,1133 @@
+{
+ "night1": {
+  "result": {
+   "alerts": [],
+   "chat_stores": {
+    "missing": [],
+    "scope": "chat",
+    "stores": [
+     {
+      "facts": 1,
+      "new": 1,
+      "promote": true,
+      "store": "telegram--100777"
+     },
+     {
+      "facts": 1,
+      "new": 1,
+      "promote": false,
+      "store": "telegram--100888"
+     }
+    ]
+   },
+   "confirm": [
+    {
+     "call": {
+      "action": "confirmed",
+      "fact_id": 1,
+      "tool": "fact_feedback"
+     },
+     "content": "Гоша тренирует юниоров клуба по средам в 18:00 в малом зале.",
+     "days": 5,
+     "fact_id": 1,
+     "fingerprint": "26a0c5b86d902548"
+    },
+    {
+     "call": {
+      "action": "confirmed",
+      "fact_id": 5,
+      "tool": "fact_feedback"
+     },
+     "content": "Лиля оплачивает аренду зала первого числа каждого месяца.",
+     "days": 3,
+     "fact_id": 5,
+     "fingerprint": "65723a0a26a83b52"
+    },
+    {
+     "call": {
+      "action": "confirmed",
+      "fact_id": 6,
+      "tool": "fact_feedback"
+     },
+     "content": "Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице.",
+     "days": 3,
+     "fact_id": 6,
+     "fingerprint": "8c907e0bf36bd15e"
+    },
+    {
+     "call": {
+      "action": "confirmed",
+      "fact_id": 9,
+      "tool": "fact_feedback"
+     },
+     "content": "Клуб переезжает в новый зал на улице Садовой.",
+     "days": 2,
+     "fact_id": 9,
+     "fingerprint": "7c1345cd57c01e23"
+    }
+   ],
+   "conflicts": [
+    {
+     "category": "general",
+     "conflicts": [
+      {
+       "entry": "Аренда зала клуба 9000 бат в месяц по карте Лили.",
+       "fact_numbers": [
+        "12000"
+       ],
+       "memory_numbers": [
+        "9000"
+       ]
+      }
+     ],
+     "content": "Аренда зала клуба 12000 бат в месяц по карте Лили.",
+     "days_old": 2.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-17",
+       "text": "Лиля как обычно оплачивает аренду зала первого числа каждого месяца"
+      },
+      {
+       "day": "2026-10-12",
+       "text": "Лиля как обычно оплачивает аренду зала первого числа каждого месяца"
+      },
+      {
+       "day": "2026-10-14",
+       "text": "Лиля оплачивает аренду зала первого числа каждого месяца, напомни ей"
+      }
+     ],
+     "fact_id": 10,
+     "in_memory": true,
+     "mentions": 3,
+     "nearest_entry": {
+      "entry": "Аренда зала клуба 9000 бат в месяц по карте Лили.",
+      "full_entry": "Аренда зала клуба 9000 бат в месяц по карте Лили.",
+      "old_text": "Аренда зала клуба 9000 бат в месяц по карте Лили.",
+      "overlap": 1.0,
+      "target": "memory"
+     },
+     "ref_days": 3,
+     "retrieval_count": 0,
+     "score": 0.639,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 0.5,
+      "query_diversity": 1.0,
+      "recency": 0.936,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.639; 3 mention(s) in 3 day(s)"
+    }
+   ],
+   "corr_window_days": 60,
+   "diary": "## Сон 2026-10-20\nTheme window: 14 d · facts: 14 · messages (corroboration): 18.\n\nℹ️ holographic runs with scope: chat — the dream reads the databases per chat through chat_stores (an overview of all, facts of 1 listed promoted); a cron job writes nothing, so the extraction job stays asleep.\nChat stores (chat): 2 database(s), 2 fact(s), 2 new in the window; promoted: telegram--100777.\n**Strong signals (candidates to promote):**\n- (0.872, mentions 5/5d) Гоша тренирует юниоров клуба по средам в 18:00 в малом зале. [#1]\n- (0.674, mentions 3/3d) Лиля оплачивает аренду зала первого числа каждого месяца. [#5]\n- (0.644, mentions 3/3d) Кот клуба Барсик ест только влажный корм марки Лапка. [#telegram--100777#1]\n- (0.556, mentions 2/2d) Клуб переезжает в новый зал на улице Садовой. [#9]\n\n**Temporary events (do not promote):**\n- (0.844, mentions 4/3d) Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице. [#6]\n\n**Possible updates of existing entries (1):** Аренда зала клуба 12000 бат в месяц по карте [#10]\n\n**Emerging themes:** встречу×3, собираем×3\n\n**MEMORY.md entries not surfaced for long (1):** Старинный граммофон клуба хранится в кладовке\n\n**Facts never used (1):** Старый стол для пинг-понга стоит в подвале у [#4]\n\n**Quarantined (not promoted): 1** — secret.\n\n**Rejected earlier — not asking again: 1.**\n",
+   "emerging_themes": [
+    {
+     "mentions": 3,
+     "sample": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице",
+     "theme": "встречу"
+    },
+    {
+     "mentions": 3,
+     "sample": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице",
+     "theme": "собираем"
+    }
+   ],
+   "ephemeral_events": [
+    {
+     "category": "general",
+     "content": "Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице.",
+     "days_old": 5.0,
+     "ephemeral": true,
+     "evidence": [
+      {
+       "day": "2026-10-16",
+       "text": "юниоры клуба у Гоши в малом зале, среда, 18:00 — всё в силе"
+      },
+      {
+       "day": "2026-10-19",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      },
+      {
+       "day": "2026-10-18",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      }
+     ],
+     "fact_id": 6,
+     "in_memory": false,
+     "mentions": 4,
+     "ref_days": 3,
+     "retrieval_count": 3,
+     "score": 0.844,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 1.0,
+      "query_diversity": 1.0,
+      "recency": 0.967,
+      "relevance": 0.807
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.844; 4 mention(s) in 3 day(s); 3 retrieval(s)"
+    }
+   ],
+   "expired_events": [
+    {
+     "category": "general",
+     "content": "Субботник в клубе 2026-09-12, принести перчатки и мешки.",
+     "days_old": 40.0,
+     "ephemeral": true,
+     "evidence": [],
+     "fact_id": 7,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 0,
+     "score": 0.202,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.0,
+      "query_diversity": 0.0,
+      "recency": 0.264,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.202"
+    }
+   ],
+   "fact_decays": [
+    {
+     "category": "general",
+     "content": "Старый стол для пинг-понга стоит в подвале у входа.",
+     "days_old": 45.0,
+     "ephemeral": false,
+     "evidence": [],
+     "fact_id": 4,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 0,
+     "score": 0.105,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.0,
+      "query_diversity": 0.0,
+      "recency": 0.223,
+      "relevance": 0.24
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.105"
+    }
+   ],
+   "fact_store_note": "holographic runs with scope: chat — the dream reads the databases per chat through chat_stores (an overview of all, facts of 1 listed promoted); a cron job writes nothing, so the extraction job stays asleep",
+   "gates": {
+    "feedback_trust_floor": 0.3,
+    "min_mentions": 3,
+    "min_score": 0.55,
+    "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful"
+   },
+   "generated_at": "2026-10-20T05:00:00+00:00",
+   "keywords_needed": [],
+   "md_decay_days": 60,
+   "md_decays": [
+    {
+     "entry": "Старинный граммофон клуба хранится в кладовке на верхней полке слева.",
+     "index": 2,
+     "last_mention_days": null,
+     "reason": "never surfaced within the window"
+    }
+   ],
+   "memory_usage": {
+    "memories/MEMORY.md": {
+     "chars": 225
+    }
+   },
+   "new_facts": [
+    {
+     "category": "general",
+     "content": "Фёдор купил новую сетку для третьего стола.",
+     "days_old": 1.0,
+     "ephemeral": false,
+     "evidence": [],
+     "fact_id": 11,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 0,
+     "score": 0.307,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.0,
+      "query_diversity": 0.0,
+      "recency": 0.967,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.307"
+    },
+    {
+     "category": "general",
+     "content": "Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице.",
+     "days_old": 5.0,
+     "ephemeral": true,
+     "evidence": [
+      {
+       "day": "2026-10-16",
+       "text": "юниоры клуба у Гоши в малом зале, среда, 18:00 — всё в силе"
+      },
+      {
+       "day": "2026-10-19",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      },
+      {
+       "day": "2026-10-18",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      }
+     ],
+     "fact_id": 6,
+     "in_memory": false,
+     "mentions": 4,
+     "ref_days": 3,
+     "retrieval_count": 3,
+     "score": 0.844,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 1.0,
+      "query_diversity": 1.0,
+      "recency": 0.967,
+      "relevance": 0.807
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.844; 4 mention(s) in 3 day(s); 3 retrieval(s)"
+    },
+    {
+     "category": "general",
+     "content": "Фёдор отвечает за закупку мячей для клуба.",
+     "days_old": 10.0,
+     "ephemeral": false,
+     "evidence": [],
+     "fact_id": 2,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 1,
+     "score": 0.309,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.167,
+      "query_diversity": 0.0,
+      "recency": 0.717,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.309; 1 retrieval(s)"
+    },
+    {
+     "category": "general",
+     "content": "Ирина ведёт бухгалтерию клуба и сверяет кассу.",
+     "days_old": 10.0,
+     "ephemeral": false,
+     "evidence": [],
+     "fact_id": 3,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 1,
+     "score": 0.309,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.167,
+      "query_diversity": 0.0,
+      "recency": 0.717,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.309; 1 retrieval(s)"
+    }
+   ],
+   "promotions": [
+    {
+     "category": "general",
+     "content": "Гоша тренирует юниоров клуба по средам в 18:00 в малом зале.",
+     "days_old": 10.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-18",
+       "text": "Гоша сегодня опять тренирует юниоров в малом зале, по средам в 18:00 как всегда"
+      },
+      {
+       "day": "2026-10-16",
+       "text": "юниоры клуба у Гоши в малом зале, среда, 18:00 — всё в силе"
+      },
+      {
+       "day": "2026-10-14",
+       "text": "Гоша тренирует юниоров клуба по средам, в 18:00 в малом зале"
+      }
+     ],
+     "fact_id": 1,
+     "in_memory": false,
+     "mentions": 5,
+     "ref_days": 5,
+     "retrieval_count": 2,
+     "score": 0.872,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 1.0,
+      "frequency": 1.0,
+      "query_diversity": 1.0,
+      "recency": 0.936,
+      "relevance": 0.807
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.872; 5 mention(s) in 5 day(s); 2 retrieval(s)"
+    },
+    {
+     "category": "general",
+     "content": "Лиля оплачивает аренду зала первого числа каждого месяца.",
+     "days_old": 20.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-17",
+       "text": "Лиля как обычно оплачивает аренду зала первого числа каждого месяца"
+      },
+      {
+       "day": "2026-10-12",
+       "text": "Лиля как обычно оплачивает аренду зала первого числа каждого месяца"
+      },
+      {
+       "day": "2026-10-14",
+       "text": "Лиля оплачивает аренду зала первого числа каждого месяца, напомни ей"
+      }
+     ],
+     "fact_id": 5,
+     "in_memory": false,
+     "mentions": 3,
+     "ref_days": 3,
+     "retrieval_count": 1,
+     "score": 0.674,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 0.667,
+      "query_diversity": 1.0,
+      "recency": 0.905,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.674; 3 mention(s) in 3 day(s); 1 retrieval(s)"
+    },
+    {
+     "category": "general",
+     "content": "Кот клуба Барсик ест только влажный корм марки Лапка.",
+     "days_old": 6.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-19",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      },
+      {
+       "day": "2026-10-18",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      },
+      {
+       "day": "2026-10-17",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      }
+     ],
+     "fact_id": "telegram--100777#1",
+     "in_memory": false,
+     "mentions": 3,
+     "ref_days": 3,
+     "retrieval_count": 0,
+     "score": 0.644,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 0.5,
+      "query_diversity": 1.0,
+      "recency": 0.967,
+      "relevance": 0.54
+     },
+     "store": "telegram--100777",
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.644; 3 mention(s) in 3 day(s)"
+    },
+    {
+     "category": "general",
+     "content": "Клуб переезжает в новый зал на улице Садовой.",
+     "days_old": 25.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-18",
+       "text": "Клуб переезжает в новый зал на улице Садовой, уже смотрели помещение"
+      },
+      {
+       "day": "2026-10-15",
+       "text": "Клуб переезжает в новый зал на улице Садовой, уже смотрели помещение"
+      }
+     ],
+     "fact_id": 9,
+     "in_memory": false,
+     "mentions": 2,
+     "previously_rejected": {
+      "at": "2026-04-03",
+      "reason": "устарело"
+     },
+     "ref_days": 2,
+     "retrieval_count": 1,
+     "score": 0.556,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.333,
+      "frequency": 0.5,
+      "query_diversity": 0.667,
+      "recency": 0.936,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.556; 2 mention(s) in 2 day(s); 1 retrieval(s)"
+    }
+   ],
+   "quarantined": [
+    {
+     "fact_id": 8,
+     "reason": "secret"
+    }
+   ],
+   "stats": {
+    "alerts": 0,
+    "confirm": 4,
+    "conflicts": 1,
+    "conflicts_suppressed": 0,
+    "ephemeral_events": 1,
+    "expired_events": 1,
+    "fact_decays": 1,
+    "fact_decays_suppressed": 0,
+    "fact_history": false,
+    "facts": 14,
+    "keywords_missing": 0,
+    "keywords_needed": 0,
+    "md_decays": 1,
+    "messages_window": 18,
+    "new_facts_reviewed": 4,
+    "new_facts_suppressed": 0,
+    "new_facts_window": 8,
+    "pending_writes": 0,
+    "promotions": 4,
+    "promotions_suppressed": 0,
+    "quarantined": 1,
+    "rejected_suppressed": 1,
+    "staged_suppressed": 0,
+    "store_duplicates": 0,
+    "themes": 2,
+    "trust_feedback": 1,
+    "trust_feedback_suppressed": 0
+   },
+   "trust_feedback": [
+    {
+     "call": {
+      "action": "unhelpful",
+      "fact_id": 13,
+      "tool": "fact_feedback"
+     },
+     "content": "Лиля ведёт канал клуба в Telegram и пишет анонсы.",
+     "fact_id": 13,
+     "fingerprint": "f2c5cb65fd26c74a",
+     "floor": 0.3,
+     "rejected_at": "",
+     "rejected_reason": "",
+     "trust": 0.8,
+     "why": "rejected by a human, but the store still trusts it at 0.8 — prefetch keeps offering it"
+    }
+   ],
+   "weights": {
+    "conceptual_richness": 0.06,
+    "consolidation": 0.1,
+    "frequency": 0.24,
+    "query_diversity": 0.15,
+    "recency": 0.15,
+    "relevance": 0.3
+   },
+   "window_days": 14
+  },
+  "state": {
+   "asked": {
+    "1573deb20828e3b2": {
+     "at": "2026-10-20T05:00:00+00:00",
+     "stems": [
+      "верхн",
+      "граммо",
+      "кладов",
+      "клуб",
+      "полк",
+      "слев",
+      "старин",
+      "хранит"
+     ]
+    }
+   },
+   "rejected": {
+    "13": {
+     "at": "2026-09-30T05:00:00+00:00",
+     "content": "Лиля ведёт канал клуба в Telegram и пишет анонсы.",
+     "fact_id": "13",
+     "fingerprint": "f2c5cb65fd26c74a",
+     "reason": "устарело"
+    },
+    "9": {
+     "at": "2026-04-03T05:00:00+00:00",
+     "content": "Клуб переезжает в новый зал на улице Садовой.",
+     "fact_id": "9",
+     "fingerprint": "7c1345cd57c01e23",
+     "reason": "устарело"
+    }
+   },
+   "seen": {
+    "_pending": {
+     "asked": [
+      "1573deb20828e3b2"
+     ],
+     "generated_at": "2026-10-20T05:00:00+00:00",
+     "seen": {
+      "confirm": [
+       "26a0c5b86d902548",
+       "65723a0a26a83b52",
+       "8c907e0bf36bd15e",
+       "7c1345cd57c01e23"
+      ],
+      "conflicts": [
+       "ab30e1b52540ff42"
+      ],
+      "fact_decays": [
+       "5a3339dca4c77f81"
+      ],
+      "keywords_needed": [],
+      "new_facts": [
+       "ae4cc5f7e4d2942a",
+       "8c907e0bf36bd15e",
+       "2b2c7d8f30b54878",
+       "9af2a57f33e26304"
+      ],
+      "promotions": [
+       "26a0c5b86d902548",
+       "65723a0a26a83b52",
+       "a25e6c9b5322fff5",
+       "7c1345cd57c01e23"
+      ],
+      "trust_feedback": [
+       "f2c5cb65fd26c74a"
+      ]
+     }
+    },
+    "confirm": {
+     "26a0c5b86d902548": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 1
+     },
+     "65723a0a26a83b52": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 5
+     },
+     "7c1345cd57c01e23": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 9
+     },
+     "8c907e0bf36bd15e": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 6
+     }
+    },
+    "conflicts": {
+     "ab30e1b52540ff42": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 10
+     }
+    },
+    "fact_decays": {
+     "5a3339dca4c77f81": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 4
+     }
+    },
+    "keywords_needed": {},
+    "new_facts": {
+     "2b2c7d8f30b54878": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 2
+     },
+     "8c907e0bf36bd15e": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 6
+     },
+     "9af2a57f33e26304": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 3
+     },
+     "ae4cc5f7e4d2942a": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 11
+     }
+    },
+    "promotions": {
+     "26a0c5b86d902548": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 1
+     },
+     "65723a0a26a83b52": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 5
+     },
+     "7c1345cd57c01e23": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 9
+     },
+     "a25e6c9b5322fff5": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": "telegram--100777#1"
+     }
+    },
+    "trust_feedback": {
+     "f2c5cb65fd26c74a": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 13
+     }
+    }
+   },
+   "snapshot": {
+    "_at": "2026-10-20T05:00:00+00:00",
+    "memories/MEMORY.md": {
+     "entries": {
+      "1573deb20828e3b2": 69,
+      "1bc7224c77b20ccd": 59,
+      "91e9a59f915c2f08": 36,
+      "db43abea2294e2bc": 49
+     },
+     "heads": {
+      "1bc7224c77b20ccd": 59,
+      "4aeac50f76f82d59": 69,
+      "91e9a59f915c2f08": 36,
+      "db43abea2294e2bc": 49
+     }
+    }
+   }
+  }
+ },
+ "night2": {
+  "result": {
+   "alerts": [],
+   "chat_stores": {
+    "missing": [],
+    "scope": "chat",
+    "stores": [
+     {
+      "facts": 1,
+      "new": 1,
+      "promote": true,
+      "store": "telegram--100777"
+     },
+     {
+      "facts": 1,
+      "new": 1,
+      "promote": false,
+      "store": "telegram--100888"
+     }
+    ]
+   },
+   "confirm": [],
+   "conflicts": [],
+   "corr_window_days": 60,
+   "diary": "## Сон 2026-10-21\nTheme window: 14 d · facts: 14 · messages (corroboration): 18.\n\nℹ️ holographic runs with scope: chat — the dream reads the databases per chat through chat_stores (an overview of all, facts of 1 listed promoted); a cron job writes nothing, so the extraction job stays asleep.\nChat stores (chat): 2 database(s), 2 fact(s), 2 new in the window; promoted: telegram--100777.\nNo strong promotion candidates yet.\n\n**Temporary events (do not promote):**\n- (0.839, mentions 4/3d) Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице. [#6]\n\n**Emerging themes:** встречу×3, собираем×3\n\n**Quarantined (not promoted): 1** — secret.\n\n**Rejected earlier — not asking again: 1.**\n",
+   "emerging_themes": [
+    {
+     "mentions": 3,
+     "sample": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице",
+     "theme": "встречу"
+    },
+    {
+     "mentions": 3,
+     "sample": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице",
+     "theme": "собираем"
+    }
+   ],
+   "ephemeral_events": [
+    {
+     "category": "general",
+     "content": "Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице.",
+     "days_old": 6.0,
+     "ephemeral": true,
+     "evidence": [
+      {
+       "day": "2026-10-16",
+       "text": "юниоры клуба у Гоши в малом зале, среда, 18:00 — всё в силе"
+      },
+      {
+       "day": "2026-10-19",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      },
+      {
+       "day": "2026-10-18",
+       "text": "Собираем заявки юниоров клуба на встречу с тренером сборной к пятнице"
+      }
+     ],
+     "fact_id": 6,
+     "in_memory": false,
+     "mentions": 4,
+     "ref_days": 3,
+     "retrieval_count": 3,
+     "score": 0.839,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 1.0,
+      "query_diversity": 1.0,
+      "recency": 0.936,
+      "relevance": 0.807
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.839; 4 mention(s) in 3 day(s); 3 retrieval(s)"
+    }
+   ],
+   "expired_events": [
+    {
+     "category": "general",
+     "content": "Субботник в клубе 2026-09-12, принести перчатки и мешки.",
+     "days_old": 41.0,
+     "ephemeral": true,
+     "evidence": [],
+     "fact_id": 7,
+     "in_memory": false,
+     "mentions": 0,
+     "ref_days": 0,
+     "retrieval_count": 0,
+     "score": 0.2,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.0,
+      "frequency": 0.0,
+      "query_diversity": 0.0,
+      "recency": 0.255,
+      "relevance": 0.54
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.2"
+    }
+   ],
+   "fact_decays": [],
+   "fact_store_note": "holographic runs with scope: chat — the dream reads the databases per chat through chat_stores (an overview of all, facts of 1 listed promoted); a cron job writes nothing, so the extraction job stays asleep",
+   "gates": {
+    "feedback_trust_floor": 0.3,
+    "min_mentions": 3,
+    "min_score": 0.55,
+    "promotion_corroboration": "2 ref_days OR min_mentions OR 3 retrievals + 1 helpful"
+   },
+   "generated_at": "2026-10-21T05:00:00+00:00",
+   "keywords_needed": [],
+   "md_decay_days": 60,
+   "md_decays": [],
+   "memory_usage": {
+    "memories/MEMORY.md": {
+     "chars": 225
+    }
+   },
+   "new_facts": [
+    {
+     "category": "general",
+     "content": "Кот клуба Барсик ест только влажный корм марки Лапка.",
+     "days_old": 7.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-19",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      },
+      {
+       "day": "2026-10-18",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      },
+      {
+       "day": "2026-10-17",
+       "text": "Барсик опять ест только влажный корм марки Лапка"
+      }
+     ],
+     "fact_id": "telegram--100777#1",
+     "in_memory": false,
+     "mentions": 3,
+     "ref_days": 3,
+     "retrieval_count": 0,
+     "score": 0.639,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 0.667,
+      "frequency": 0.5,
+      "query_diversity": 1.0,
+      "recency": 0.936,
+      "relevance": 0.54
+     },
+     "store": "telegram--100777",
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.639; 3 mention(s) in 3 day(s)"
+    },
+    {
+     "category": "general",
+     "content": "Гоша тренирует юниоров клуба по средам в 18:00 в малом зале.",
+     "days_old": 11.0,
+     "ephemeral": false,
+     "evidence": [
+      {
+       "day": "2026-10-18",
+       "text": "Гоша сегодня опять тренирует юниоров в малом зале, по средам в 18:00 как всегда"
+      },
+      {
+       "day": "2026-10-16",
+       "text": "юниоры клуба у Гоши в малом зале, среда, 18:00 — всё в силе"
+      },
+      {
+       "day": "2026-10-14",
+       "text": "Гоша тренирует юниоров клуба по средам, в 18:00 в малом зале"
+      }
+     ],
+     "fact_id": 1,
+     "in_memory": false,
+     "mentions": 5,
+     "ref_days": 5,
+     "retrieval_count": 2,
+     "score": 0.868,
+     "signals": {
+      "conceptual_richness": 0.0,
+      "consolidation": 1.0,
+      "frequency": 1.0,
+      "query_diversity": 1.0,
+      "recency": 0.905,
+      "relevance": 0.807
+     },
+     "tags": "",
+     "user_profile_hint": false,
+     "why": "score 0.868; 5 mention(s) in 5 day(s); 2 retrieval(s)"
+    }
+   ],
+   "promotions": [],
+   "quarantined": [
+    {
+     "fact_id": 8,
+     "reason": "secret"
+    }
+   ],
+   "stats": {
+    "alerts": 0,
+    "confirm": 0,
+    "conflicts": 0,
+    "conflicts_suppressed": 1,
+    "ephemeral_events": 1,
+    "expired_events": 1,
+    "fact_decays": 0,
+    "fact_decays_suppressed": 1,
+    "fact_history": false,
+    "facts": 14,
+    "keywords_missing": 0,
+    "keywords_needed": 0,
+    "md_decays": 0,
+    "messages_window": 18,
+    "new_facts_reviewed": 2,
+    "new_facts_suppressed": 4,
+    "new_facts_window": 8,
+    "pending_writes": 0,
+    "promotions": 0,
+    "promotions_suppressed": 4,
+    "quarantined": 1,
+    "rejected_suppressed": 1,
+    "staged_suppressed": 0,
+    "store_duplicates": 0,
+    "themes": 2,
+    "trust_feedback": 0,
+    "trust_feedback_suppressed": 1
+   },
+   "trust_feedback": [],
+   "weights": {
+    "conceptual_richness": 0.06,
+    "consolidation": 0.1,
+    "frequency": 0.24,
+    "query_diversity": 0.15,
+    "recency": 0.15,
+    "relevance": 0.3
+   },
+   "window_days": 14
+  },
+  "state": {
+   "asked": {
+    "1573deb20828e3b2": {
+     "at": "2026-10-20T05:00:00+00:00",
+     "stems": [
+      "верхн",
+      "граммо",
+      "кладов",
+      "клуб",
+      "полк",
+      "слев",
+      "старин",
+      "хранит"
+     ]
+    }
+   },
+   "rejected": {
+    "13": {
+     "at": "2026-09-30T05:00:00+00:00",
+     "content": "Лиля ведёт канал клуба в Telegram и пишет анонсы.",
+     "fact_id": "13",
+     "fingerprint": "f2c5cb65fd26c74a",
+     "reason": "устарело"
+    },
+    "9": {
+     "at": "2026-04-03T05:00:00+00:00",
+     "content": "Клуб переезжает в новый зал на улице Садовой.",
+     "fact_id": "9",
+     "fingerprint": "7c1345cd57c01e23",
+     "reason": "устарело"
+    }
+   },
+   "seen": {
+    "_pending": {
+     "asked": [],
+     "generated_at": "2026-10-21T05:00:00+00:00",
+     "seen": {
+      "confirm": [],
+      "conflicts": [],
+      "fact_decays": [],
+      "keywords_needed": [],
+      "new_facts": [
+       "a25e6c9b5322fff5",
+       "26a0c5b86d902548"
+      ],
+      "promotions": [],
+      "trust_feedback": []
+     }
+    },
+    "confirm": {
+     "26a0c5b86d902548": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 1
+     },
+     "65723a0a26a83b52": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 5
+     },
+     "7c1345cd57c01e23": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 9
+     },
+     "8c907e0bf36bd15e": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 6
+     }
+    },
+    "conflicts": {
+     "ab30e1b52540ff42": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 10
+     }
+    },
+    "fact_decays": {
+     "5a3339dca4c77f81": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 4
+     }
+    },
+    "keywords_needed": {},
+    "new_facts": {
+     "26a0c5b86d902548": {
+      "at": "2026-10-21T05:00:00+00:00",
+      "fact_id": 1
+     },
+     "2b2c7d8f30b54878": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 2
+     },
+     "8c907e0bf36bd15e": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 6
+     },
+     "9af2a57f33e26304": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 3
+     },
+     "a25e6c9b5322fff5": {
+      "at": "2026-10-21T05:00:00+00:00",
+      "fact_id": "telegram--100777#1"
+     },
+     "ae4cc5f7e4d2942a": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 11
+     }
+    },
+    "promotions": {
+     "26a0c5b86d902548": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 1
+     },
+     "65723a0a26a83b52": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 5
+     },
+     "7c1345cd57c01e23": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 9
+     },
+     "a25e6c9b5322fff5": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": "telegram--100777#1"
+     }
+    },
+    "trust_feedback": {
+     "f2c5cb65fd26c74a": {
+      "at": "2026-10-20T05:00:00+00:00",
+      "fact_id": 13
+     }
+    }
+   },
+   "snapshot": {
+    "_at": "2026-10-21T05:00:00+00:00",
+    "memories/MEMORY.md": {
+     "entries": {
+      "1573deb20828e3b2": 69,
+      "1bc7224c77b20ccd": 59,
+      "91e9a59f915c2f08": 36,
+      "db43abea2294e2bc": 49
+     },
+     "heads": {
+      "1bc7224c77b20ccd": 59,
+      "4aeac50f76f82d59": 69,
+      "91e9a59f915c2f08": 36,
+      "db43abea2294e2bc": 49
+     }
+    }
+   }
+  }
+ }
+}

@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Fixed
+- **Emerging themes with the same count came out in an order that depended on `PYTHONHASHSEED`.** A message's
+  tokens are a set, so two runs of the same night could list tied themes differently — and, under the publish cap,
+  show different ones. Ties are now ordered by the word. Found by a golden record of two nights
+  (`tests/test_golden_330.py`) taken before the refactor for 3.3.0; the record must stay the same through it.
+
 ## 3.2.0 — 2026-10-22
 
 From an experiment with decision models (Laya, mDeBERTa-xnli, OpenAI Decisions, Jev) on dirty pairs and on a live

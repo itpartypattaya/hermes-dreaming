@@ -3185,7 +3185,9 @@ def extract_themes(messages, window_days):
             samples.setdefault(w, m["content"][:120])
     themes = [{"theme": w, "mentions": n, "sample": samples[w]}
               for w, n in doc_freq.items() if n >= SETTINGS.MIN_MENTIONS]
-    themes.sort(key=lambda x: -x["mentions"])
+    # Ties by the word: a message's tokens are a set, and their order followed PYTHONHASHSEED — two runs of one
+    # night published different themes under the cap (found by the 3.3.0 golden record).
+    themes.sort(key=lambda x: (-x["mentions"], x["theme"]))
     return themes
 
 
