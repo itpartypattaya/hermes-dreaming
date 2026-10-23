@@ -45,6 +45,10 @@
   "_comment_chat_stores": "Only with holographic scope user / chat / thread (one database per user / chat / topic). read: list every database in the report — counts only. promote_from: chats whose facts join the pass, each corroborated by its own chat only — \"telegram:-1001234567890\", \"telegram:-1001234567890:42\" (a topic, scope thread), \"telegram:123456789\" (a user, scope user). Memory files are shared by all chats: a promoted chat's facts reach every chat once written there.",
   "chat_stores": {"read": false, "promote_from": []},
 
+  "_comment_judge": "Optional cloud judge, off by default: a decision model may take a counted mention out of the count (shadow: only report what would change; veto: apply it). Only what is listed here leaves: send_from (the word trusted, or a list of chat ids), send_sources (e.g. telegram), send_fact_stores, send_no_chat_sessions - the fact text and the person's own words, to OpenRouter (jev) and, listed second, OpenAI (openai) as the fallback. Keys: OPENROUTER_API_KEY / OPENAI_API_KEY in the environment or in ~/.hermes/.env. See the README, Optional cloud judge.",
+  "judge": {"mode": "off", "providers": ["jev"], "tau": 0.5, "send_from": [], "send_sources": [],
+            "send_fact_stores": [], "send_no_chat_sessions": false, "max_attempts": 250, "max_cost_usd": 0.05},
+
   "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
   "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
             "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,

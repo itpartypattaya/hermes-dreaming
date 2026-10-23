@@ -10,8 +10,10 @@ Nightly, deterministic **memory consolidation ("dreaming")** for
 An agent's memory goes wrong in two quiet ways: useful facts never make it into durable memory, and
 durable memory fills up with stale or duplicated entries until the char limit silently stops all
 writes. Every night a Python script looks at what the agent knows and what people actually said, and
-wakes the agent only when there is something to decide. The script calls no LLM and never writes
-memory; the agent applies its proposals through the regular `memory` tool and reports in a few lines.
+wakes the agent only when there is something to decide. The rules call no LLM and the script never writes
+memory; the agent applies its proposals through the regular `memory` tool and reports in a few lines. An
+optional cloud judge, off by default, can second-guess the rules' mention count — see
+[below](#optional-cloud-judge-off-by-default).
 
 ## How it works
 
@@ -259,6 +261,66 @@ shared store. The trust rules do not change: chats in `trusted_chat_ids` (and pr
 `trust_private_chats: false`) still corroborate shared facts and memory entries — on a bot serving many unrelated
 people, trust only the owner's chats.
 
+## Optional cloud judge (off by default)
+
+The rules count a message as a mention of a fact when the two share enough words, and many such mentions confirm
+nothing: "Гоша тренирует юниоров" counted for "Гоша не пьёт кофе". On a frozen test set of 360 pairs, only 37 % of
+the pairs the rules counted were real confirmations. The judge asks a decision model one question about each counted
+pair — does the message confirm the fact, contradict it, or neither? — and may take the pair out of the count. It
+never adds one: what is a candidate is still the rules' call.
+
+```json
+"judge": {"mode": "shadow", "providers": ["jev", "openai"], "send_from": "trusted", "send_sources": ["telegram"]}
+```
+
+- **Modes.** `off` (the default): the judge's code is not even loaded, nothing leaves the machine, the night is the
+  rules' alone. `shadow`: the judge is asked and its verdicts are journalled, the night publishes what the rules
+  decided, and `stats.judge` says how many decisions would change. `veto`: a vetoed pair stops counting for
+  everything the count decides — promotions, confirmations, fact decays, "said again" after a rejection, new facts
+  and conflicts, evidence. Memory-entry questions (`md_decays`) never take a veto.
+- **What leaves, and only from what you list.** Per pair: the fact's text as stored and the person's own words —
+  the reply quote left out, a voice transcript unwrapped, links (with or without `https://`) and `[service
+  brackets]` removed; no ids, senders or times. Names inside the texts do leave. `send_from` is `"trusted"` (the
+  trusted group chats and, with `trust_private_chats`, private chats) or a list of chat ids; `send_sources` lists
+  the session sources (`telegram`, …); `send_fact_stores` lists promoted chat stores whose facts may be sent (by
+  that chat's own messages only); `send_no_chat_sessions` lets sessions without a chat go. A pair whose text holds a
+  secret or an instruction, or runs long (fact over 400, words over 600 characters), stays home.
+- **To whom.** `jev` — OpenRouter, model Jev by TypeSafe; `openai` — OpenAI Decisions (`gpt-6-luna`). The first
+  listed is asked first; a second one is the fallback: when the first gives no usable answer, the same pair goes
+  once to the second — so one pair may reach both. What was sent cannot be recalled and falls under the providers'
+  retention terms.
+- **Keys.** `OPENROUTER_API_KEY` / `OPENAI_API_KEY` from the environment, else their own line in `~/.hermes/.env`
+  (Hermes keeps provider keys out of the environment of cron scripts). No other line is read; a key is never
+  printed, logged or written. A provider without a key, or that refuses it, is off for the night.
+- **Limits.** At most `max_attempts` (250) calls, `max_cost_usd` ($0.05, by the price the provider reports — soft:
+  the last call may pass it) and 120 seconds a night, and never past the gate's deadline. HTTPS to fixed endpoints,
+  no proxy, no redirect, answers of at most 64 KB read against a strict schema; an answer that does not fit is
+  unusable, not fatal. A call costs about $0.00002; a family bot's night counts a few to a few dozen pairs.
+- **Never on a half-judged night.** When the judge gives verdicts for under half of the pairs it could send, or
+  every provider is off, the night applies no veto (`effective: degraded`). Three such nights without two good ones
+  between raise one `judge_degraded` alert a week.
+- **Its files** (`~/.hermes/cache/`, 0600): `dream-judge.json` — verdicts for 90 days, keyed by hashes, with fact ids
+  and no text, reused only for the same pair with the same text and a provider still listed;
+  `dream-judge-journal.jsonl` — every pair sent, as sent, and a record of each night, for 90 days, for your review;
+  `dream-judge-health.json` — one line a night; `dream-judge-export-manifest.json` — the last review sample, until
+  it is scored (90 days at most). A night with the judge off deletes the journal and the health file; the forget
+  sweep removes a forgotten fact from all of them, even with the judge off.
+- **Off the network.** `--dry-run` reads the judge's cache and sends nothing; `--explain` does not load the judge;
+  `--judge-replay FILE` judges from recorded answers (JSON lines `{"provider", "fact", "words", "response"}`) and
+  writes nothing of the judge.
+- **From shadow to veto.** Run `shadow` for a while, then `dream.py --judge-export sample.jsonl`: a blind sample,
+  one judged pair per fact, each line only `{"id", "fact", "message"}`. Label every line in a JSON-lines file
+  `{"id", "label"}` — `S` (confirms), `C` (contradicts), `U` (neither) or `?` (for someone else to decide) — and
+  run `dream.py --judge-score labels.jsonl`. `ready`: the upper 95 % bound of wrong vetoes is at most 10 %, of lost
+  confirmations at most 20 %, coverage at least 90 % and no wrong veto changed a decision; `not_ready`: the lower
+  bound of wrong vetoes is over 10 %; otherwise `continue` (label more). When the fallback gave over a fifth of the
+  verdicts, each provider has to pass on its own.
+- **What it was measured on.** Before the code, on that frozen set (written by a model, not checked by a person),
+  at the default threshold `tau` 0.50: Jev removed 84 % and OpenAI 75 % of the false confirmations the rules had
+  counted, and not one true confirmation; the share of real confirmations among the counted rose from 0.37 to 0.79
+  and 0.71. Live speech is messier — that is what `shadow` and the review are for.
+- `install.py --check` shows the mode, where pairs may go and whether each key is there (never its value).
+
 ## Using it by hand
 
 ```bash
@@ -330,19 +392,24 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 | `gates.promotion_cooldown_days` | rest for a promotion already shown (3 days); without it a candidate the agent could not write came back every night |
 | `keywords.enabled`, `keywords.cap` | list facts without keywords for the agent (`keywords_needed`, at most `cap` a night, default 10) and ask the extraction run for keywords. Off by default; turn it on with holographic ≥ 0.6.1 — an older provider ignores the parameter, and 0.6.0 re-dated a fact when it got keywords |
 | `chat_stores.read`, `chat_stores.promote_from` | holographic `scope: user / chat / thread` only: list every per-chat database (counts), promote the facts of the listed chats — see [One database per chat](#one-database-per-chat) |
+| `judge.mode`, `judge.providers`, `judge.tau`, `judge.send_*`, `judge.max_attempts`, `judge.max_cost_usd` | the optional cloud judge: `off` (default) / `shadow` / `veto`; `jev` and / or `openai`, the first asked first; the veto threshold, 0.50–1 (default 0.50); what may be sent — `send_from` (`"trusted"` or chat ids), `send_sources`, `send_fact_stores`, `send_no_chat_sessions`; the night's limits (250 calls, $0.05). A section that breaks the schema turns the judge off and says why — see [Optional cloud judge](#optional-cloud-judge-off-by-default) |
 
 ## Safety and privacy
 
 ![Files the skill reads and writes](docs/files.png)
 
-- **Network:** none. **LLM calls:** none from the scripts; the only model turn is the agent in the
-  cron session, with your model and your tools.
+- **Network:** none by default. With the [cloud judge](#optional-cloud-judge-off-by-default) on, the pass sends
+  what its section lists to OpenRouter and / or OpenAI over HTTPS, and nothing anywhere else. **LLM calls:** none
+  from the scripts besides that judge's decision call; the only model turn is the agent in the cron session,
+  with your model and your tools.
 - **Reads:** `state.db` (sessions and messages, opened read-only), the fact store (read-only, per-user
   and per-chat stores too), the memory files, `dreaming.json` and `config.yaml`, the approval queue
   (`pending/memory`), `scripts/holo_screen.py`, `dream_lang.py` and `dream_yaml.py` next to it; the forget
-  sweep also `cron/jobs.json` and the dream jobs' logs.
+  sweep also `cron/jobs.json` and the dream jobs' logs; with the judge on, its keys' own lines in `.env`
+  (nothing else of it).
 - **Script writes:** `~/.hermes/cache/dream*.json` (the night's payload `dream.json`, cooldowns, questions,
-  reject list, snapshot, extraction cursor, diary index of line hashes, sweep state; mode 0600) and a lock
+  reject list, snapshot, extraction cursor, diary index of line hashes, sweep state; with the judge on, its
+  `dream-judge*` files; mode 0600) and a lock
   file, `~/.hermes/memories/DREAMS.md` (diary; after 90 nights the older sections move to
   `DREAMS.md.archive.md`), and — only `install.py` — the three gate copies in `~/.hermes/scripts/` (0755)
   plus a seeded `dreaming.json`.
@@ -384,6 +451,7 @@ skills/dreaming/
   scripts/dream.py                   the pass (never writes memory)
   scripts/dream_lang.py              stopwords, months, weekdays and dates of every language read
   scripts/dream_yaml.py              config.yaml reader for a run without PyYAML
+  scripts/dream_judge.py             the optional cloud judge (loaded only when it is on)
   scripts/holo_screen.py             the holographic provider's screen, a verbatim copy
   scripts/dream-precheck.py          nightly wake gate        → ~/.hermes/scripts/
   scripts/dream-extract-precheck.py  extraction gate          → ~/.hermes/scripts/
@@ -395,7 +463,8 @@ skills/dreaming/
   references/cron-memory.md          what cron sessions may touch
   examples/                          config and cron job examples
   tools/vendor_screen.py             makes holo_screen.py from the provider's source
-tests/                               stdlib unittest, synthetic data, no network
+tests/                               stdlib unittest, synthetic data, no network (the judge's: a fake provider
+                                     on 127.0.0.1)
 docs/                                README images (SVG sources in docs/src/)
 ```
 

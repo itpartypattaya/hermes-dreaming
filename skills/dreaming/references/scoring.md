@@ -121,6 +121,14 @@ Outputs: **mentions** (messages), **ref_days** (distinct local days —
 `timezone` from the config), **evidence** (up to 3 day+snippet pairs, the
 provenance shown to the reviewer).
 
+**A cloud judge may take a pair out (3.3.0, off by default).** Every (fact, message) pair the count accepts
+has an id (`PairId`: the fact id and a key of session, time and text), and `_pair_counts` is the one rule that
+accepts it. With `judge.mode: veto` and a night the judge covered (verdicts for at least half the pairs it
+could send), the pairs it vetoed are left out before anything is decided — promotions, confirmations, fact
+decays, "said again" after a rejection, new facts and conflicts, evidence; `md_decays` never take a veto. The
+judge only takes away: a pair the rules did not count is never asked about. `shadow` decides by the rules and
+reports the difference in `stats.judge`. See the README, "Optional cloud judge".
+
 ## Quarantine (safety filter before publication)
 
 Every fact passes `classify_unsafe` before any output list:
@@ -421,6 +429,11 @@ set-aside copy may hold a fact's text, cut anywhere: the first forget sweep afte
 forgotten fact (by id, fingerprint or verbatim text); one it cannot delete is an error,
 and the wipe stays owed until the next run finishes it. A missing file is a fresh install. A broken
 `dreaming.json` stops the pass with `dream_error`.
+
+The optional cloud judge (3.3.0) keeps its own files next to them: `cache/dream-judge.json` (verdicts, 90
+days, hashes and fact ids), `cache/dream-judge-journal.jsonl` (the pairs sent and a record per night, 90 days),
+`cache/dream-judge-health.json` (one line a night), `cache/dream-judge-export-manifest.json` (the last review
+sample). A night with the judge off deletes the journal and the health file; the forget sweep cleans all four.
 
 **Acknowledgement.** A mark is provisional until an agent turn confirms it.
 `dream-seen.json` carries a `_pending` record of the last pass (`generated_at`
