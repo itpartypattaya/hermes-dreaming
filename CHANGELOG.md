@@ -3,7 +3,15 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.3.0 — 2026-10-23
+
+An optional cloud judge, off by default, may take a mention the rules counted out of the count — never add one.
+Off, its code is not loaded, nothing leaves the machine and every night is decided as in 3.2.0; a golden record
+of two nights, taken before the refactor that made room for the judge, proves the rules unchanged. Measured
+before the code on a frozen holdout of 360 pairs, at τ 0.50 the judge removed 84 % (Jev) / 75 % (OpenAI) of
+the false confirmations the rules counted and no true one; a replay of those recorded answers through the
+plugin vetoes the same pairs, one by one. A Codex review of the code found three defects, fixed before the
+release.
 
 ### Added — an optional cloud judge, off by default (`judge` in dreaming.json)
 - **What it does.** The rules count a message as a mention of a fact when they share enough words, and many such
