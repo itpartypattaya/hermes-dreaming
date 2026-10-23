@@ -41,7 +41,6 @@ import time
 import types
 import unicodedata
 from collections import Counter, defaultdict, namedtuple
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
@@ -4119,26 +4118,17 @@ def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_ne
 BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedback", "keywords_needed", "confirm")
 
 
-@dataclass(frozen=True)
-class DecisionInputs:
+class DecisionInputs(namedtuple("DecisionInputs", "now today window_days rules facts messages by_store memory_text "
+                                "staged_text pending_writes rejected recent_confirmations feedback_floor "
+                                "fact_source seen")):
     """Everything the night's decisions read from the world, read once (3.3.0). `_decide` reads nothing else — no
     clock, database, environment or config file; it reads the settings, which must not change while it runs
-    (`settings_fingerprint`). `seen` is a copy: deciding never marks anything shown."""
-    now: datetime
-    today: object
-    window_days: int
-    rules: RulesContext
-    facts: tuple
-    messages: tuple
-    by_store: types.MappingProxyType
-    memory_text: str
-    staged_text: str
-    pending_writes: tuple
-    rejected: types.MappingProxyType
-    recent_confirmations: object  # a frozenset of fact ids, or None: the store keeps no confirmations
-    feedback_floor: float
-    fact_source: str
-    seen: dict
+    (`settings_fingerprint`). `seen` is a copy: deciding never marks anything shown. `recent_confirmations`: a
+    frozenset of fact ids, or None when the store keeps no confirmations.
+
+    A named tuple, not a dataclass: under `from __future__ import annotations` a dataclass looks its module up in
+    sys.modules, so a script that loaded dream.py by path without registering it failed to load it at all (3.3.1)."""
+    __slots__ = ()
 
 
 def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_state_path=None, seen=None, now=None):
@@ -4165,36 +4155,16 @@ def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_s
         seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen))
 
 
-@dataclass(frozen=True)
-class Decisions:
+class Decisions(namedtuple("Decisions", "scored suppressed quarantined expired expired_ids new_facts_window "
+                                  "new_facts new_facts_dups new_facts_suppressed all_promotions promotions_dups "
+                                  "all_ephemeral promotions_suppressed staged_suppressed all_conflicts "
+                                  "conflicts_suppressed all_decays decays_suppressed trust_feedback "
+                                  "feedback_suppressed keywords_needed keywords_pending confirm counted "
+                                  "publish_cap")):
     """What one night decides from the mention count, before anything is marked shown. The sections named as in
     the payload are the published slices; `all_*` are the whole lists (stats, diary). `counted`: the PairIds that
-    counted, per path ("promotion": the facts' signals; "confirm": confirm_items)."""
-    scored: list
-    suppressed: list
-    quarantined: list
-    expired: list
-    expired_ids: set
-    new_facts_window: list
-    new_facts: list
-    new_facts_dups: list
-    new_facts_suppressed: int
-    all_promotions: list
-    promotions_dups: list
-    all_ephemeral: list
-    promotions_suppressed: int
-    staged_suppressed: int
-    all_conflicts: list
-    conflicts_suppressed: int
-    all_decays: list
-    decays_suppressed: int
-    trust_feedback: list
-    feedback_suppressed: int
-    keywords_needed: list
-    keywords_pending: list
-    confirm: list
-    counted: dict
-    publish_cap: int
+    counted, per path ("promotion": the facts' signals; "confirm": confirm_items). A named tuple, as DecisionInputs."""
+    __slots__ = ()
 
     @property
     def promotions(self):
