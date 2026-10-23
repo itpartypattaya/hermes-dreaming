@@ -354,7 +354,10 @@ the dream.
   `cache/dream-snapshot.json`). Wakes the agent; nothing is restored. `probe_missing` (2.7.0): a phrase of
   `probes` is no longer in the memory files — by its text, or every word of it in one sentence of an entry in any form. One alert
   per disappearance (the missing ones are kept in the snapshot; no snapshot state, no probes); the loss guard misses one entry merged away
-  while memory was tidied at its limit.
+  while memory was tidied at its limit. `messages_unavailable` (3.3.2): `state.db` was busy or locked, so the
+  night corroborated nothing and asked no relevance question (`fact_decays`, `md_decays` empty) — "nobody said it"
+  is unknown then. A memory file or one of the dream's own state files that exists but cannot be read
+  (permissions) stops the pass with a `dream_error` instead: read as empty it was overwritten.
 - **memory_usage** — chars per durable file and % of `memory_char_limits`.
 - **memory_pressure** — present only when a file is at or above
   `precheck.memory_full_pct`: `[{file, percent, chars, limit}]`, worst first. The

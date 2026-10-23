@@ -3,6 +3,46 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.3.2 — 2026-10-23
+
+What cannot be read is no longer reported as empty — a second pass over the code by the article «10 principles of
+code for AI agents» (itparty.club), the plan reviewed by Codex before the code.
+
+### Fixed
+- **A busy chat database asked about every memory entry.** When `state.db` was locked during the pass, the messages
+  read as "nobody said anything": every memory entry became a "still relevant?" question and was recorded as asked.
+  Such a night now asks nothing (`md_decays` and `fact_decays` empty), raises one `messages_unavailable` alert, and
+  the next pass tries again. `--explain` says the mentions are not counted; the extraction gate keeps its cursor.
+- **A trust switch written as a string turned trust on.** `"trust_private_chats": "false"` was `True` for Python.
+  `trust_private_chats` and `trust_sessions_without_chat` take `true` / `false` only; anything else is named in
+  stderr and trusts nothing.
+- **An unreadable state file was overwritten.** A reject list, cooldowns or snapshot that exists but cannot be read
+  (permissions) was read as empty, and the next write of the pass or of `dream-reject.py` replaced it — every
+  earlier rejection was gone. The pass now stops with a `dream_error`, `dream-reject.py` exits 1, nothing is written.
+  An unreadable judge cache costs the judge's night, not the dream's.
+- **An unreadable memory file read as no memory**: promotions offered what memory held, the loss guard saw every
+  entry gone and emptied its snapshot. The pass stops instead.
+- **A broken `cron/jobs.json` let the forget sweep report success** while a forgotten fact stayed in the dream's
+  cron logs (and `{"jobs": {...}}` crashed it). It is an error of the sweep now, retried until the file is whole;
+  the file itself is still never touched.
+- **`dream-reject.py` said "not found" for a store it could not read**; it says "cannot read the fact store" now.
+  Its fallback fingerprint, which was not dream.py's formula (no NFC, no ё → е), is gone.
+- **Values the dream cannot use are named in stderr**, not taken in silence: a `DREAM_*` environment value of the
+  wrong type, `feedback_cap`, `keywords.cap`, `pending.*`, `reject_reask_days`, a `memory_loss_alert_fraction`
+  outside (0, 1] or NaN. One bad `pending` value no longer resets the other.
+- **`precheck.actionable_keys` as a string** ("promotions") became its letters and the gate never woke: the default
+  keys are used, with a warning.
+- **"Sept 5" and "Dec. 5"** were dates for the expiry check but not for the event check, so such an event could
+  be promoted: one English date rule now.
+- `tools/vendor_screen.py` refuses a provider source that lacks one of the roots it copies, instead of writing a
+  screen without it.
+
+### Changed
+- Tests pin the copies the gates keep of dream.py's rules: the precheck defaults, the lists of gate scripts, how
+  each gate finds its home. The cloud judge's fallback night is built by field name. Stale comments fixed.
+- Checked against Hermes 0.22.5: agent cron jobs run through the gateway since 0.22.3 (sessions `local-…`, source
+  still `cron`) — nothing to change.
+
 ## 3.3.1 — 2026-10-23
 
 A fix for scripts that reuse `dream.py`, and the judge described properly.

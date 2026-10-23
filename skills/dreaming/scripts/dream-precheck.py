@@ -67,7 +67,7 @@ def _diary_rel_path():
             data = json.load(f)
         value = ((data or {}).get("diary") or {}).get("path")
         return str(value) if value else "memories/DREAMS.md"
-    except Exception:  # noqa: BLE001 — a broken config is reported in main()
+    except Exception:  # noqa: BLE001 — a broken config stops dream.py itself (`config_problem`): a dream_error
         return "memories/DREAMS.md"
 
 
@@ -143,7 +143,13 @@ def _precheck_config():
         section = (data or {}).get("precheck") or {}
     except (OSError, ValueError):
         section = {}
-    keys = tuple(section.get("actionable_keys") or DEFAULT_ACTIONABLE_KEYS)
+    keys = section.get("actionable_keys") or DEFAULT_ACTIONABLE_KEYS  # unset or [] — the defaults, as before
+    if not (isinstance(keys, (list, tuple)) and all(isinstance(k, str) for k in keys)):
+        # A string became its letters ("promotions" → p, r, o…) and the gate never woke (review of 3.3.1).
+        print(f"[dream-precheck] warn: precheck.actionable_keys={keys!r} is not a list of names — the default keys "
+              "are used", file=sys.stderr)
+        keys = DEFAULT_ACTIONABLE_KEYS
+    keys = tuple(keys)
     try:
         max_content = int(section.get("max_content", DEFAULT_MAX_CONTENT))
     except (TypeError, ValueError):

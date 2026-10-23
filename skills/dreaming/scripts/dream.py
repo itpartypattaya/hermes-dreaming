@@ -731,7 +731,22 @@ def _env(name, default, cast=str):
     try:
         return cast(raw)
     except (TypeError, ValueError):
+        # `DREAM_MIN_SCORE=0,6` used to look applied (review of 3.3.1).
+        print(f"[dream] warn: ${name}={raw!r} ignored (not {cast.__name__}) — {default!r} used", file=sys.stderr)
         return default
+
+
+def _ignored(key, value, default):
+    """`default`, with a warning naming the config value it replaces: a bad number used to fall back in silence."""
+    print(f"[dream] warn: {key}={value!r} in dreaming.json ignored — {default!r} used", file=sys.stderr)
+    return default
+
+
+def _trust_switch(cfg, key):
+    """A trust switch of dreaming.json: true / false only. Anything else trusts nothing — `"false"` as a string
+    turned trust ON (review of 3.3.1)."""
+    value = cfg.get(key, True)
+    return value if isinstance(value, bool) else _ignored(key, value, False)
 
 
 def _parse_excluded_threads(env_value, cfg_value):
@@ -907,7 +922,7 @@ def configure(cfg):
     try:
         s.FEEDBACK_CAP = int(gates.get("feedback_cap", 5))
     except (TypeError, ValueError):
-        s.FEEDBACK_CAP = 5
+        s.FEEDBACK_CAP = _ignored("feedback_cap", gates.get("feedback_cap"), 5)
     # Whether the floor above is a deliberate override. Unset, `feedback_floor()`
     # asks the provider instead of guessing (resolved lazily: one config read per
     # run, and only for the holographic source).
@@ -917,14 +932,18 @@ def configure(cfg):
     try:
         s.KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
     except (TypeError, ValueError):
-        s.KEYWORDS_CAP = 10
+        s.KEYWORDS_CAP = _ignored("keywords.cap", kw.get("cap"), 10)
     pend = cfg.get("pending") or {}
     s.PENDING_DIR = str(pend.get("dir") or "pending/memory")
+    # Two settings, two parses — a bad `alert_days` reset a good `alert_min` too (review of 3.3.1).
     try:
         s.PENDING_ALERT_MIN = int(pend.get("alert_min", 5))
+    except (TypeError, ValueError):
+        s.PENDING_ALERT_MIN = _ignored("pending.alert_min", pend.get("alert_min"), 5)
+    try:
         s.PENDING_ALERT_DAYS = int(pend.get("alert_days", 7))
     except (TypeError, ValueError):
-        s.PENDING_ALERT_MIN, s.PENDING_ALERT_DAYS = 5, 7
+        s.PENDING_ALERT_DAYS = _ignored("pending.alert_days", pend.get("alert_days"), 7)
     s.SEEN_COOLDOWN_DAYS = _env("DREAM_SEEN_COOLDOWN_DAYS",
                               int(gates.get("seen_cooldown_days", 14)), int)
     env_chats = os.environ.get("DREAM_TRUSTED_CHAT_IDS")
@@ -934,8 +953,8 @@ def configure(cfg):
         s.TRUSTED_CHAT_IDS = {c.strip() for c in env_chats.split(",") if c.strip()}
     else:
         s.TRUSTED_CHAT_IDS = {str(c).strip() for c in (cfg.get("trusted_chat_ids") or []) if str(c).strip()}
-    s.TRUST_PRIVATE = bool(cfg.get("trust_private_chats", True))
-    s.TRUST_NO_CHAT = bool(cfg.get("trust_sessions_without_chat", True))
+    s.TRUST_PRIVATE = _trust_switch(cfg, "trust_private_chats")
+    s.TRUST_NO_CHAT = _trust_switch(cfg, "trust_sessions_without_chat")
     s.EXCLUDED_THREADS = _parse_excluded_threads(
         os.environ.get("DREAM_EXCLUDED_THREADS"), cfg.get("excluded_threads"))
     env_sources = os.environ.get("DREAM_UNTRUSTED_SOURCES")
@@ -977,11 +996,15 @@ def configure(cfg):
     try:
         s.REJECT_REASK_DAYS = max(0, int(cfg.get("reject_reask_days", 180)))
     except (TypeError, ValueError):
-        s.REJECT_REASK_DAYS = 180
+        s.REJECT_REASK_DAYS = _ignored("reject_reask_days", cfg.get("reject_reask_days"), 180)
+    # A share of the entries: above 1 the guard never fires, and NaN compares false with everything.
+    raw_fraction = cfg.get("memory_loss_alert_fraction", 0.25)
     try:
-        s.MEMORY_LOSS_ALERT_FRACTION = float(cfg.get("memory_loss_alert_fraction", 0.25))
+        s.MEMORY_LOSS_ALERT_FRACTION = float(raw_fraction)
+        if not 0.0 < s.MEMORY_LOSS_ALERT_FRACTION <= 1.0:
+            raise ValueError(raw_fraction)
     except (TypeError, ValueError):
-        s.MEMORY_LOSS_ALERT_FRACTION = 0.25
+        s.MEMORY_LOSS_ALERT_FRACTION = _ignored("memory_loss_alert_fraction", raw_fraction, 0.25)
     s.JUDGE = judge_settings(cfg.get("judge"))
     if s.JUDGE.problem:
         print(f"[dream] warn: {s.JUDGE.problem} — the cloud judge is off", file=sys.stderr)
@@ -1454,7 +1477,9 @@ def _day_of(ts):
 
 
 def load_messages(db, days):
-    """Human messages (user + observed) for `days`, with tokens and local day."""
+    """Human messages (user + observed) for `days`, with tokens and local day. None when state.db is there but busy
+    or locked right now: "nobody said anything" ([]) made every memory entry a "still relevant?" question (review
+    of 3.3.1), so the callers tell the two apart."""
     if _missing_db(db, "no conversations to corroborate with"):
         return []
     cutoff = _now().timestamp() - days * 86400
@@ -1463,12 +1488,12 @@ def load_messages(db, days):
     try:
         # A file that is no database (or a damaged one) failed every query below, read as "no messages table", and
         # the night ran with nothing to corroborate in silence (Antigravity review of 3.0.1). It stops the pass; a
-        # busy or locked one is only skipped, as before.
+        # busy or locked one gives None (see the docstring).
         try:
             c.execute("select count(*) from sqlite_master").fetchone()
         except sqlite3.OperationalError as exc:
             print(f"[dream] warn: {db} cannot be read now ({exc}) — corroboration skipped", file=sys.stderr)
-            return []
+            return None
         except sqlite3.DatabaseError as exc:
             raise sqlite3.DatabaseError(f"{db} is not a readable database ({exc})") from exc
         msg_cols = _table_columns(c, "messages")
@@ -1502,8 +1527,9 @@ def load_messages(db, days):
             # No usable `sessions` table: the source of a message is unknown.
             # Fail closed, not open — without it a cron job's own prompt rows
             # (role=user) corroborated facts. What is still known is the session
-            # id: Hermes names cron sessions `cron_…`, so those are dropped
-            # outright; the rest are "sessions without chat" and go through the
+            # id: Hermes before 0.22.3 named cron sessions `cron_…` (later ones
+            # are `local-…`, and their sessions table says `cron`), so those are
+            # dropped outright; the rest are "sessions without chat" and go through the
             # same config switch as any other session lacking chat metadata.
             print("[dream] warn: sessions table unavailable — cron sessions dropped by id, "
                   "the rest trusted only if trust_sessions_without_chat", file=sys.stderr)
@@ -1517,7 +1543,7 @@ def load_messages(db, days):
         except sqlite3.OperationalError as exc:
             print(f"[dream] warn: message query failed ({exc}) — corroboration skipped",
                   file=sys.stderr)
-            return []
+            return None
     finally:
         c.close()
     seen_rows = set()
@@ -1893,7 +1919,11 @@ MEMORY_ENTRY_DELIMITER = "\n§\n"
 
 def _read_memory_file(path):
     """Memory file as the core reads it: utf-8-sig, so a BOM never becomes part
-    of the first entry (and of an anchor built from it)."""
+    of the first entry (and of an anchor built from it).
+
+    A memory file that is there but cannot be read raises, and the callers let it: read as "no memory", dedupe
+    offered what memory already holds, the loss guard saw every entry gone and emptied its snapshot (review of
+    3.3.1). Only a file that vanished since `os.path.exists` is skipped."""
     with open(path, encoding="utf-8-sig") as f:
         return f.read()
 
@@ -1918,7 +1948,7 @@ def load_durable_memory_text(mem_md):
         if os.path.exists(path):
             try:
                 text = _read_memory_file(path)
-            except OSError:
+            except FileNotFoundError:
                 continue
             # CRLF не особый случай: ядро читает память через read_text, то есть
             # с универсальными переводами строк — \r\n приходит как \n (проверено
@@ -1948,7 +1978,7 @@ def load_durable_memory_sources(mem_md):
             continue
         try:
             text = _read_memory_file(path)
-        except OSError:
+        except FileNotFoundError:
             continue
         out.extend((target, entry) for entry in _memory_entries(text))
     return out
@@ -2678,7 +2708,7 @@ def trust_feedback_items(suppressed, rejected, fact_source_name, floor=None):
         rec = rejected.get(fingerprint)
         if isinstance(rec, dict):
             reason = str(rec.get("reason") or "")
-            when = str(rec.get("at") or rec.get("rejected_at") or "")[:10]
+            when = str(rec.get("at") or "")[:10]
         # Rejected facts leave before quarantine, so a secret the human closed with
         # dream-reject.py came back here in clear text (Codex review of 2.7.2): the call
         # needs only the id.
@@ -2840,7 +2870,7 @@ def rejection_of(content, rejected):
         if _covers(item_stems, _stems(sig_tokens(text))) and not polarity_differs(content, text):
             found.append(rec)
     epoch = datetime.min.replace(tzinfo=timezone.utc)  # an unreadable date loses to any readable one
-    return max(found, key=lambda r: _parse_iso(str(r.get("at") or r.get("rejected_at") or "")) or epoch) if found         else None
+    return max(found, key=lambda r: _parse_iso(str(r.get("at") or "")) or epoch) if found else None
 
 
 def said_again(fact, meta, rec, now=None):
@@ -2853,7 +2883,7 @@ def said_again(fact, meta, rec, now=None):
     count over. The same old row stays silenced."""
     if not SETTINGS.REJECT_REASK_DAYS:
         return False
-    at = _parse_iso(str(rec.get("at") or rec.get("rejected_at") or ""))
+    at = _parse_iso(str(rec.get("at") or ""))
     created = _parse_ts(fact.get("created_at"))
     if at is None or created is None or (now or _now()) - at < timedelta(days=SETTINGS.REJECT_REASK_DAYS):
         return False
@@ -2932,9 +2962,9 @@ DATED_RE = re.compile(
     rf"\b\d{{1,2}}\s+(?:{MONTHS_RE})(?:\s+\d{{4}})?\b|"
     r"\b\d{4}-\d{2}-\d{2}\b|"
     rf"{NUMERIC_DATE_RE.pattern}|"
-    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b|"
+    # The English dates the expiry check reads (`EN_DATE_RE`): a list of its own here missed "Sept 5" and "Dec. 5",
+    # so such an event was never held back from promotion (review of 3.3.1).
+    rf"{_LANG.EN_DATE_RE.pattern}|"
     rf"\b\d{{1,2}}\s+(?:{THAI_MONTHS_RE})|"
     rf"{DAY_MONTH_RE.pattern}|{CJK_DATE_RE.pattern}|{KO_DATE_RE.pattern}",
     re.IGNORECASE,
@@ -3357,7 +3387,7 @@ def parse_md_entries(mem_md):
         return []
     try:
         text = _read_memory_file(mem_md)
-    except OSError:
+    except FileNotFoundError:
         return []
     return [e for e in _memory_entries(text) if len(e) > 10]
 
@@ -3997,7 +4027,7 @@ def memory_usage(mem_md):
         try:
             with open(path, encoding="utf-8") as f:
                 n = len(f.read())
-        except OSError:
+        except FileNotFoundError:  # anything else raises, as in `_read_memory_file`
             continue
         name = _rel_home(path)
         limit = SETTINGS.MEMORY_CHAR_LIMITS.get(name)
@@ -4030,8 +4060,7 @@ def _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_te
                        and already_in_memory(f["content"], staged_text),
                        "rejected": rejection is not None and not again,
                        # said again after a human rejected it: a candidate once more, but one to ask about
-                       **({"previously_rejected": {"at": str(rejection.get("at") or rejection.get("rejected_at")
-                                                             or "")[:10],
+                       **({"previously_rejected": {"at": str(rejection.get("at") or "")[:10],
                                                    "reason": str(rejection.get("reason") or "")[:160]}}
                           if again else {})})
     return scored
@@ -4097,7 +4126,7 @@ def _new_themes(messages, window_days, facts, memory_text):
 def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_needed, confirm, fact_decays,
                 conflicts):
     """Stamp what this pass shows into the cooldown buckets of `seen` (only the published slices), then drop
-    stamps older than their cooldown. `confirm` is stamped and, as before 3.0, not pruned."""
+    stamps older than their cooldown."""
     mark_seen(new_facts, seen["new_facts"], now)
     mark_seen(promotions, seen["promotions"], now)
     mark_seen(trust_feedback, seen["trust_feedback"], now, key=_feedback_key)
@@ -4110,7 +4139,7 @@ def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_ne
     prune_seen(seen["promotions"], now, cooldown_days=SETTINGS.PROMOTION_COOLDOWN_DAYS)
     prune_seen(seen["trust_feedback"], now)
     prune_seen(seen["keywords_needed"], now)
-    # Stamped like the two above and never pruned: one key more for every fact ever offered for a confirmation. Past
+    # Pruned like the others (it was not before 3.0: one key more for every fact ever offered for a confirmation). Past
     # two cooldowns a stamp holds nothing back (`unseen` lets the fact through after one), so pruning changes no answer.
     prune_seen(seen["confirm"], now)
 
@@ -4120,11 +4149,12 @@ BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedbac
 
 class DecisionInputs(namedtuple("DecisionInputs", "now today window_days rules facts messages by_store memory_text "
                                 "staged_text pending_writes rejected recent_confirmations feedback_floor "
-                                "fact_source seen")):
+                                "fact_source seen messages_unavailable")):
     """Everything the night's decisions read from the world, read once (3.3.0). `_decide` reads nothing else — no
     clock, database, environment or config file; it reads the settings, which must not change while it runs
     (`settings_fingerprint`). `seen` is a copy: deciding never marks anything shown. `recent_confirmations`: a
-    frozenset of fact ids, or None when the store keeps no confirmations.
+    frozenset of fact ids, or None when the store keeps no confirmations. `messages_unavailable`: state.db was busy
+    or locked (`load_messages` gave None) — `messages` is empty, and that says nothing about what people said.
 
     A named tuple, not a dataclass: under `from __future__ import annotations` a dataclass looks its module up in
     sys.modules, so a script that loaded dream.py by path without registering it failed to load it at all (3.3.1)."""
@@ -4135,6 +4165,8 @@ def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_s
     """The DecisionInputs of a night. *seen*: the state after `_revert_unacked` when the pass has it already."""
     facts = load_all_facts()
     all_messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
+    unavailable = all_messages is None
+    all_messages = all_messages or []
     now = now or _now()
     source = fact_source()
     # A write waiting for approval is not in memory yet, but it IS the answer to
@@ -4152,7 +4184,7 @@ def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_s
         pending_writes=tuple(pending_writes), rejected=types.MappingProxyType(load_rejected(rejected_state_path)),
         recent_confirmations=None if rested is None else frozenset(rested),
         feedback_floor=feedback_floor(source), fact_source=source,
-        seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen))
+        seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen), messages_unavailable=unavailable)
 
 
 class Decisions(namedtuple("Decisions", "scored suppressed quarantined expired expired_ids new_facts_window "
@@ -4260,7 +4292,8 @@ def _decide(inputs, vetoes=frozenset()):
     conflicts_suppressed = len(conflicts_pending) - len(conflicts)
     conflicts.sort(key=lambda s: -s["score"])
 
-    decays_pending = _decay_candidates(safe, window_days)
+    # "Nobody mentioned it" is unknown on a night the messages could not be read: no relevance question then.
+    decays_pending = [] if inputs.messages_unavailable else _decay_candidates(safe, window_days)
     decays = unseen(decays_pending, seen_fact_decays, now)
     decays_suppressed = len(decays_pending) - len(decays)
     decays.sort(key=lambda s: -s["meta"]["days_old"])
@@ -4453,20 +4486,22 @@ def _judge_pass(inputs, d, jrun, now):
             blocked[why] += 1
             continue
         items.append(J.Item(pair, tuple(sorted(paths[pair])), text, words, str(pair.fact_id)))
-    cache = {}
-    if jrun.files.cache:
-        # Only a live night may move a broken cache aside; a dry run reads around it.
-        cache = _load_state_file(jrun.files.cache) if jrun.live else _read_state_file(jrun.files.cache)[0]
     replay = _judge_replay(jrun.replay) if jrun.replay else None
     try:
+        cache = {}
+        if jrun.files.cache:
+            # Only a live night may move a broken cache aside; a dry run reads around it. A cache that cannot be
+            # read at all raises, and costs the judge's night, not the dream's.
+            cache = _load_state_file(jrun.files.cache) if jrun.live else _read_state_file(jrun.files.cache)[0]
         night = J.judge(items, js.providers, js.tau, js.max_attempts, js.max_cost_usd, jrun.deadline, cache, now,
                         live=jrun.live and replay is None, replay=replay, home=HOME)
     except Exception as exc:  # noqa: BLE001 — the judge is optional: whatever it meets must not cost the night
         # Only the type: a message may quote what came back. No verdicts, so the night is degraded below.
         print(f"[dream] warn: the cloud judge failed ({type(exc).__name__}) — no verdicts tonight, the rules "
               f"decide alone", file=sys.stderr)
-        night = J.Night({}, [], 0, 0.0, 0, {p: {} for p in js.providers}, set(), f"error: {type(exc).__name__}",
-                        {})
+        night = J.Night(verdicts={}, sends=[], attempts=0, cost_usd=0.0, cache_hits=0,
+                        outcomes={p: {} for p in js.providers}, providers_off=set(),
+                        stop_reason=f"error: {type(exc).__name__}", cache_updates={})
     eligible, judged = Counter(), Counter()
     for it in items:
         for path in it.paths:
@@ -4726,9 +4761,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     keywords_needed, keywords_pending, confirm = d.keywords_needed, d.keywords_pending, d.confirm
     themes = _new_themes(messages, window_days, facts, memory_text)
 
-    md_dec = md_decays(mem_md, messages, md_decay_days, asked_state_path, cap=SETTINGS.PUBLISH_CAP,
-                       staged_removals=staged_removals,
-                       reask=reask_md, rules=inputs.rules)
+    # Not called on a night without messages: every entry would be "never mentioned", and asking records it asked.
+    md_dec = [] if inputs.messages_unavailable else md_decays(
+        mem_md, messages, md_decay_days, asked_state_path, cap=SETTINGS.PUBLISH_CAP,
+        staged_removals=staged_removals, reask=reask_md, rules=inputs.rules)
 
     # Only published slices count as shown.
     published_promotions = promotions[:SETTINGS.PUBLISH_CAP]
@@ -4774,6 +4810,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
 
     usage = memory_usage(mem_md)
     alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
+    if inputs.messages_unavailable:
+        alerts.append({"kind": "messages_unavailable",
+                       "message": "The conversations (state.db) could not be read tonight — busy or locked. Nothing "
+                                  "was corroborated and no relevance question was asked; the next pass tries again."})
     if queue_alert:
         alerts.append(queue_alert)
     if judge_alert:
@@ -4836,7 +4876,6 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "store_duplicates": len(promotions_dups) + len(new_facts_dups),
                   "alerts": len(alerts)},
         "memory_usage": usage,
-        # Why the fact store cannot fill up (holographic scope / cron_writes), or None. Not work: never opens the gate.
         "alerts": alerts,
         "promotions": [_pub_near(s) for s in published_promotions],
         "new_facts": [_pub_near(s) for s in new_facts],
@@ -5071,10 +5110,13 @@ CORRUPT_MARK = ".corrupt-"
 
 def _read_state_file(path):
     """(dict, why) of one of the dream's own state files, touching nothing: ({}, None) when there is none or it is
-    fine and empty, ({}, why) when it is there but broken — `why` says how, None for a file that cannot be read at
-    all (permissions, reported here). For a reader without the state lock (`dream-reject.py --list`): moving a file
-    aside there raced a locked writer — the reader saw a broken list, a writer put a good one in its place, and the
-    reader moved the good one away (Codex review of the 2.9.9 changes)."""
+    fine and empty, ({}, why) when it is there but broken — `why` says how. For a reader without the state lock
+    (`dream-reject.py --list`): moving a file aside there raced a locked writer — the reader saw a broken list, a
+    writer put a good one in its place, and the reader moved the good one away (Codex review of the 2.9.9 changes).
+
+    A file that is there but cannot be read at all (permissions) raises OSError: read as {} it was "no state", and
+    the next write of the pass or of `dream-reject.py` replaced every rejection and cooldown in it (review of
+    3.3.1). Nothing can be done with it but fixing the permissions, and only a human can."""
     if not path:
         return {}, None
     try:
@@ -5085,8 +5127,8 @@ def _read_state_file(path):
     except UnicodeDecodeError as exc:
         return {}, f"not UTF-8 ({exc.reason})"
     except OSError as exc:
-        print(f"[dream] warn: state file {path} cannot be read ({exc}) — running without it", file=sys.stderr)
-        return {}, None
+        raise OSError(f"state file {path} cannot be read ({exc}) — nothing was written over it; "
+                      f"fix its permissions") from exc
     try:
         data = json.loads(text)
     except ValueError as exc:
@@ -5104,8 +5146,8 @@ def _load_state_file(path):
     A file that is there but is not a JSON object is not "no state": read as {} it erased every rejection and
     cooldown without a word, and the next write buried the evidence (review of 2.9.8). It is moved aside to
     `<file>.corrupt-<UTC time>` with a warning, and the pass runs without it. Such a copy may hold a fact's text:
-    `forget_sweep` cleans them like the files they came from. A file that cannot be read at all (permissions) is
-    reported and left where it is."""
+    `forget_sweep` cleans them like the files they came from. A file that cannot be read at all (permissions)
+    raises OSError and is left where it is (`_read_state_file`)."""
     data, why = _read_state_file(path)
     if why is None:
         return data
@@ -5208,17 +5250,6 @@ def _preview_hashes(content):
         raw = (content or "")[:n]
         forms |= {raw, raw.split("\n", 1)[0], _diary_text(content, n)}
     return sorted({_preview_hash(f) for f in forms if f.strip()})
-
-
-def _json_file(path, default):
-    """A JSON file that is not the dream's own (Hermes' `cron/jobs.json`): read as is, never moved aside. The
-    dream's own state goes through `_load_state_file`."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return default
-    return data if isinstance(data, type(default)) else default
 
 
 def load_forgotten(db=None, errors=None):
@@ -5493,13 +5524,28 @@ def scrub_result(result):
             + _scrub_copies(result, _preview_set(index), _fingerprint_set(index)))
 
 
-def _dream_job_dirs(home):
-    """Output folders of the cron jobs that run the dream gates (their logs hold the payload)."""
-    data = _json_file(os.path.join(home, "cron", "jobs.json"), {})
+def _dream_job_dirs(home, errors):
+    """Output folders of the cron jobs that run the dream gates (their logs hold the payload). Hermes' own
+    `cron/jobs.json` is read as is, never moved aside. No file: no cron jobs. A file that cannot be read, or is not
+    `{"jobs": [...]}`, goes to `errors`: read as "no jobs", the logs were never looked at and a forgotten fact stayed
+    in them while the sweep reported success (review of 3.3.1)."""
+    path = os.path.join(home, "cron", "jobs.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        errors.append(f"{path}: cannot be read ({exc}) — the dream's cron logs were not checked")
+        return []
     jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        errors.append(f"{path}: no list of jobs in it — the dream's cron logs were not checked")
+        return []
     out = []
-    for job in jobs or []:
-        script = os.path.basename(str((job or {}).get("script") or ""))
+    for job in jobs:
+        job = job if isinstance(job, dict) else {}
+        script = os.path.basename(str(job.get("script") or ""))
         if script in DREAM_JOB_SCRIPTS and job.get("id"):
             out.append(os.path.join(home, "cron", "output", str(job["id"])))
     return out
@@ -5730,7 +5776,7 @@ def _sweep_cron_logs(home, ids, index, errors):
     removed goes to `errors`."""
     removed = 0
     pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
-    for folder in _dream_job_dirs(home):
+    for folder in _dream_job_dirs(home, errors):
         try:
             names = os.listdir(folder)
         except FileNotFoundError:
@@ -5832,7 +5878,11 @@ def explain(fact_id, mem_md, corr_days):
         return 1
     f = facts[0]
     set_household(g.get("content") for g in load_all_facts() if not g.get("store"))
-    messages = messages_for(f, load_messages(os.path.join(HOME, "state.db"), corr_days))
+    all_messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
+    if all_messages is None:
+        print("[dream] messages unavailable (state.db busy or locked) — mentions are not counted below",
+              file=sys.stderr)
+    messages = messages_for(f, all_messages or [])
     memory_text = load_durable_memory_text(mem_md)
     score, sig, meta = signals_for_fact(f, messages)
     print(f"fact {fact_id}: {f['content'][:200]}")

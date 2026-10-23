@@ -76,13 +76,9 @@ def _classify_unsafe(content):
 
 
 def _fingerprint(content):
-    try:
-        return _dream()._fact_fingerprint(content)
-    except Exception:  # noqa: BLE001 — same formula as dream.py, kept as a fallback
-        import hashlib
-        import re
-        norm = re.sub(r"\s+", " ", (content or "").lower()).strip()
-        return hashlib.md5(norm.encode("utf-8")).hexdigest()[:16]
+    # No fallback formula: the one kept here was not dream.py's (no NFC, no ё → е), so its keys never matched a
+    # fact the nightly pass reads (review of 3.3.1). dream.py is loaded before this anyway (the lock, the state).
+    return _dream()._fact_fingerprint(content)
 
 
 def load_state(path):
@@ -122,17 +118,16 @@ def save_state(path, data):
 
 def fetch_content(fact_id):
     """Fact text from the configured fact source (read-only, the same loader the
-    dream uses). None — the fact is gone or the source cannot be read."""
+    dream uses). None — no such fact. A main fact store that cannot be read raises (OSError, ValueError,
+    sqlite3.Error): "not found" sent the human to `--content` for a fact that was there (review of 3.3.1). A chat
+    store's loader reports its own failures and gives no facts, so there an unreadable store is still "not found"."""
     d = _dream()
-    try:
-        # holographic: resolve the store against this script's HERMES_HOME.
-        if "#" in str(fact_id):  # "<chat store>#<id>" of a promoted chat store (chat_stores, 2.6.0)
-            facts = d.load_chat_facts(HOME)
-        else:
-            facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"
-                     else d.load_facts())
-    except (OSError, ValueError, sqlite3.Error):
-        return None
+    # holographic: resolve the store against this script's HERMES_HOME.
+    if "#" in str(fact_id):  # "<chat store>#<id>" of a promoted chat store (chat_stores, 2.6.0)
+        facts = d.load_chat_facts(HOME)
+    else:
+        facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"
+                 else d.load_facts())
     for f in facts:
         if str(f.get("fact_id")) == str(fact_id):
             return f.get("content")
@@ -176,7 +171,11 @@ def _run(ap, args):
     state_path = args.state or _default_state()
 
     # Only a holder of the state lock may move a broken file aside; `--list` reads without it.
-    state = peek_state(state_path) if args.list else load_state(state_path)
+    try:
+        state = peek_state(state_path) if args.list else load_state(state_path)
+    except OSError as exc:  # there but unreadable: a rejection written now would replace every earlier one
+        print(f"{exc}", file=sys.stderr)
+        return 1
 
     if args.list:
         if not state:
@@ -251,7 +250,11 @@ def _run(ap, args):
     if content is None:
         if not args.fact_id:
             ap.error("fact_id or --content is required")
-        content = fetch_content(args.fact_id)
+        try:
+            content = fetch_content(args.fact_id)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            print(f"cannot read the fact store: {exc} — nothing written", file=sys.stderr)
+            return 1
         if content is None:
             ap.error(f"fact {args.fact_id} not found in the fact store — pass --content")
 

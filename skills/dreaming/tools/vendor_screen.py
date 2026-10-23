@@ -42,6 +42,10 @@ def definitions(src):
     for node in tree.body:
         for n in _names(node):
             by_name.setdefault(n, []).append(node)
+    # A root the provider renamed or dropped gave a copy without it, and the tool reported success.
+    missing = [r for r in ROOTS if r not in by_name]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} not in the source — nothing copied; the screen changed, update ROOTS")
     need, stack = set(), list(ROOTS)
     while stack:
         n = stack.pop()

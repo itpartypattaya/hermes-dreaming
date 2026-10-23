@@ -1,10 +1,10 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 3.3.1
+version: 3.3.2
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
-compatibility: Hermes Agent >= 0.21 (checked against 0.22.0)
+compatibility: Hermes Agent >= 0.21 (checked against 0.22.5)
 allowed-tools: memory terminal read_file
 tags: [memory, consolidation, dreaming, cron, fact-store]
 ---
@@ -78,6 +78,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
 | `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
 | `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing |
+| `alerts` (`messages_unavailable`) | the chats could not be read tonight (busy or locked), so nothing was corroborated and no relevance question asked: one line, nothing to do — the next pass tries again |
 | `alerts` (`judge_degraded`) | the optional cloud judge could not judge enough pairs for several nights, so the rules decided alone: one line with its reason (keys, network, limits); change no config yourself |
 | `stats.judge` | the cloud judge's counts (`mode`, `vetoes`, `decisions_changed`): not in the report, unless `effective` is `degraded` — then one line. Never retell the pairs, never send anything to a judge yourself; in `veto` a vetoed mention is simply not in `mentions` / `evidence` |
 | `dream_error` | reply `⚠️ Nightly dream failed: <reason>` and stop |

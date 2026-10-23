@@ -122,12 +122,14 @@ class BrokenStateIsSetAside(unittest.TestCase):
         self.assertEqual(_aside(path), [])
 
     def test_hermes_jobs_file_is_read_never_moved(self):
-        """`cron/jobs.json` is Hermes' live scheduler state, not the dream's: a broken one is read as no jobs and
-        left exactly where it is."""
+        """`cron/jobs.json` is Hermes' live scheduler state, not the dream's: a broken one is left exactly where it
+        is. Since 3.3.2 it is an error of the sweep, not "no jobs" (test_forget_sweep, A3)."""
         (self.dir / "cron").mkdir()
         jobs = self.dir / "cron" / "jobs.json"
         jobs.write_text("{broken", encoding="utf-8")
-        self.assertEqual(dream._dream_job_dirs(str(self.dir)), [])
+        errors = []
+        self.assertEqual(dream._dream_job_dirs(str(self.dir), errors), [])
+        self.assertEqual(len(errors), 1, errors)
         self.assertTrue(jobs.exists())
         self.assertEqual(_aside(jobs), [])
 

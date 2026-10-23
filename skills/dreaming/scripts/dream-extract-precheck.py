@@ -165,8 +165,10 @@ def build_payload(dream, cfg, state, now_ts):
     since_id = int(since_id) if isinstance(since_id, (int, float)) else -1
     cursor = (since, since_id)
     days = max(1, int((now_ts - since) / 86400) + 1)
-    messages = [m for m in dream.load_messages(str(HOME / "state.db"), days)
-                if (m["ts"], m.get("id") or 0) > cursor]
+    loaded = dream.load_messages(str(HOME / "state.db"), days)
+    if loaded is None:  # state.db busy or locked (dream.py warned): nothing tonight, the cursor stays
+        return None, cursor, 0
+    messages = [m for m in loaded if (m["ts"], m.get("id") or 0) > cursor]
     messages.sort(key=lambda m: (m["ts"], m.get("id") or 0))
     if len(messages) < int(ext["min_messages"]):
         return None, cursor, len(messages)

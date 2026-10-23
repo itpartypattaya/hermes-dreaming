@@ -118,6 +118,32 @@ class ForgetSweep(unittest.TestCase):
             'prompt {"promotions":[{"fact_id":1,"content":"…"}]}', encoding="utf-8")
         self.path("cron/output/job-other/2026-10-01.md").write_text('{"fact_id": 2}', encoding="utf-8")
 
+    def test_a_jobs_file_that_cannot_be_read_is_an_error_not_a_clean_sweep(self):
+        """3.3.2 (A3): a broken `cron/jobs.json` read as "no dream jobs" — the logs were never looked at, a forgotten
+        fact stayed in them, and the sweep reported success. It is an error now; the next sweep after the file is
+        whole again cleans the log."""
+        log = self.path("cron/output/job-dream/2026-10-01_03-00.md")
+        log.write_text('prompt {"promotions":[{"fact_id":2,"content":"…"}]}', encoding="utf-8")
+        jobs = self.path("cron/jobs.json")
+        good = jobs.read_text(encoding="utf-8")
+        self.forget(2)
+        for broken in (good[: len(good) // 2], '{"jobs": {"job-dream": {}}}', "[]"):
+            with self.subTest(broken=broken[:30]):
+                jobs.write_text(broken, encoding="utf-8")
+                summary = dream.forget_sweep(db=str(self.db))
+                self.assertTrue(any("jobs.json" in e for e in summary["errors"]), summary["errors"])
+                self.assertTrue(log.exists())
+                self.assertEqual(jobs.read_text(encoding="utf-8"), broken, "Hermes' file is never touched")
+        jobs.write_text(good, encoding="utf-8")
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertEqual(summary["errors"], [])
+        self.assertFalse(log.exists())
+
+    def test_no_jobs_file_at_all_is_a_home_without_cron(self):
+        self.path("cron/jobs.json").unlink()
+        self.forget(2)
+        self.assertEqual(dream.forget_sweep(db=str(self.db))["errors"], [])
+
     def _no_trace_of(self, text):
         """No file left under the home holds any 20-character piece of `text`."""
         pieces = {text[i:i + 20] for i in range(0, len(text) - 20, 5)}
