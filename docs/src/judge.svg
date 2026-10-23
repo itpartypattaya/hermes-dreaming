@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 740">
+  <style>
+    text { font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace; }
+    .title { fill: #ffffff; font-size: 24px; font-weight: 700; }
+    .subtitle { fill: #94a3b8; font-size: 12px; }
+    .name { fill: #ffffff; font-size: 12px; font-weight: 600; }
+    .sub { fill: #94a3b8; font-size: 9.5px; }
+    .q { fill: #e2e8f0; font-size: 10px; }
+    .tiny { fill: #94a3b8; font-size: 9px; }
+    .lane { font-size: 10px; font-weight: 600; letter-spacing: 1px; }
+    .foot { fill: #64748b; font-size: 10px; }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="a-slate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+    <marker id="a-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/></marker>
+    <marker id="a-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb923c"/></marker>
+    <marker id="a-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/></marker>
+    <marker id="a-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/></marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
+
+  <text x="40" y="54" class="title">The cloud judge</text>
+  <text x="40" y="78" class="subtitle">optional, off by default · a second opinion on the mentions the rules counted</text>
+
+  <!-- legend -->
+  <text x="760" y="42" class="lane" fill="#94a3b8">LEGEND</text>
+  <rect x="760" y="50" width="10" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399"/><text x="778" y="59" class="tiny">this machine, stdlib</text>
+  <rect x="900" y="50" width="10" height="10" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24"/><text x="918" y="59" class="tiny">decision</text>
+  <rect x="1040" y="50" width="10" height="10" rx="2" fill="rgba(251,146,60,0.3)" stroke="#fb923c"/><text x="1058" y="59" class="tiny">cloud provider</text>
+  <rect x="760" y="70" width="10" height="10" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185"/><text x="778" y="79" class="tiny">no veto tonight</text>
+  <rect x="900" y="70" width="10" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa"/><text x="918" y="79" class="tiny">storage</text>
+  <rect x="1040" y="70" width="10" height="10" rx="2" fill="rgba(30,41,59,0.5)" stroke="#94a3b8"/><text x="1058" y="79" class="tiny">unchanged</text>
+
+  <!-- regions -->
+  <rect x="30" y="110" width="310" height="470" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="44" y="128" class="lane" fill="#34d399">THIS MACHINE · dream.py</text>
+  <rect x="390" y="110" width="380" height="470" rx="12" fill="none" stroke="#fb923c" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="404" y="128" class="lane" fill="#fb923c">CLOUD · HTTPS · only when turned on</text>
+  <rect x="820" y="110" width="360" height="470" rx="12" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+  <text x="834" y="128" class="lane" fill="#34d399">THIS MACHINE · the verdicts</text>
+
+  <!-- arrows (under the boxes) -->
+  <line x1="185" y1="214" x2="185" y2="248" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <line x1="185" y1="330" x2="185" y2="368" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <text x="193" y="353" class="tiny" fill="#34d399">yes</text>
+  <polyline points="50,290 40,290 40,508 49,508" fill="none" stroke="#64748b" stroke-width="1.2" marker-end="url(#a-slate)"/>
+  <text x="46" y="458" class="tiny">no</text>
+  <line x1="320" y1="404" x2="408" y2="404" stroke="#fb923c" stroke-width="1.2" marker-end="url(#a-orange)"/>
+  <text x="350" y="396" class="tiny">HTTPS</text>
+  <line x1="580" y1="246" x2="580" y2="370" stroke="#64748b" stroke-width="1.2" stroke-dasharray="2,3" marker-end="url(#a-slate)"/>
+  <text x="588" y="312" class="tiny">asked of each pair</text>
+  <line x1="580" y1="436" x2="580" y2="478" stroke="#fb923c" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-orange)"/>
+  <text x="588" y="456" class="tiny">no usable answer:</text>
+  <text x="588" y="468" class="tiny">down, key refused, off the schema</text>
+  <polyline points="750,404 795,404 795,186 838,186" fill="none" stroke="#fb923c" stroke-width="1.2" marker-end="url(#a-orange)"/>
+  <line x1="750" y1="512" x2="795" y2="512" stroke="#fb923c" stroke-width="1.2"/>
+  <line x1="795" y1="512" x2="795" y2="404" stroke="#fb923c" stroke-width="1.2"/>
+  <text transform="translate(810,330) rotate(-90)" class="tiny">answers</text>
+  <line x1="1000" y1="222" x2="1000" y2="260" stroke="#fbbf24" stroke-width="1.2" marker-end="url(#a-amber)"/>
+  <polyline points="1000,334 1000,352 915,352 915,370" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <polyline points="1000,352 1085,352 1085,370" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#a-green)"/>
+  <text x="1006" y="347" class="tiny" fill="#34d399">yes · by mode</text>
+  <polyline points="1160,298 1172,298 1172,524 1162,524" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a-rose)"/>
+  <text x="1150" y="470" class="tiny" fill="#fb7185">no</text>
+
+  <!-- 1 · the rules -->
+  <rect x="50" y="150" width="270" height="64" rx="6" fill="#0f172a"/>
+  <rect x="50" y="150" width="270" height="64" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="185" y="172" class="name" text-anchor="middle">1 · the rules decide the night</text>
+  <text x="185" y="189" class="sub" text-anchor="middle">as without a judge, and note every</text>
+  <text x="185" y="202" class="sub" text-anchor="middle">(fact, message) pair they counted</text>
+
+  <!-- 2 · may it leave? -->
+  <rect x="50" y="250" width="270" height="80" rx="6" fill="#0f172a"/>
+  <rect x="50" y="250" width="270" height="80" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="185" y="272" class="name" text-anchor="middle">2 · may this pair leave?</text>
+  <text x="185" y="289" class="sub" text-anchor="middle">a chat, source and store you listed</text>
+  <text x="185" y="302" class="sub" text-anchor="middle">no secret, no instruction</text>
+  <text x="185" y="315" class="sub" text-anchor="middle">fact ≤ 400, words ≤ 600 characters</text>
+
+  <!-- 3 · the pair as sent -->
+  <rect x="50" y="370" width="270" height="70" rx="6" fill="#0f172a"/>
+  <rect x="50" y="370" width="270" height="70" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="185" y="392" class="name" text-anchor="middle">3 · the pair as sent</text>
+  <text x="185" y="409" class="sub" text-anchor="middle">the fact + the person's own words</text>
+  <text x="185" y="422" class="sub" text-anchor="middle">no reply quote, link, id, sender, time</text>
+
+  <!-- stays home -->
+  <rect x="50" y="480" width="270" height="56" rx="6" fill="#0f172a"/>
+  <rect x="50" y="480" width="270" height="56" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="185" y="502" class="name" text-anchor="middle">stays home, still counted</text>
+  <text x="185" y="519" class="sub" text-anchor="middle">no verdict: the rules decide it alone</text>
+
+  <!-- the question -->
+  <rect x="410" y="150" width="340" height="96" rx="6" fill="#0f172a"/>
+  <rect x="410" y="150" width="340" height="96" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="426" y="172" class="name">the question, word for word</text>
+  <text x="426" y="192" class="q">Does the message confirm the fact,</text>
+  <text x="426" y="206" class="q">contradict it, or neither?</text>
+  <text x="426" y="226" class="sub">confirms · contradicts · unrelated</text>
+  <text x="426" y="238" class="sub">one answer, a probability for each</text>
+
+  <!-- Jev -->
+  <rect x="410" y="372" width="340" height="64" rx="6" fill="#0f172a"/>
+  <rect x="410" y="372" width="340" height="64" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="580" y="394" class="name" text-anchor="middle">Jev 1.14 · TypeSafe, via OpenRouter</text>
+  <text x="580" y="411" class="sub" text-anchor="middle">asked first · ~$0.00002 a call · ~280 ms</text>
+  <text x="580" y="424" class="sub" text-anchor="middle">holdout: 84 % of false confirmations out, no true one</text>
+
+  <!-- OpenAI -->
+  <rect x="410" y="480" width="340" height="64" rx="6" fill="#0f172a"/>
+  <rect x="410" y="480" width="340" height="64" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="580" y="502" class="name" text-anchor="middle">OpenAI Decisions · gpt-6-luna</text>
+  <text x="580" y="519" class="sub" text-anchor="middle">the fallback, once per pair · ~$0.00002 · ~290 ms</text>
+  <text x="580" y="532" class="sub" text-anchor="middle">holdout: 75 % of false confirmations out, no true one</text>
+
+  <!-- 4 · verdict -->
+  <rect x="840" y="150" width="320" height="72" rx="6" fill="#0f172a"/>
+  <rect x="840" y="150" width="320" height="72" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="1000" y="172" class="name" text-anchor="middle">4 · veto?</text>
+  <text x="1000" y="189" class="sub" text-anchor="middle">not "confirms", confidence ≥ tau (0.50):</text>
+  <text x="1000" y="202" class="sub" text-anchor="middle">the pair stops counting · otherwise it stays</text>
+  <text x="1000" y="215" class="sub" text-anchor="middle">a verdict is cached 90 days for the same text</text>
+
+  <!-- 5 · covered? -->
+  <rect x="840" y="262" width="320" height="72" rx="6" fill="#0f172a"/>
+  <rect x="840" y="262" width="320" height="72" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="1000" y="284" class="name" text-anchor="middle">5 · a night it covered?</text>
+  <text x="1000" y="301" class="sub" text-anchor="middle">verdicts for at least half of the pairs</text>
+  <text x="1000" y="314" class="sub" text-anchor="middle">it could send, and a provider still on</text>
+
+  <!-- shadow / veto -->
+  <rect x="840" y="372" width="150" height="80" rx="6" fill="#0f172a"/>
+  <rect x="840" y="372" width="150" height="80" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="915" y="394" class="name" text-anchor="middle">shadow</text>
+  <text x="915" y="411" class="sub" text-anchor="middle">publish the</text>
+  <text x="915" y="424" class="sub" text-anchor="middle">rules' night; report</text>
+  <text x="915" y="437" class="sub" text-anchor="middle">what would change</text>
+
+  <rect x="1010" y="372" width="150" height="80" rx="6" fill="#0f172a"/>
+  <rect x="1010" y="372" width="150" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="1085" y="394" class="name" text-anchor="middle">veto</text>
+  <text x="1085" y="411" class="sub" text-anchor="middle">decide again without</text>
+  <text x="1085" y="424" class="sub" text-anchor="middle">the vetoed pairs;</text>
+  <text x="1085" y="437" class="sub" text-anchor="middle">publish that night</text>
+
+  <!-- degraded -->
+  <rect x="840" y="488" width="320" height="72" rx="6" fill="#0f172a"/>
+  <rect x="840" y="488" width="320" height="72" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="1000" y="510" class="name" text-anchor="middle">degraded: no veto applied</text>
+  <text x="1000" y="527" class="sub" text-anchor="middle">the rules decide the night alone</text>
+  <text x="1000" y="540" class="sub" text-anchor="middle">three such nights → one alert a week</text>
+
+  <!-- files and limits -->
+  <rect x="40" y="608" width="560" height="62" rx="6" fill="#0f172a"/>
+  <rect x="40" y="608" width="560" height="62" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="320" y="630" class="name" text-anchor="middle">its files · ~/.hermes/cache · 0600</text>
+  <text x="320" y="647" class="sub" text-anchor="middle">verdicts, 90 days (hashes, no text) · every pair sent, as sent, 90 days</text>
+  <text x="320" y="660" class="sub" text-anchor="middle">a line of health a night · forgotten facts leave all of them</text>
+
+  <rect x="620" y="608" width="540" height="62" rx="6" fill="#0f172a"/>
+  <rect x="620" y="608" width="540" height="62" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="890" y="630" class="name" text-anchor="middle">limits, every night</text>
+  <text x="890" y="647" class="sub" text-anchor="middle">≤ 250 calls · ≤ $0.05 (soft) · ≤ 120 s · never past the gate's deadline</text>
+  <text x="890" y="660" class="sub" text-anchor="middle">fixed HTTPS endpoints · no proxy · no redirect · answers ≤ 64 KB</text>
+
+  <text x="40" y="706" class="foot">off by default: dream_judge.py is not even loaded and nothing leaves the machine · shadow → veto only when --judge-score says ready</text>
+</svg>

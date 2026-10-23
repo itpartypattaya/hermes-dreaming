@@ -3,6 +3,30 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.3.1 — 2026-10-23
+
+A fix for scripts that reuse `dream.py`, and the judge described properly.
+
+### Fixed
+- **`dream.py` loads again the way another script loads it** — by path, with `spec.loader.exec_module()` and no
+  entry in `sys.modules`. 3.3.0's two decision records (`DecisionInputs`, `Decisions`) were dataclasses, and under
+  `from __future__ import annotations` a dataclass looks its module up in `sys.modules`: such a load failed with
+  `AttributeError: 'NoneType' object has no attribute '__dict__'`. On a live install it stopped the backup scrubber
+  that removes forgotten facts from the backups. They are named tuples now, like the other records; the nights are
+  unchanged (the golden record). Test: `tests/test_load_331.py` loads `dream.py` and every script next to it that
+  way, each in its own interpreter.
+
+### Documentation
+- **The judge, written out.** The README section now tells how a night with the judge goes, step by step, with the
+  question word for word; what a decision model is; Jev and OpenAI Decisions side by side — who makes and serves
+  them, the key, the measured cost and latency of a call, what each removed on the holdout and per language, their
+  data terms as documented in October 2026 — how it was measured and what that does not prove, what was tried
+  before (local models), what leaves the machine and what does not (long messages stay home, unjudged). A diagram
+  of the judge's night, `docs/judge.png` (source `docs/src/judge.svg`); the overview no longer says "no network"
+  without "by default".
+- **A manual run is a real night.** `hermes cron run`, a gate or `dream.py` without `--dry-run` writes the state,
+  marks what it showed and, with the judge on, sends pairs. To look without consequences: `--dry-run`.
+
 ## 3.3.0 — 2026-10-23
 
 An optional cloud judge, off by default, may take a mention the rules counted out of the count — never add one.

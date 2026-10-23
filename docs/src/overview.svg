@@ -175,5 +175,5 @@
   <rect x="890" y="224" width="10" height="10" rx="2" fill="rgba(59,130,246,0.3)" stroke="#60a5fa"/><text x="908" y="233" class="tiny">an LLM turn</text>
   <rect x="890" y="242" width="10" height="10" rx="2" fill="rgba(30,41,59,0.5)" stroke="#94a3b8"/><text x="908" y="251" class="tiny">no-op</text>
 
-  <text x="40" y="696" class="foot">no network · the scripts never write memory or facts — the agent does, through the memory, fact_store and fact_feedback tools</text>
+  <text x="40" y="696" class="foot">no network by default (the optional cloud judge has its own diagram) · the scripts never write memory or facts — the agent does, through its tools</text>
 </svg>

@@ -263,63 +263,132 @@ people, trust only the owner's chats.
 
 ## Optional cloud judge (off by default)
 
-The rules count a message as a mention of a fact when the two share enough words, and many such mentions confirm
-nothing: "Гоша тренирует юниоров" counted for "Гоша не пьёт кофе". On a frozen test set of 360 pairs, only 37 % of
-the pairs the rules counted were real confirmations. The judge asks a decision model one question about each counted
-pair — does the message confirm the fact, contradict it, or neither? — and may take the pair out of the count. It
-never adds one: what is a candidate is still the rules' call.
+The rules decide that a message mentions a fact when the two share enough words. That is cheap and predictable,
+and often wrong: "Гоша тренирует юниоров" counted for "Гоша не пьёт кофе", a pasted report counted for every fact
+it brushed against. On a frozen test set of 360 pairs, only 37 % of the pairs the rules counted were real
+confirmations. Each false one pushes a fact towards memory or tells the store that people keep saying it.
+
+The judge is a second opinion on exactly those pairs. For every (fact, message) pair the rules counted, it asks a
+decision model one question — does the message confirm the fact, contradict it, or neither? — and when the answer
+is a confident "no", it takes the pair out of the count. It can never add a pair: what is a candidate is still the
+rules' call, and a night without the judge is decided exactly as before. It is off by default; turned off, its
+code is not even loaded and nothing leaves the machine.
+
+![A night with the cloud judge: the rules count pairs, the ones that may leave go to Jev (OpenAI as the fallback), a
+confident "no" takes a pair out; shadow only reports, veto decides the night again; a night covered under half
+applies no veto](docs/judge.png)
+
+### How a night with the judge goes
+
+1. The rules decide the night as always and note every pair they counted.
+2. Each pair that may leave (see below) goes to the first provider: the fact's text and the person's own words,
+   nothing else, with this question and these three answers — the wording the threshold was measured with:
+
+   ```text
+   Does the message confirm the fact, contradict it, or neither?
+   confirms     the message confirms the fact: the same person or thing, and the fact still holds
+   contradicts  the message contradicts the fact: it says the fact is not true or no longer true
+   unrelated    the message is about another person or thing, or neither confirms nor denies the fact
+   ```
+
+3. The model picks one answer and returns a probability for each. An answer other than `confirms` with a
+   confidence of at least `tau` (0.50 by default) is a veto. An answer that does not fit the schema is not used;
+   the pair goes once to the second provider, if there is one.
+4. In `shadow` the night publishes what the rules decided, and the report (`stats.judge`) says how many pairs the
+   judge vetoed and how many decisions that would change. In `veto` the night is decided again without the vetoed
+   pairs, and that night is published — promotions, confirmations, fact decays, "said again" after a rejection,
+   new facts and conflicts, the evidence quoted. Memory-entry questions (`md_decays`) never take a veto.
+5. A night on which the judge answered for under half of the pairs it could send, or every provider was off,
+   applies no veto at all (`effective: degraded`). Three such nights without two good ones between raise one
+   `judge_degraded` alert a week, so a lost key or a dead network does not go unnoticed.
+
+### The models
+
+A decision model is a classifier behind an API: it reads a text, chooses one of the answers it is given and returns
+a probability for each. It writes no text, answers in a few hundred milliseconds and costs a fraction of a cent per
+call. Two are supported; the first one listed in `providers` is asked first, the second only when the first gives
+no usable answer.
+
+| | Jev (`jev`) | OpenAI Decisions (`openai`) |
+|---|---|---|
+| Made and served by | TypeSafe; served by OpenRouter (`/api/alpha/decisions`, an alpha API) | OpenAI (`/v1/decisions`, public beta since 2026-10-06) |
+| Model | `typesafe/jev-1.14` | `gpt-6-luna` |
+| Key | `OPENROUTER_API_KEY` | `OPENAI_API_KEY` |
+| Cost of one call, measured | about $0.00002 (OpenRouter reports the charge) | about $0.00002 (~210 input tokens at $0.10 per million; output is free) |
+| Latency, measured (median / 95th percentile) | ~280 ms / 0.4–1 s | ~290 ms / ~0.4 s |
+| False confirmations removed (holdout) | 84 % (142 of 169) | 75 % (127 of 169) |
+| True confirmations removed (holdout) | none of 101 | none of 101 |
+| Real confirmations among the counted | 0.37 → 0.79 | 0.37 → 0.71 |
+| By language, false ones removed (ru / en / zh) | 76 % / 94 % / 85 % | 68 % / 87 % / 74 % |
+| Data terms, as their documentation stated in October 2026 | not used for training; zero retention only for enterprise | kept up to 30 days for abuse monitoring; zero retention on approval; not used for training by default |
+
+Jev comes first because it removed more false confirmations with the same zero errors; OpenAI is the fallback for
+the nights Jev's alpha API is down or changes. Check the providers' current terms yourself before you send family
+chats to them: what was sent cannot be recalled.
+
+How it was measured: before any of this code existed, both providers answered 921 pairs prepared exactly as the
+plugin prepares them — 561 to choose the threshold on, then a holdout of 360 written separately (by another model,
+in Russian, English and Chinese) and frozen before the first run. `tau` 0.50 is the lowest value tried; the rule
+was the lowest threshold with at most 5 % wrong vetoes and 10 % lost confirmations, and both providers met it
+there. Before the release, the plugin itself replayed those recorded answers and vetoed the same pairs, one by
+one. The whole measurement cost $0.023.
+
+What it does not prove: the holdout was written by a model and not checked by a person, and live speech is messier
+than written examples. `shadow` and a labelled sample (below) are how you find out on your own chats. Local models
+were tried first, on the 3.2.0 experiment: Laya (multilingual, on a CPU) was the weakest of all, mDeBERTa-xnli was
+better on its own but added almost nothing as a veto — hence a cloud option, off by default.
+
+### Turning it on
 
 ```json
 "judge": {"mode": "shadow", "providers": ["jev", "openai"], "send_from": "trusted", "send_sources": ["telegram"]}
 ```
 
-- **Modes.** `off` (the default): the judge's code is not even loaded, nothing leaves the machine, the night is the
-  rules' alone. `shadow`: the judge is asked and its verdicts are journalled, the night publishes what the rules
-  decided, and `stats.judge` says how many decisions would change. `veto`: a vetoed pair stops counting for
-  everything the count decides — promotions, confirmations, fact decays, "said again" after a rejection, new facts
-  and conflicts, evidence. Memory-entry questions (`md_decays`) never take a veto.
-- **What leaves, and only from what you list.** Per pair: the fact's text as stored and the person's own words —
-  the reply quote left out, a voice transcript unwrapped, links (with or without `https://`) and `[service
-  brackets]` removed; no ids, senders or times. Names inside the texts do leave. `send_from` is `"trusted"` (the
-  trusted group chats and, with `trust_private_chats`, private chats) or a list of chat ids; `send_sources` lists
-  the session sources (`telegram`, …); `send_fact_stores` lists promoted chat stores whose facts may be sent (by
-  that chat's own messages only); `send_no_chat_sessions` lets sessions without a chat go. A pair whose text holds a
-  secret or an instruction, or runs long (fact over 400, words over 600 characters), stays home.
-- **To whom.** `jev` — OpenRouter, model Jev by TypeSafe; `openai` — OpenAI Decisions (`gpt-6-luna`). The first
-  listed is asked first; a second one is the fallback: when the first gives no usable answer, the same pair goes
-  once to the second — so one pair may reach both. What was sent cannot be recalled and falls under the providers'
-  retention terms.
-- **Keys.** `OPENROUTER_API_KEY` / `OPENAI_API_KEY` from the environment, else their own line in `~/.hermes/.env`
-  (Hermes keeps provider keys out of the environment of cron scripts). No other line is read; a key is never
-  printed, logged or written. A provider without a key, or that refuses it, is off for the night.
-- **Limits.** At most `max_attempts` (250) calls, `max_cost_usd` ($0.05, by the price the provider reports — soft:
-  the last call may pass it) and 120 seconds a night, and never past the gate's deadline. HTTPS to fixed endpoints,
-  no proxy, no redirect, answers of at most 64 KB read against a strict schema; an answer that does not fit is
-  unusable, not fatal. A call costs about $0.00002; a family bot's night counts a few to a few dozen pairs.
-- **Never on a half-judged night.** When the judge gives verdicts for under half of the pairs it could send, or
-  every provider is off, the night applies no veto (`effective: degraded`). Three such nights without two good ones
-  between raise one `judge_degraded` alert a week.
-- **Its files** (`~/.hermes/cache/`, 0600): `dream-judge.json` — verdicts for 90 days, keyed by hashes, with fact ids
+Put the keys in the environment or in `~/.hermes/.env` — Hermes keeps provider keys out of the environment of cron
+scripts, so the judge reads its own line (`OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) and no other. A key is never
+printed, logged or written anywhere. `install.py --check` then shows the mode, where pairs may go and whether each
+key is there, never its value. A section that breaks the schema turns the judge off and says why.
+
+### What leaves the machine
+
+- **Only from what you list.** `send_from` is `"trusted"` (the trusted group chats and, with
+  `trust_private_chats`, private chats) or a list of chat ids; `send_sources` names the session sources
+  (`telegram`, …); `send_fact_stores` names promoted chat stores whose facts may be sent, with that chat's own
+  messages only; `send_no_chat_sessions` lets sessions without a chat go. The default lists nothing.
+- **Only the fact and the person's own words.** The fact's text as stored; the message without the reply quote,
+  with a voice transcript unwrapped, without links (with or without `https://`) and `[service brackets]`. No ids,
+  senders or times. Names inside the texts do leave.
+- **Nothing risky, nothing long.** A pair whose text holds a secret or an instruction stays home, and so does a long
+  one (a fact over 400 characters, words over 600) — such pairs stay counted without a verdict. Long pasted messages
+  are a large share of what the rules count on a busy chat, and the judge does not see them.
+- **To whom.** OpenRouter for `jev`, OpenAI for `openai`; with both listed, one pair may reach both.
+
+### Limits, failures and files
+
+- At most `max_attempts` (250) calls, `max_cost_usd` ($0.05, by the price the provider reports; soft — the last call
+  may pass it) and 120 seconds a night, never past the gate's deadline. HTTPS to fixed endpoints, no proxy, no
+  redirect, answers of at most 64 KB. A provider without a key, or that refuses it, is off until the next night. An
+  answer, cache or health file of the wrong shape is unusable, not fatal; anything else that fails inside the judge
+  leaves the night to the rules.
+- Its files, in `~/.hermes/cache/` (0600): `dream-judge.json` — verdicts for 90 days, keyed by hashes, with fact ids
   and no text, reused only for the same pair with the same text and a provider still listed;
-  `dream-judge-journal.jsonl` — every pair sent, as sent, and a record of each night, for 90 days, for your review;
-  `dream-judge-health.json` — one line a night; `dream-judge-export-manifest.json` — the last review sample, until
-  it is scored (90 days at most). A night with the judge off deletes the journal and the health file; the forget
-  sweep removes a forgotten fact from all of them, even with the judge off.
-- **Off the network.** `--dry-run` reads the judge's cache and sends nothing; `--explain` does not load the judge;
+  `dream-judge-journal.jsonl` — every pair sent, as it was sent, and a record of each night, for 90 days, for your
+  review; `dream-judge-health.json` — one line a night; `dream-judge-export-manifest.json` — the last review sample,
+  until it is scored (90 days at most). A night with the judge off deletes the journal and the health file; the
+  forget sweep removes a forgotten fact from all of them, even with the judge off.
+- Off the network: `--dry-run` reads the judge's cache and sends nothing; `--explain` does not load the judge;
   `--judge-replay FILE` judges from recorded answers (JSON lines `{"provider", "fact", "words", "response"}`) and
-  writes nothing of the judge.
-- **From shadow to veto.** Run `shadow` for a while, then `dream.py --judge-export sample.jsonl`: a blind sample,
-  one judged pair per fact, each line only `{"id", "fact", "message"}`. Label every line in a JSON-lines file
-  `{"id", "label"}` — `S` (confirms), `C` (contradicts), `U` (neither) or `?` (for someone else to decide) — and
-  run `dream.py --judge-score labels.jsonl`. `ready`: the upper 95 % bound of wrong vetoes is at most 10 %, of lost
-  confirmations at most 20 %, coverage at least 90 % and no wrong veto changed a decision; `not_ready`: the lower
-  bound of wrong vetoes is over 10 %; otherwise `continue` (label more). When the fallback gave over a fifth of the
-  verdicts, each provider has to pass on its own.
-- **What it was measured on.** Before the code, on that frozen set (written by a model, not checked by a person),
-  at the default threshold `tau` 0.50: Jev removed 84 % and OpenAI 75 % of the false confirmations the rules had
-  counted, and not one true confirmation; the share of real confirmations among the counted rose from 0.37 to 0.79
-  and 0.71. Live speech is messier — that is what `shadow` and the review are for.
-- `install.py --check` shows the mode, where pairs may go and whether each key is there (never its value).
+  writes nothing of the judge. A real night — the gate, `hermes cron run`, `dream.py` without `--dry-run` — sends.
+
+### From shadow to veto
+
+Run `shadow` for a couple of weeks, then take a blind sample: `dream.py --judge-export sample.jsonl` writes one
+judged pair per fact, each line only `{"id", "fact", "message"}`. Label every line in a JSON-lines file
+`{"id", "label"}` — `S` (confirms), `C` (contradicts), `U` (neither) or `?` (for someone else to decide) — and run
+`dream.py --judge-score labels.jsonl`. It answers `ready` when the upper 95 % bound of wrong vetoes is at most 10 %,
+of lost confirmations at most 20 %, coverage at least 90 % and no wrong veto changed a decision; `not_ready` when
+the lower bound of wrong vetoes is over 10 %; otherwise `continue` — label more. When the fallback gave over a fifth
+of the verdicts, each provider has to pass on its own. Switch `mode` to `veto` only on `ready`.
 
 ## Using it by hand
 
@@ -357,6 +426,10 @@ tail -20 ~/.hermes/memories/DREAMS.md     # a section for today
 ```
 
 A quiet night prints `{"wakeAgent": false}` and the agent never starts — the wake gate doing its job.
+
+`hermes cron run` and the gates are a real night, like `dream.py` without `--dry-run`: they write the state,
+mark what they showed and, with the cloud judge on, send pairs to its providers. To look without consequences,
+use `dream.py --dry-run`.
 
 ## Configuration
 
