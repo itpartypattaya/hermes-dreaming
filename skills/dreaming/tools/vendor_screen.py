@@ -3,12 +3,14 @@
 
 The provider (itpartypattaya/hermes-plugin-holographic, MIT) refuses to store or recall a secret or an instruction
 to the assistant, in all its languages; it never cleans what it already holds, nor people's messages. The dream
-carries both into durable memory and its report, so it runs the same screen. The provider's `__init__.py` imports
-Hermes itself and cannot be imported by a cron script, so the screen is copied: every top-level definition that
-`_recall_problem` and `_secret_in` need, verbatim, with the comment block above it, in the source's order.
+carries both into durable memory and its report, so it runs the same screen. Since holographic 0.18.0 the screen
+lives in the provider's `screen.py`; the package imports Hermes itself and cannot be imported by a cron script, so
+the screen is copied: every top-level definition that `_recall_problem` and `_secret_in` need, verbatim, with the
+comment block above it, in the source's order. What they reach uses only re and unicodedata (screen.py's other
+imports serve definitions the copy does not take).
 `tests/test_holographic_017.py` checks the copy against the provider when its source is at hand.
 
-    python3 tools/vendor_screen.py <path to the provider's __init__.py> <version> <commit>
+    python3 tools/vendor_screen.py <path to the provider's screen.py> <version> <commit>
 """
 
 import ast
@@ -86,7 +88,7 @@ def main(argv):
     parts = definitions(src)
     head = f'''"""The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic {version} (`{commit}`), `__init__.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic {version} (`{commit}`), `screen.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """

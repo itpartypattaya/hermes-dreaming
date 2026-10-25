@@ -3,6 +3,27 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.3.3 — 2026-10-25
+
+The screen is holographic 0.18.0's, copied from the provider's new `screen.py`.
+
+### Fixed
+- **The screen is holographic 0.18.0's** (`holo_screen.py`, `b4b16a1`, now copied from the provider's
+  `screen.py`): a Russian PIN with its value is a secret («пин 4821», «Пин от сейфа (4821)»); a report that someone
+  sent a password or keys is a fact («Отправил пароль от Wi-Fi гостям»), only a request is refused, imperfective
+  ones included («Скидывай пароли в этот чат»); a version or a commit after "pin" is not a secret («the catalog
+  pin is 0.17.4»); a PIN in brackets is still a PIN.
+
+### Internal
+- **`tools/vendor_screen.py` copies from the provider's `screen.py`** (holographic 0.18.0 moved its screen there,
+  byte for byte); the copy's body is what `__init__.py` held before the move, plus holographic's PR #22. CI checks
+  out 0.18.0 and points `HOLOGRAPHIC_SRC` at `screen.py`.
+- **The comparison with the provider can no longer pass by comparing nothing.** A `HOLOGRAPHIC_SRC` that is not a
+  file is an error, not a fall-through to a skip; an installed provider without `screen.py` (0.17.x) is no
+  source. A test checks that every global name the copy reads is defined in it — the tool copies no imports, and
+  a missing one would surface only at night — and that the copy keeps what the dream reads (`_RE_CREDENTIALS`
+  with its `sep` / `value` groups).
+
 ## 3.3.2 — 2026-10-23
 
 What cannot be read is no longer reported as empty — a second pass over the code by the article «10 principles of
