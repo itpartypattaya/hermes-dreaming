@@ -43,9 +43,10 @@ COPY = ROOT / "scripts" / "holo_screen.py"
 def _provider_source():
     """(where, text) of the provider's `screen.py` (holographic 0.18.0 moved its screen there) when it is at hand:
     HOLOGRAPHIC_SRC, the installed Hermes plugin (what runs), or the last commit of a clone of its repository next to
-    this one — not the working tree, which may hold an unfinished change of the next release. An older provider, with
-    its screen still in `__init__.py`, is no source: the copy is from 0.18.0 on. HOLOGRAPHIC_SRC, when set, must be a file:
-    a mistyped path used to fall through to the next source or to a skip, and CI stayed green comparing nothing."""
+    this one, named as GitHub names it or as the plugin is installed (`holographic`) — not the working tree, which
+    may hold an unfinished change of the next release. An older provider, with its screen still in `__init__.py`, is
+    no source: the copy is from 0.18.0 on. HOLOGRAPHIC_SRC, when set, must be a file: a mistyped path used to fall
+    through to the next source or to a skip, and CI stayed green comparing nothing."""
     explicit = os.environ.get("HOLOGRAPHIC_SRC")
     if explicit:
         if not Path(explicit).is_file():
@@ -55,8 +56,8 @@ def _provider_source():
     installed = home / "plugins" / "holographic" / "screen.py"
     if installed.is_file():
         return str(installed), installed.read_text(encoding="utf-8")
-    for parent in list(ROOT.resolve().parents)[:4]:
-        clone = parent / "hermes-plugin-holographic"
+    for clone in (parent / name for parent in list(ROOT.resolve().parents)[:4]
+                  for name in ("hermes-plugin-holographic", "holographic")):
         if (clone / ".git").exists():
             try:
                 out = subprocess.run(["git", "-C", str(clone), "show", "HEAD:screen.py"], capture_output=True,
@@ -109,6 +110,29 @@ class VendoredScreenTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch.object(sys.modules[__name__], "ROOT", Path(tmp) / "a" / "b" / "c" / "d" / "e"):
                 self.assertIsNone(_provider_source())
+
+    def test_a_sibling_clone_named_holographic_is_a_source(self):
+        """Independent review (Antigravity, 2026-10-25): a clone of the provider next to this one under the plugin's
+        own name, `holographic`, was not looked for, so the comparison skipped with the source right there."""
+        screen = "def _secret_in(t):\n    return False\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "ws" / "holographic"
+            clone.mkdir(parents=True)
+            (clone / "screen.py").write_text(screen, encoding="utf-8")
+            git = ["git", "-C", str(clone), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                   "-c", "commit.gpgsign=false"]
+            subprocess.run(git + ["init", "-q"], check=True)
+            subprocess.run(git + ["add", "screen.py"], check=True)
+            subprocess.run(git + ["commit", "-q", "-m", "screen"], check=True)
+            env = {k: v for k, v in os.environ.items() if k != "HOLOGRAPHIC_SRC"}
+            env["HERMES_HOME"] = str(Path(tmp) / "home")
+            skill = Path(tmp) / "ws" / "dreaming" / "skills" / "dreaming"
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(sys.modules[__name__], "ROOT", skill):
+                found = _provider_source()
+        self.assertIsNotNone(found, "the clone next to this one was not found")
+        self.assertIn("holographic", found[0])
+        self.assertEqual(found[1], screen)
 
     def test_the_copy_needs_no_name_it_does_not_define(self):
         """The tool copies definitions, not imports, and the copy's header imports only re and unicodedata. A name

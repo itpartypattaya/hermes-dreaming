@@ -3,6 +3,13 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Internal
+- **The comparison with the provider finds a clone named `holographic` too** (independent review, Antigravity):
+  only `hermes-plugin-holographic` next to this repository was looked for, so a clone under the plugin's own name
+  was skipped and the comparison skipped with it.
+
 ## 3.3.4 — 2026-10-25
 
 The screen is holographic 0.18.2's.
