@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.18.0 (`b4b16a1`), `screen.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.18.2 (`3b794bc`), `screen.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.18.0"
-SOURCE_COMMIT = "b4b16a1"
+SOURCE_VERSION = "0.18.2"
+SOURCE_COMMIT = "3b794bc"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -321,6 +321,17 @@ _RU_ASKING = (r"прошу|просим|можешь|можете|сможешь
               r"|будь(?:те)?\s+добр\w*")
 
 
+# A request, not a report: the imperative or the infinitive of a request («Можешь отправить…?»), never the past tense
+# or a noun — «Соня скинула ключи от квартиры соседке», «Отправка ключей от дачи — в субботу» are facts (RFC #20,
+# 2026-10-24; the stems before matched every form). The imperfective asks too («Отправляй…»), its infinitive only
+# after a request («Прошу отправлять…»): «Андрей не любит отправлять пароли» is a habit (Codex review of PR #22).
+# «Показать» and a secret's variable name after an infinitive were missing («Можешь показать пароль?», «Можешь
+# отправить OPENAI_API_KEY?»; independent review, 2026-10-25).
+_RU_REQUEST = (r"(?<!\w)(?:" + _RU_SEND + r"|отправить|переслать|показать|раскрыть|выложить|скинуть|(?:" + _RU_ASKING
+               + r")\s+(?:[^\W\d_]+\s+){0,2}?(?:отправлять|пересылать|показывать|раскрывать|выкладывать|скидывать))"
+               r"(?!\w)")
+
+
 _RE_EXFILTRATION = re.compile("|".join((
     _alternatives(r"send|share|reveal|post|upload|forward|email|leak|paste"
                   r"|env[íi]a(?:r|le|lo)?|env[íi]e|comparte|compartir|compartilhe|compartilha|partilhe|revela|revele"
@@ -340,15 +351,9 @@ _RE_EXFILTRATION = re.compile("|".join((
     r"(?<![$%{])" + _alternatives(r"[şs]ifre\w*|parola\w*|anahtar\w*|tokens?|" + _ENV_SECRET_NAME, r"(?!)")
     + r".{0,40}"
     + _alternatives(r"g[öo]nder(?:in|iniz)?|payla[şs](?:[ıi]n)?|ilet(?:in)?|yay[ıi]nla(?:y[ıi]n)?", r"(?!)"),
-    # a request, not a report: the imperative or the infinitive of a request («Можешь отправить…?»), never the past
-    # tense or a noun — «Соня скинула ключи от квартиры соседке», «Отправка ключей от дачи — в субботу» are facts
-    # (RFC #20, 2026-10-24; the stems before matched every form). The imperfective asks too («Отправляй…»), its
-    # infinitive only after a request («Прошу отправлять…»): «Андрей не любит отправлять пароли» is a habit (Codex
-    # review of PR #22).
-    r"(?<!\w)(?:" + _RU_SEND + r"|отправить|переслать|раскрыть|выложить|скинуть|(?:" + _RU_ASKING
-    + r")\s+(?:[^\W\d_]+\s+){0,2}?(?:отправлять|пересылать|показывать|раскрывать|выкладывать|скидывать))(?!\w)"
-    r".{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
-    r"(?:" + _RU_SEND + r")(?!\w).{0,40}" + _ENV_OBJ,
+    # ru: a request (_RU_REQUEST) to send a credential or a secret's variable
+    _RU_REQUEST + r".{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
+    _RU_REQUEST + r".{0,40}" + _ENV_OBJ,
     _ZH_SEND + r".{0,40}(?:" + _CREDENTIAL_NAMES["zh"] + r"|助记词|助記詞|" + _ENV_OBJ + r")",
     r"(?:把|将|將).{0,20}(?:" + _CREDENTIAL_NAMES["zh"] + r"|助记词|助記詞|" + _ENV_OBJ + r").{0,40}" + _ZH_SEND,
     r"(?:" + _CREDENTIAL_NAMES["ja"] + r"|" + _ENV_OBJ + r").{0,40}(?:送って|送信して|共有して|公開して|転送して|送れ)",
