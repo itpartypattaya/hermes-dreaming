@@ -20,6 +20,12 @@ Examples:
   dream-reject.py --from-report --reason "duplicates the system prompt"
       # after a manual memory cleanup: reject every promotion the last pass
       # proposed, so the dropped entries are not offered right back
+
+The "merge?" proposals of 3.4.0 (`D-17` in the dream's report, `cache/dream-proposals.json`):
+  dream-reject.py --not-duplicates D-17   # the human said the two facts are different: never asked again
+  dream-reject.py --stale D-17            # a merge was refused (changed_since): the texts changed, ask anew
+  dream-reject.py --undo D-17             # a mistake: the proposal is open again
+  dream-reject.py --list                  # the reject list, then the proposals and their status
 """
 from __future__ import annotations
 
@@ -144,7 +150,13 @@ def main(argv=None):
                     help="the Hermes home the dream ran with (default $HERMES_HOME or ~/.hermes): its "
                          "config, fact store, report and state lock")
     ap.add_argument("--list", action="store_true", help="show the reject list")
-    ap.add_argument("--undo", help="lift a rejection by record key or fact_id")
+    ap.add_argument("--undo", help="lift a rejection by record key or fact_id; D-17: reopen a merge proposal")
+    ap.add_argument("--not-duplicates", metavar="D-N",
+                    help="the human said the two facts of merge proposal D-N are different: it is closed and the "
+                         "pair is never asked about again")
+    ap.add_argument("--stale", metavar="D-N",
+                    help="merge proposal D-N no longer matches the store (the merge answered changed_since): "
+                         "closed, the dream asks anew if the facts still look alike")
     ap.add_argument("--from-report", nargs="?", const="", metavar="JSON",
                     help="reject every promotion in the last dream report (default "
                          "cache/dream.json, or the path given). Use right after a manual "
@@ -167,7 +179,110 @@ def main(argv=None):
         return _run(ap, args)
 
 
+def _proposal_args(args):
+    """The proposal number a merge command names, checked: "D-17" (or "d-17", "17")."""
+    raw = args.not_duplicates or args.stale or args.undo or ""
+    raw = str(raw).strip().upper()
+    if raw.isdigit():
+        raw = f"D-{raw}" if (args.not_duplicates or args.stale) else raw
+    return raw if _dream().PROPOSAL_RE.fullmatch(raw) else None
+
+
+def _run_proposal(args):
+    """--not-duplicates / --stale / --undo D-N on `cache/dream-proposals.json` (and `dup_not` in the seen state),
+    under the state lock the caller holds."""
+    d = _dream()
+    number = _proposal_args(args)
+    if number is None:
+        print(f"not a proposal number: {args.not_duplicates or args.stale or args.undo!r} (expected D-17)",
+              file=sys.stderr)
+        return 1
+    path, seen_path = d.proposals_path(), d._state_default("DREAM_SEEN_STATE", "seen")
+    try:
+        data = d.load_proposals(path)
+        seen = d._load_state_file(seen_path) if seen_path else {}
+    except OSError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+    rec = data["proposals"].get(number)
+    dup_not = seen.get("dup_not") if isinstance(seen.get("dup_not"), dict) else {}
+    if rec is None and args.undo:
+        # The closed proposal is gone after its days, the human's «different» is not: undone by the same number.
+        keys = [k for k, v in dup_not.items() if isinstance(v, dict) and v.get("proposal") == number]
+        if keys:
+            for k in keys:
+                dup_not.pop(k)
+            d._write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
+            print(f"{number}: «these are different» lifted — the pair may be asked about again (a new number)")
+            return 0
+    if rec is None:
+        print(f"no merge proposal {number} (the dream keeps a closed one {d.DUP_CLOSED_KEEP_DAYS} days)",
+              file=sys.stderr)
+        return 1
+    now = datetime.now(timezone.utc)
+    status = rec.get("status")
+    seen["dup_not"] = dup_not
+    if args.not_duplicates:
+        if status == "done":
+            print(f"{number} was merged already — nothing changed; to undo a merge, see the provider's history",
+                  file=sys.stderr)
+            return 1
+        d._close_proposal(rec, "declined", now, "the human: these are different")
+        dup_not[rec["pair_key"]] = {"at": now.isoformat(timespec="seconds"), "proposal": number,
+                                    "fact_ids": [(rec.get(s) or {}).get("fact_id") for s in ("keep", "copy")]}
+        message = f"{number}: not duplicates — the pair is not asked about again"
+    elif args.stale:
+        if status != "open":
+            print(f"{number} is {status} already — nothing changed")
+            return 0
+        d._close_proposal(rec, "stale", now, "the merge was refused: the texts changed")
+        # Nobody answered texts the store still holds: the pair's 180 days of rest (and its mark of tonight's
+        # showing) go with the proposal, so the next pass asks again — under the same key when the texts kept it.
+        d.release_pair(seen, rec.get("pair_key"), number)
+        message = f"{number}: stale — the dream asks anew if the facts still look alike"
+    else:  # --undo
+        if status not in ("declined", "stale"):
+            print(f"{number} is {status} — nothing to undo", file=sys.stderr)
+            return 1
+        for key in ("closed_at", "closed_why"):
+            rec.pop(key, None)
+        rec["status"] = "open"
+        rec["created"] = now.isoformat(timespec="seconds")  # its 180 days start again
+        dup_not.pop(rec["pair_key"], None)
+        message = f"{number}: open again"
+    d.save_proposals(path, data)
+    if seen_path and (args.not_duplicates or args.undo or args.stale):
+        d._write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
+    print(message)
+    return 0
+
+
+def _list_proposals():
+    """The merge proposals (3.4.0) for `--list`: number, status, age, both texts short."""
+    d = _dream()
+    path = d.proposals_path()
+    data, why = d._read_state_file(path) if path else ({}, None)
+    if why:
+        print(f"the proposals file {path} is {why} — left as it is", file=sys.stderr)
+    props = data.get("proposals") if isinstance(data.get("proposals"), dict) else {}
+    if not props:
+        return
+    print("merge proposals:")
+    now = datetime.now(timezone.utc)
+    for key in sorted(props, key=lambda k: int(k.split("-", 1)[1]) if k.split("-", 1)[-1].isdigit() else 0):
+        rec = props[key] if isinstance(props[key], dict) else {}
+        try:
+            age = f"{(now - datetime.fromisoformat(rec['created'])).days}d ago"
+        except (TypeError, ValueError, KeyError):
+            age = "?"
+        keep, copy_ = rec.get("keep") or {}, rec.get("copy") or {}
+        print(f"{key} {rec.get('status')}, {age}: «{(keep.get('content') or '')[:60]}» / "
+              f"«{(copy_.get('content') or '')[:60]}»")
+
+
 def _run(ap, args):
+    if args.not_duplicates or args.stale or (args.undo and _proposal_args(args)):
+        return _run_proposal(args)
     state_path = args.state or _default_state()
 
     # Only a holder of the state lock may move a broken file aside; `--list` reads without it.
@@ -180,6 +295,7 @@ def _run(ap, args):
     if args.list:
         if not state:
             print("reject list is empty")
+            _list_proposals()
             return 0
         # Rejections are indefinite and invisible, so age matters: a
         # half-year-old "outdated" may have become true again. Review the list
@@ -195,6 +311,7 @@ def _run(ap, args):
                 age = rec.get("at", "?")
             print(f"{key}{trace}: {age} — {shown}"
                   f"{' | ' + rec['reason'] if rec.get('reason') else ''}")
+        _list_proposals()
         return 0
 
     if args.undo:
@@ -258,10 +375,12 @@ def _run(ap, args):
         if content is None:
             ap.error(f"fact {args.fact_id} not found in the fact store — pass --content")
 
-    # The key is ALWAYS the text fingerprint. Keying by fact_id is unsafe:
-    # sqlite reuses ids after the last row is deleted, and a rejection of a new
-    # fact would silently overwrite the rejection of an old one. fact_id stays
-    # a tracing field and works in `--undo`.
+    # The key is ALWAYS the text fingerprint. Keying by fact_id is unsafe: the
+    # core may re-extract the same fact under a new id, and a generic `sqlite`
+    # source without AUTOINCREMENT reuses the id of a deleted last row (a
+    # rejection of a new fact would overwrite the rejection of an old one;
+    # holographic never reuses an id). fact_id stays a tracing field and works
+    # in `--undo`.
     key = _fingerprint(content)
     record = {
         "fact_id": args.fact_id,

@@ -477,14 +477,109 @@ hand-overs the cursor moves on with a note on stderr, so a chunk that kills the
 turn every time cannot stall extraction. Before this a failed turn silently
 skipped its chunk.
 
+## Duplicates across the store (3.4.0, holographic ≥ 0.19.0)
+
+The near-duplicate collapse above sees only the candidates of one night and is strict on purpose; a fact retold in
+other words months later («Ветка 30 — рабочие задачи Виктора» / «Ветка 30 служит для рабочих задач Виктора; её
+сообщения — рабочие задачи») stays two facts for good. Since 3.4.0 the pass looks for such pairs over the whole main
+store and asks the human, one pair a night, «merge?» — with both texts whole and a proposal number (`D-17`). The
+agent merges only on a "yes" to that number, through `fact_store merge` with the `version_id`s the human was shown
+(`expect`); at night nothing is merged (the provider refuses a scheduled job a merge of facts it did not store in
+that session). The pass itself never writes the store.
+
+**The rule** (`duplicate_pair`) is a generator of questions, not a test of identity. A pair is a candidate when all
+of these hold:
+- *significant words*: every word of the body — the leading date stamp and words with a digit left out, stopwords
+  kept (dropping them made «до»/«после» and friends invisible), a word of 5+ letters by its stem. Containment
+  |A∩B| / min(|A|,|B|) ≥ `duplicates.min_containment` (0.7);
+- *short facts* (fewer than 3 significant words on the shorter side): only at containment 1.0 with the same
+  non-empty set of numbers / @-handles («@viktor_k — Виктор» / «Юзернейм Виктора в Telegram: @viktor_k.»); a fact
+  without significant words only with its own text; two texts equal but for case and spaces always;
+- *numbers* (`_numbers`: digits, thousands folded, months and weekdays in words) and @-handles of one side a subset
+  of the other's, the shared ones in the same order (catches «в 71 доходы, в 74 расходы» against the swap);
+- *names* — capitalized words, the first word of a sentence included — of one side a subset of the other's, and
+  pointing the same way as the numbers when both differ («Виктор и Ольга ведут ветку 30» / «Виктор ведёт ветки 30 и
+  31» is no pair);
+- *no word substitution*: when each side has words the other lacks and there are at most 2 of them on each side,
+  one word was swapped («утром»/«вечером», «разрешает»/«запрещает», «мама»/«папа», «до»/«после»), not retold. A
+  threshold of 3 already ate real retellings;
+- *no opposite polarity* (`polarity_differs`, both ways).
+
+On the synthetic set of the tests (`tests/test_duplicate_pairs_340.py`) the rule finds 11 of 11 retellings and
+absorptions and none of 16 pairs that differ; each guard alone holds the pairs it is named for (a test switches the
+others off). Measured before the implementation on the author's store (59 facts before a manual clean-up, 15 groups of
+copies, 6 look-alike pairs that are different) with an approximation of this rule: 12 of 15 groups found, 0 false
+pairs; the measure of the shipped pipeline on that copy is still to be run.
+
+**Limits**, written here rather than hidden:
+- two names in swapped roles at an equal set of words («Виктор помогает Борису» / «Борис помогает Виктору») are a
+  pair: the question then says "the names come in another order"; numbers swapped are caught, roles are not;
+- the tense of one verb whose forms share a stem («работает» / «работал») is not seen;
+- a translation is not found (the rule reads words);
+- the first word of a sentence counts as a name, so «Ветка…» / «Сообщения из ветки…» do not pair — a cost in recall;
+- absorption is a pair by construction: «Ветка 30 — рабочие задачи Виктора» ⊂ «…, ветка 33 — домашние дела», and
+  the longer one is the keep.
+
+**Candidates.** Comparing every pair of a store is quadratic; an inverted index over significant stems gives the
+pairs that share at least max(2, ⌈0.7·|S|⌉) stems with the shorter side S. Since stopwords are kept, "share two
+stems" alone matches almost every pair; a prefix filter makes it cheap without changing the result: S's |S| − that
++ 1 rarest stems must hold one of the shared ones, so only the facts under those stems are looked at. Short facts
+come through their own path (the same numbers / @-handles; the same text). The pair checks of a night are capped by
+`duplicates.max_pair_checks` (200 000); past it the night skips the search, says `stats.duplicate_pairs_skipped:
+budget` and raises the `duplicates_budget` alert once per cooldown. 5000 synthetic facts drawn from a small
+vocabulary (the worst case for the index) take about 6 s and 7 400 checks on a laptop (i5-1135G7); most of the time
+goes to reading weekdays and months in each text.
+
+**Who takes part.** Facts of the main store only (chat stores never: a session in a chat writes to its own
+database). Not: quarantined, rejected, longer than `duplicates.max_chars` (2000), merged copies, facts in tonight's
+`promotions`, `conflicts` or `fact_decays` (and their `duplicates`) — one question about a fact a night. The section
+is off, with the reason in `stats.duplicate_pairs_skipped`, when `duplicates.enabled` is false (`disabled`), the
+source is not holographic (`not_holographic`), the provider's scope is not `profile` (`scope_user` / `scope_chat` /
+`scope_thread`: the session that answers would write to another database than the one the pass read), the store has
+no `fact_merges` (`merge_unavailable`: holographic older than 0.19.0), the store cannot be read (`unreadable`) or
+the pass runs without its state files (`no_state`).
+
+**Keep and copy.** The side whose numbers and names hold the other's (and more) stays; then the one with more
+significant words; then `origin` said / confirmed over unknown over inferred; more versions; more retrievals; the
+smaller id. `copy.covered`: every significant word of the copy is in the keep; when not, `copy.extra_words` names
+the words only the copy has and the question says so — `covered` decides nothing by itself. `keywords_after`: the
+keep's keywords, then the copy's, distinct, through the screen, at most 12.
+
+**A night.** Pairs are ranked by containment; those of one report share no fact; `duplicates.per_night` (1) are
+asked, the rest wait (`duplicate_pairs_deferred`). A pair asked rests `duplicates.question_cooldown_days` (180) —
+keyed by the fingerprints of its two texts (bucket `duplicate_pairs`; an edit of case or spaces only keeps the key).
+It counts as asked only when the agent's answer names its number: the next pass reads the cron session's answer
+(as `_agent_acked` does) and a number missing from it reopens the pair. Stats: `duplicate_pairs_found`, `_published`
+(wakes the gate), `_suppressed` (resting, or "different"), `_deferred`, `_skipped`.
+
+**Proposals** live in `cache/dream-proposals.json` (0600, written under the state lock): `{"next_proposal": n,
+"proposals": {"D-17": {pair_key, created, status, keep {fact_id, version_id, content, origin}, copy {…, covered,
+extra_words}, keywords_after, why, last_published}}}`. A number is never reused — the counter is kept in that file
+and in the seen state, and never goes below a number given. Status: `open`; `done` when `fact_merges` shows the pair
+merged; `stale` when a participant changed (another current `version_id`), ended, was merged elsewhere, or nobody
+answered for 180 days; `declined` by `dream-reject.py --not-duplicates D-17`, which also records the pair in
+`dup_not` of the seen state (never asked again; `--undo D-17` lifts it). A closed proposal is kept 30 days, then
+removed; `dup_not` stays.
+
+**Merged facts (`merge_sweep`).** A merge is no forget: the copy's text stays in the store's history, so the diary
+lines and logs that mention it stay too, and `fact_merges` never joins the tombstones. On every pass (before and
+after it, never in the 15-minute forget gate) the copies leave this skill's live state: their items in
+`cache/dream.json` (a pair goes whole), their cooldown records and `_pending` entries, reject records, rows of the
+diary index and records of the judge's files; proposals turn `done` or `stale`; the keep's own records and `dup_not`
+stay. The sweep is idempotent. Confirmations of a copy stay under the copy's id, as the provider keeps them: the keep
+is not `confirmed` by them, and a copy's recent confirmation does not rest the keep. A later `forget` of the keep
+leaves a tombstone for each id of the group, and the forget sweep cleans the rest — proposals with a forgotten fact
+are removed whole (they hold its text).
+
 ## Wake gate (`dream-precheck.py`)
 
 The pre-check runs the dream and prints a compact JSON only when
 `stats[key] > 0` for one of `precheck.actionable_keys` (default:
 new_facts_reviewed, promotions, fact_decays, md_decays, conflicts,
-quarantined, alerts), **or** when a durable file sits at or above
+quarantined, alerts, duplicate_pairs_published), **or** when a durable file sits at or above
 `precheck.memory_full_pct` (`memory_pressure`); otherwise `{"wakeAgent": false}`.
-Themes and ephemeral events never open the gate.
+Themes and ephemeral events never open the gate. The `duplicate_pairs` section passes whole, without
+`precheck.max_content`: the question needs both texts entire, and the proposal is bound to exactly them.
 
 The fill-level gate exists because the core's char limit guards **writes only**:
 at the ceiling `add`/`replace` are refused and the agent silently stops
@@ -522,7 +617,8 @@ scheduler's own script timeout (an hour) and its raw alert.
   `DREAM_TRUSTED_CHAT_IDS`, `DREAM_MIN_SCORE`, `DREAM_MIN_MENTIONS`,
   `DREAM_NEW_FACTS_CAP`, `DREAM_SEEN_COOLDOWN_DAYS`, `DREAM_MD_ASK_COOLDOWN_DAYS`,
   `DREAM_WINDOW_DAYS`, `DREAM_CORR_DAYS`, `DREAM_MD_DECAY_DAYS`, `DREAM_DIARY_KEEP`,
-  `DREAM_ASKED_STATE`, `DREAM_REJECTED_STATE`, `DREAM_SEEN_STATE`, `DREAM_SNAPSHOT_STATE`.
+  `DREAM_ASKED_STATE`, `DREAM_REJECTED_STATE`, `DREAM_SEEN_STATE`, `DREAM_SNAPSHOT_STATE`,
+  `DREAM_PROPOSALS_STATE`.
 - The nightly cron session usually has only the `memory` toolset:
   `dream-reject.py` cannot run there, so mechanical repeats are closed by the
   script's cooldowns, not by agent discipline. `allowed-tools` in `SKILL.md`

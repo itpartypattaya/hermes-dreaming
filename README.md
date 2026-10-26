@@ -56,6 +56,13 @@ and the forget sweep beside it](docs/overview.png)
   meaning reaches a paraphrase that shares no words, but only while its endpoint answers; keywords
   live in the store and work offline. The pass reads words either way — vectors are the provider's
   business and never reach its JSON.
+- **Duplicates across the store** (holographic ≥ 0.19.0). Two facts that say one thing in other words — the
+  same thread described twice, a profile stored again by the nightly extraction — are found over the whole store
+  and asked about, one pair a night: «D-17: "…" and "…" — look like one fact. Merge?», both texts whole. Only a
+  "yes" to that number merges them, through `fact_store merge` with the versions you were shown; the copy's
+  history stays under the fact that remains. Nothing is merged at night, and pairs that differ by one word
+  («утром» / «вечером»), a number, a person or a "not" are not asked about. The extraction run merges a retelling it
+  has just stored into the old fact itself, when the provider's hint offers it and nothing new is in it.
 - **A diary** (`memories/DREAMS.md`) with provenance for every candidate.
 
 ## Every item gets an outcome
@@ -77,6 +84,12 @@ text — and this skill removes its own copies of the fact by that id: the last 
 list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0; older ones through an index of
 line hashes kept while the fact still existed) and the logs of the dream cron jobs. Every pass does
 that first; the `no_agent` job `dream-forget-sweep.py` does it every 15 minutes without the model.
+
+A "merge?" question (holographic ≥ 0.19.0) has a number that is never reused. "Yes D-17" → `fact_store merge`
+with the versions shown; a text that changed since makes the merge refuse (`changed_since`) and the question is
+asked anew. "They are different" → `dream-reject.py --not-duplicates D-17`, never asked again (`--undo D-17`); with
+no terminal in the session the pair simply rests 180 days. A question the agent's report did not name comes back the
+next night. A merge is no forget: the diary keeps its lines, and only the skill's live state lets the copy go.
 
 ## Install
 
@@ -463,6 +476,7 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 | `diary.heading`, `diary.keep_sections`, `diary.path` | diary header, rotation and where it lives (`memories/DREAMS.md`) |
 | `memory_loss_alert_fraction` | loss-guard threshold (0.25) — applied to the share of lost entries **and** of lost characters |
 | `gates.promotion_cooldown_days` | rest for a promotion already shown (3 days); without it a candidate the agent could not write came back every night |
+| `duplicates.enabled`, `.min_containment`, `.per_night`, `.question_cooldown_days`, `.max_pair_checks`, `.max_chars` | the "merge?" questions (holographic ≥ 0.19.0, on by default): the share of the shorter fact's words the other must hold (0.7), questions a night (1), rest of an asked pair (180 days), the night's budget of pair checks (200 000; past it the search is skipped with one alert), facts longer than this (2000) take no part — `references/scoring.md`, "Duplicates across the store" |
 | `keywords.enabled`, `keywords.cap` | list facts without keywords for the agent (`keywords_needed`, at most `cap` a night, default 10) and ask the extraction run for keywords. Off by default; turn it on with holographic ≥ 0.6.1 — an older provider ignores the parameter, and 0.6.0 re-dated a fact when it got keywords |
 | `chat_stores.read`, `chat_stores.promote_from` | holographic `scope: user / chat / thread` only: list every per-chat database (counts), promote the facts of the listed chats — see [One database per chat](#one-database-per-chat) |
 | `judge.mode`, `judge.providers`, `judge.tau`, `judge.send_*`, `judge.max_attempts`, `judge.max_cost_usd` | the optional cloud judge: `off` (default) / `shadow` / `veto`; `jev` and / or `openai`, the first asked first; the veto threshold, 0.50–1 (default 0.50); what may be sent — `send_from` (`"trusted"` or chat ids), `send_sources`, `send_fact_stores`, `send_no_chat_sessions`; the night's limits (250 calls, $0.05). A section that breaks the schema turns the judge off and says why — see [Optional cloud judge](#optional-cloud-judge-off-by-default) |

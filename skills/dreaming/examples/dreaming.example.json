@@ -42,6 +42,10 @@
 
   "keywords": {"enabled": false, "cap": 10},
 
+  "_comment_duplicates": "holographic >= 0.19.0: pairs of facts that look like one fact, asked as 'merge?' with both texts and a number (D-17); the agent merges only on a yes to that number. min_containment: the share of the shorter side's significant words the other holds; per_night: questions a night; question_cooldown_days: rest of an asked pair; max_pair_checks: the night's budget (past it: skipped, one alert); max_chars: longer facts take no part. See references/scoring.md, Duplicates across the store.",
+  "duplicates": {"enabled": true, "min_containment": 0.7, "per_night": 1, "question_cooldown_days": 180,
+                 "max_pair_checks": 200000, "max_chars": 2000},
+
   "_comment_chat_stores": "Only with holographic scope user / chat / thread (one database per user / chat / topic). read: list every database in the report — counts only. promote_from: chats whose facts join the pass, each corroborated by its own chat only — \"telegram:-1001234567890\", \"telegram:-1001234567890:42\" (a topic, scope thread), \"telegram:123456789\" (a user, scope user). Memory files are shared by all chats: a promoted chat's facts reach every chat once written there.",
   "chat_stores": {"read": false, "promote_from": []},
 
@@ -59,11 +63,13 @@
   "state": {"asked": "cache/dream-asked.json",
             "rejected": "cache/dream-rejected.json",
             "seen": "cache/dream-seen.json",
-            "snapshot": "cache/dream-snapshot.json"},
+            "snapshot": "cache/dream-snapshot.json",
+            "proposals": "cache/dream-proposals.json"},
 
   "precheck": {"max_content": 300,
                "memory_full_pct": 85,
                "timeout_sec": 600,
                "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
-                                   "md_decays", "conflicts", "quarantined", "alerts"]}
+                                   "md_decays", "conflicts", "quarantined", "alerts",
+                                   "duplicate_pairs_published"]}
 }

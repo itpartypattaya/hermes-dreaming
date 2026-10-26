@@ -116,6 +116,8 @@ DEFAULT_ACTIONABLE_KEYS = (
     "conflicts",
     "quarantined",
     "alerts",
+    # 3.4.0: a "merge?" question about two facts that look like one (holographic >= 0.19.0).
+    "duplicate_pairs_published",
 )
 DEFAULT_MAX_CONTENT = 300  # do not drag abnormally long facts into the prompt
 
@@ -217,6 +219,9 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
         "ephemeral_events": [compact_fact(x, max_content) for x in data.get("ephemeral_events", [])],
         "fact_decays": [compact_fact(x, max_content) for x in data.get("fact_decays", [])],
         "md_decays": data.get("md_decays", []),
+        # 3.4.0: the pairs the human is asked to merge, texts whole — the question needs both texts entire,
+        # never cut to `max_content` (the proposal is bound to exactly these texts and versions).
+        "duplicate_pairs": data.get("duplicate_pairs", []),
         # Rides along when the agent is awake anyway (not an actionable key).
         "trust_feedback": data.get("trust_feedback", []),
         # The same: facts people said again on different days -> fact_feedback confirmed (holographic >= 0.15.0).

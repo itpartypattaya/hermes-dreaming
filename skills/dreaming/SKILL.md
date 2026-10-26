@@ -1,7 +1,7 @@
 ---
 name: dreaming
-description: "Memory dreaming: nightly consolidation, questions, rejects."
-version: 3.3.4
+description: "Memory dreaming: nightly consolidation, questions, rejects, and the human's answers to its questions."
+version: 3.4.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.5)
@@ -24,7 +24,8 @@ in each of them (`references/scoring.md`, "Every language").
 
 - A cron job handed you the dream's JSON (`stats`, `promotions`, `new_facts`, …) — process it.
 - A cron job handed you `task: extract candidate facts…` with `messages` — the extraction run.
-- The human answers a dream question: "outdated", "wrong", "forget it", "still true", "don't ask again".
+- The human answers a dream question: "outdated", "wrong", "forget it", "still true", "don't ask again" — or
+  "yes D-17" / "D-17 are different" to a "merge?" question (step 7e).
 - The human asks what tonight's dream would propose, why a fact scored the way it did, or what
   is muted.
 - `memory_pressure` arrived, or a `memory` write was refused for the char limit.
@@ -37,6 +38,9 @@ in each of them (`references/scoring.md`, "Every language").
   `python3 "${HERMES_SKILL_DIR}/scripts/install.py"` (README: installation).
 - A fact source: the Hermes `holographic` memory provider (default), `sqlite` / `jsonl` export,
   or `none` (memory files only). Extraction works with `holographic` only (`fact_store` tool).
+- holographic ≥ 0.19.0 (`fact_store merge`) for the "merge?" questions about duplicate facts (step 7e) and for
+  merging a retelling the extraction run just stored (step 9). With an older provider both are off
+  (`stats.duplicate_pairs_skipped: merge_unavailable`) and everything else works as before.
 - Python 3 standard library. No network, no API keys.
 
 ## How to Run
@@ -51,7 +55,9 @@ in each of them (`references/scoring.md`, "Every language").
 - **Why a fact scored like that:** `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --explain <fact_id>`
 - **Close a question** (manual session only):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream-reject.py" <fact_id> --reason "<short why>"`;
-  `--list` shows what is muted and how old; `--undo <id>` lifts a mistake.
+  `--list` shows what is muted and how old; `--undo <id>` lifts a mistake. A "merge?" question (step 7e):
+  `--not-duplicates D-17` (the human said they are different), `--stale D-17` (the merge answered
+  `changed_since`), `--undo D-17`.
 - **Clean the copies of forgotten facts now** (every pass does it first anyway):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --forget-sweep`; between nights the `no_agent` gate
   `dream-forget-sweep.py` (installed next to the other gates) does the same without the model.
@@ -67,6 +73,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `promotions` | write one short fact through `memory`, or reject it — no third outcome |
 | `previously_rejected` on an item | a human rejected this fact half a year ago or more and it was said again since: ask whether it is true now (quote the old reason); never write it without a yes |
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
+| `duplicate_pairs` | ask "merge?" by its number (`D-17`), both texts whole, one line each beyond the 6; no `fact_store` call at night; on the human's "yes" to that number — `merge` with `expect` (step 7e) |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
 | `origin` on an item | who stands behind the fact (holographic ≥ 0.15.0): `said`, `confirmed`, `inferred` (an agent's conclusion nobody confirmed — write it only when its evidence is the person's own words, else ask); no field = unknown |
 | `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never replace |
@@ -207,6 +214,41 @@ in each of them (`references/scoring.md`, "Every language").
    last 30 days is not offered; at most 10 a night. No `confirmed` action on `fact_feedback` (an older
    provider) → skip the section silently; the section is empty anyway when the store has no
    confirmations table. In the report: one line with the count, no ids.
+7e. **`duplicate_pairs` — "merge?" (holographic ≥ 0.19.0).** Each item is a pair of facts of the store that look
+   like one fact: `proposal` (`D-17`, a number never reused), `keep` (the fact that stays) and `copy` (the one that
+   would become part of it), each with its whole `content`, `version_id` and `origin`; `copy.covered` (every word of
+   the copy is in the keep) and `copy.extra_words` (the ones that are not); `keywords_after`; `why`. The pass only
+   finds look-alikes — whether they are one fact is the human's call, on the two texts.
+   - **At night (cron): only ask.** One report line per pair, beyond the 6-line limit of step 10, in the human's
+     language: `D-17: «<keep, whole>» and «<copy, whole>» — look like one fact. Merge?`. With `covered: false` add
+     which words only the second has (`extra_words`); when `why` says the names come in another order, say so.
+     Never shorten the texts and always write the number: a pair your report does not name is asked again
+     tomorrow. Make no `fact_store` call for this section (the provider refuses a scheduled job a merge of facts
+     it did not store itself anyway).
+   - **On the human's answer (any session with `fact_store`).** Only the words of the adult who owns the memory
+     count — as for `forget`, not a child's and not another chat member's.
+     1. The answer must name the number ("yes D-17", "D-17 are different") or quote the report beyond doubt;
+        otherwise ask again and show both texts. You cannot know which texts the human saw — when unsure, show
+        them again before doing anything.
+     2. Read the proposal: `read_file ~/.hermes/cache/dream-proposals.json`, `proposals["D-17"]`. A status other
+        than `open` (`done`, `declined`, `stale`) → say so in one line and do nothing.
+        Before any merge, call `fact_store stats`: its `database` must be the proposal's `store`
+        (the same file, after resolving the paths). Missing `store`, a different database, or
+        no `database` to compare → stop; do not merge, and ask from the correct profile.
+     3. "Yes" → `fact_store merge {fact_id: <keep.fact_id>, from: [<copy.fact_id>], keywords: <keywords_after>,
+        expect: {"<keep.fact_id>": <keep.version_id>, "<copy.fact_id>": <copy.version_id>}}` — exactly the
+        versions the human was shown. `changed_since`, any other error, or an answer whose `merged` and `already`
+        both lack the copy → nothing was merged: tell the human "the texts changed since, I will ask again" and,
+        with `terminal`, run `dream-reject.py --stale D-17` (without it the next pass sees the new versions
+        itself). Success (the copy in `merged`, or in `already` when an earlier answer was lost) → one line to the
+        human; the next pass marks the proposal `done` itself.
+     4. "They are different" → with `terminal`: `dream-reject.py --not-duplicates D-17` — the pair is never asked
+        about again (`--undo D-17` lifts it). Without `terminal`: nothing to do — the question rests 180 days.
+   - A "yes" covers exactly that proposal: not other proposals, not facts you found alike yourself, not the
+     `duplicates` of promotions, MEMORY.md / USER.md, the extraction run, decay or memory pressure. Merge only: do
+     not `change` the keep to blend the texts, do not delete either fact. No call undoes a merge: the copy's
+     history stays under the keep (`history {fact_id: <keep>}` shows it) and an `add` of its text answers with the
+     keep.
 8. **Memory pressure.** The char limit gates writes silently. Tidy the named file: merge close
    entries with one `replace` (anchor copied verbatim from `current_entries`), drop entries that
    only restate the system prompt (routing tables, persona rules, skill triggers). Keep what exists
@@ -230,11 +272,16 @@ in each of them (`references/scoring.md`, "Every language").
    is your conclusion from several messages or from context. Never add a text `existing_facts` already
    holds, in any wording: an `add` of a stored text counts as the person saying it again. `window.attempt`
    means the chunk was handed over before without an answer — what was stored then is in
-   `existing_facts`. Never `forget` in this run, even when an `add` hints at it: leave both facts, the
-   dream raises duplicates with a human. An `add` answered `past_version` or `forgotten` stored
+   `existing_facts`. Never `forget` in this run, even when an `add` hints at it. With holographic ≥ 0.19.0, when an
+   `add` of this run answers `similar` and its hint offers `merge {fact_id: <old>, from: [<new>]}`, and the new fact
+   says the same as that old one with nothing new in it, run exactly that merge — only the fact you have just added
+   in this run, only into a fact `similar` names. The new one adds anything (a number, a name, a detail) → leave
+   both: the dream asks the human (step 7e). No `merge` on `fact_store` (an older provider) → leave both, as
+   before. An `add` answered `past_version` or `forgotten` stored
    nothing on purpose (an old state, or something the human asked to forget) — move on. **Always answer** — one line (count and window)
    or `[SILENT]`: the answer is what marks those messages processed.
-10. **Report** — for a human, in their language, at most 6 short lines: only facts actually added or updated, only the
+10. **Report** — for a human, in their language, at most 6 short lines (the "merge?" questions of step 7e are extra
+   lines, one per pair, texts whole, with their numbers): only facts actually added or updated, only the
    questions that need the human's answer, one line "won't ask again" for anything rejected by
    their answer. No scores, themes, empty sections, `fact_id`s, JSON or paths. Do not call an entry
    `pending` when `memory.write_approval=false`.

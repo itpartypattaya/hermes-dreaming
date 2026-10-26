@@ -43,6 +43,7 @@ import unicodedata
 from collections import Counter, defaultdict, namedtuple
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
+from pathlib import Path
 
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo
@@ -185,6 +186,16 @@ DEFAULT_CONFIG = {
     # holographic >= 0.6.1 — 0.6.0 stamped a fact "changed now" when it got
     # keywords, and old facts came back as new ones.
     "keywords": {"enabled": False, "cap": 10},
+    # Duplicates across the whole fact store (3.4.0, holographic >= 0.19.0): the pass looks for pairs of facts
+    # that say the same thing in other words and asks the human "merge?" — one question a night (`per_night`),
+    # with the whole texts and a proposal number (`D-17`). The agent merges only on a "yes" to that number,
+    # through `fact_store merge` with the versions the human saw; the pass itself writes nothing to the store.
+    # `min_containment`: the share of the shorter side's significant words the other side holds (0.7);
+    # `question_cooldown_days`: a pair asked about rests this long (180); `max_pair_checks`: the night's budget
+    # of candidate pairs (200 000) — past it the section is skipped for the night, with an alert; `max_chars`:
+    # a fact longer than this takes no part (2000). See references/scoring.md, "Duplicates across the store".
+    "duplicates": {"enabled": True, "min_containment": 0.7, "per_night": 1, "question_cooldown_days": 180,
+                   "max_pair_checks": 200000, "max_chars": 2000},
     # holographic `scope: user / chat / thread` keeps facts in one database per user / chat / topic, which the
     # dream does not read by default: one chat's facts would reach memory every chat sees. `read` lists every
     # such database in the report (counts only — no text, no ids); `promote_from` names the chats whose facts
@@ -216,10 +227,14 @@ DEFAULT_CONFIG = {
               "judge_cache": "cache/dream-judge.json",
               "judge_journal": "cache/dream-judge-journal.jsonl",
               "judge_health": "cache/dream-judge-health.json",
-              "judge_manifest": "cache/dream-judge-export-manifest.json"},
+              "judge_manifest": "cache/dream-judge-export-manifest.json",
+              # The "merge?" proposals of 3.4.0 (`D-17`): the texts and versions the human was shown, their
+              # status, the number counter (kept in the seen state too: a number is never given twice).
+              "proposals": "cache/dream-proposals.json"},
     "precheck": {"max_content": 300,
                  "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
-                                     "md_decays", "conflicts", "quarantined", "alerts"]},
+                                     "md_decays", "conflicts", "quarantined", "alerts",
+                                     "duplicate_pairs_published"]},
 }
 
 
@@ -724,6 +739,35 @@ def fact_store_path(home=None):
     return raw if os.path.isabs(raw) else os.path.join(home, raw)
 
 
+def provider_store_path(home=None):
+    """The database holographic opens as the profile store, resolved as the provider resolves it — `db_path` of
+    its block (default `$HERMES_HOME/memory_store.db`), `$HERMES_HOME` replaced, `~` expanded — and spelled as its
+    `fact_store stats` gives it (`database`); or None when that cannot be known here: the block cannot be read for
+    sure, the path keeps another variable (the core expands it, this pass does not), it is `:memory:`, or it is
+    relative (the provider opens it from the gateway's working directory, not from the home)."""
+    home = home or HOME
+    if ".".join(_STORE) in hermes_config_unread(home):
+        return None
+    raw = _hermes_plugin_db_path(home) or "$HERMES_HOME/memory_store.db"
+    raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
+    if raw.strip() == ":memory:" or "$" in raw:
+        return None
+    raw = os.path.expanduser(raw)
+    return str(Path(raw)) if os.path.isabs(raw) else None
+
+
+def same_file(a, b):
+    """Whether two paths name one file: the same file on disk when both exist, else the same resolved path."""
+    if not a or not b:
+        return False
+    try:
+        if os.path.exists(a) and os.path.exists(b):
+            return os.path.samefile(a, b)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
 def _env(name, default, cast=str):
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -813,6 +857,8 @@ _SETTING_NAMES = (
     "PROMOTION_COOLDOWN_DAYS", "PENDING_DIR", "PENDING_ALERT_MIN", "PENDING_ALERT_DAYS",
     "FEEDBACK_TRUST_FLOOR", "FEEDBACK_CAP", "KEYWORDS_ENABLED", "KEYWORDS_CAP",
     "FEEDBACK_FLOOR_EXPLICIT", "JUDGE",
+    "DUP_ENABLED", "DUP_MIN_CONTAINMENT", "DUP_PER_NIGHT", "DUP_COOLDOWN_DAYS", "DUP_MAX_PAIR_CHECKS",
+    "DUP_MAX_CHARS",
 )
 
 
@@ -933,6 +979,23 @@ def configure(cfg):
         s.KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
     except (TypeError, ValueError):
         s.KEYWORDS_CAP = _ignored("keywords.cap", kw.get("cap"), 10)
+    dup = cfg.get("duplicates") if isinstance(cfg.get("duplicates"), dict) else {}
+    s.DUP_ENABLED = dup.get("enabled", True) is not False
+    defaults = DEFAULT_CONFIG["duplicates"]
+    # One setting, one parse: a bad `per_night` must not reset the containment too.
+    for name, key, cast, low in (("DUP_MIN_CONTAINMENT", "min_containment", float, 0.0),
+                                 ("DUP_PER_NIGHT", "per_night", int, 0),
+                                 ("DUP_COOLDOWN_DAYS", "question_cooldown_days", int, 0),
+                                 ("DUP_MAX_PAIR_CHECKS", "max_pair_checks", int, 1),
+                                 ("DUP_MAX_CHARS", "max_chars", int, 1)):
+        raw = dup.get(key, defaults[key])
+        try:
+            value = cast(raw)
+            if value < low or (key == "min_containment" and value > 1.0) or value != value:
+                raise ValueError(raw)
+        except (TypeError, ValueError):
+            value = _ignored(f"duplicates.{key}", raw, defaults[key])
+        setattr(s, name, value)
     pend = cfg.get("pending") or {}
     s.PENDING_DIR = str(pend.get("dir") or "pending/memory")
     # Two settings, two parses — a bad `alert_days` reset a good `alert_min` too (review of 3.3.1).
@@ -2600,9 +2663,11 @@ def find_conflicts(content, memory_text):
 # edits MEMORY.md/USER.md only and cannot delete a row from memory_store.db,
 # and the only repeat filter is "already in durable memory". A rejected fact is
 # in neither, so it came back every night (live case: 12 identical questions
-# about a dead thread in 5 weeks). Matching is by TEXT, not fact_id: sqlite
-# reuses ids after the last row is deleted, and the core may re-extract the
-# same fact under a new id. fact_id is kept for tracing only.
+# about a dead thread in 5 weeks). Matching is by TEXT, not fact_id: the core
+# may re-extract the same fact under a new id, and a generic `sqlite` source
+# without AUTOINCREMENT reuses the id of a deleted last row (holographic's
+# `facts.fact_id` is AUTOINCREMENT and never reuses one). fact_id is kept for
+# tracing only.
 
 # ---------------------------------------------------------------------------
 # Near-duplicates inside the fact store
@@ -2664,6 +2729,226 @@ def collapse_store_duplicates(items):
 
 def _fact_fingerprint(content):
     return hashlib.md5(_norm(content).encode("utf-8")).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Duplicates across the whole store (3.4.0): the similarity rule
+# ---------------------------------------------------------------------------
+# `_store_duplicates` above is strict on purpose (every differing word must be a stopword or an inflection) and
+# sees only the candidates of one night; a retelling of a stored fact ("Thread 30 is for V's work tasks" /
+# "Thread 30: messages there are work tasks of V") never met it. This rule is looser and is a generator of
+# QUESTIONS for a human, not a test of identity: it finds pairs that look like one fact, and the human decides on
+# the two whole texts. What it cannot tell apart (two names in swapped roles, the tense of one verb) is written
+# in references/scoring.md as a limit, not hidden. A pair is a candidate when all of these hold:
+# - significant words: every word of the body (the leading date stamp and words with a digit left out, stopwords
+#   KEPT, a word of 5+ letters by its stem) — containment |A∩B| / min(|A|,|B|) >= `duplicates.min_containment`;
+# - a short fact (fewer than DUP_SHORT_WORDS significant words on the shorter side) pairs only at containment 1.0
+#   with the same non-empty numbers / @-handles; a fact without significant words pairs only with its own text;
+#   two texts equal but for case and spaces are a pair whatever their length;
+# - the numbers (`_numbers`: digits, months and weekdays in words) and @-handles of one side are a subset of the
+#   other's, and the shared ones come in the same order («в 71 доходы, в 74 расходы» against the swap);
+# - names (capitalized words, the first of a sentence included) of one side are a subset of the other's, and
+#   point the same way as the numbers when both differ («Виктор и Ольга ведут ветку 30» / «Виктор ведёт ветки 30
+#   и 31»: names added on one side, numbers on the other);
+# - a word substitution is no retelling: when each side has words the other lacks and there are at most
+#   DUP_SUBSTITUTION_MAX of them on each side, one word was swapped («утром» / «вечером», «разрешает» /
+#   «запрещает», «мама» / «папа», «до» / «после»);
+# - no opposite polarity (`polarity_differs`), checked last: it is the dearest test.
+_HANDLE_RE = re.compile(r"@\w+")
+DUP_SHORT_WORDS = 3
+DUP_SUBSTITUTION_MAX = 2
+
+
+def _dup_body(text):
+    return LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
+
+
+def _dup_words(text):
+    """{stem: a word it stands for} of the significant words of *text* (see the section comment)."""
+    out = {}
+    for w in sorted(_store_words(text)):  # the stamp is already off, the text normalized
+        if any(c.isdigit() for c in w):
+            continue
+        out.setdefault(_stem(w) if len(w) >= 5 else w, w)
+    return out
+
+
+def _dup_anchors(text):
+    """The numbers (as `_numbers`, the leading date stamp left out) and @-handles of the body, as a set."""
+    return _numbers(text) | {m.group() for m in _HANDLE_RE.finditer(_norm(_dup_body(text)))}
+
+
+def _dup_anchor_seq(text):
+    """The digit numbers and @-handles of the body in order of first occurrence (months and weekdays in words
+    have no position here: they take part in the subset test only)."""
+    normalized = THOUSANDS_RE.sub("", _norm(_dup_body(text)))
+    found = [(m.start(), m.group().strip(".,:")) for m in NUMBER_RE.finditer(normalized)]
+    found += [(m.start(), m.group()) for m in _HANDLE_RE.finditer(normalized)]
+    seq = []
+    for _, anchor in sorted(found):
+        if anchor and anchor not in seq:
+            seq.append(anchor)
+    return seq
+
+
+def _dup_name_seq(text):
+    """Capitalized words of the body (the first word of a sentence too — a cost in recall, see scoring.md), folded
+    and stemmed, in order of first occurrence."""
+    seq = []
+    for tok in _WORD_RE.findall(_dup_body(text)):
+        if tok[0].isupper() and not any(c.isdigit() for c in tok):
+            low = _fold(tok).lower()
+            name = _stem(low) if len(low) >= 5 else low
+            if name not in seq:
+                seq.append(name)
+    return seq
+
+
+def _same_order(seq_a, seq_b):
+    shared = set(seq_a) & set(seq_b)
+    return [x for x in seq_a if x in shared] == [x for x in seq_b if x in shared]
+
+
+def _dup_directions(a, b):
+    return {d for d, ok in (("a", a <= b), ("b", b <= a)) if ok}
+
+
+DupFeatures = namedtuple("DupFeatures", "text norm word_of words anchors anchor_seq name_seq names")
+
+
+def _dup_features(text):
+    """What the rule compares of one text, computed once per fact (a night compares a fact with many)."""
+    word_of = _dup_words(text)
+    names = _dup_name_seq(text)
+    return DupFeatures(text, _norm(text), word_of, frozenset(word_of), frozenset(_dup_anchors(text)),
+                       tuple(_dup_anchor_seq(text)), tuple(names), frozenset(names))
+
+
+def _dup_judge(fa, fb):
+    """(pair?, why, containment) of two `_dup_features` (see the section comment)."""
+    wa, wb = fa.words, fb.words
+    if fa.norm == fb.norm:
+        return True, "the same text", 1.0
+    smaller = min(len(wa), len(wb))
+    cont = len(wa & wb) / smaller if smaller else 0.0
+    na, nb = fa.anchors, fb.anchors
+    if smaller < DUP_SHORT_WORDS:
+        if not (cont >= 1.0 and na and na == nb):
+            return False, "short: not the same words and numbers", cont
+    else:
+        if cont < SETTINGS.DUP_MIN_CONTAINMENT:
+            return False, f"containment {cont:.2f}", cont
+        only_a, only_b = wa - wb, wb - wa
+        if only_a and only_b and len(only_a) <= DUP_SUBSTITUTION_MAX and len(only_b) <= DUP_SUBSTITUTION_MAX:
+            return False, (f"a word substituted: {', '.join(sorted(fa.word_of[w] for w in only_a))} / "
+                           f"{', '.join(sorted(fb.word_of[w] for w in only_b))}"), cont
+    nd = _dup_directions(na, nb)
+    if not nd:
+        return False, f"numbers differ: {', '.join(sorted(na - nb))} / {', '.join(sorted(nb - na))}", cont
+    if not _same_order(fa.anchor_seq, fb.anchor_seq):
+        return False, "the shared numbers come in another order", cont
+    ma, mb = fa.names, fb.names
+    md = _dup_directions(ma, mb)
+    if not md:
+        return False, f"names differ: {', '.join(sorted(ma - mb))} / {', '.join(sorted(mb - ma))}", cont
+    if na != nb and ma != mb and not (nd & md):
+        return False, "names and numbers are added on opposite sides", cont
+    if polarity_differs(fa.text, fb.text) or polarity_differs(fb.text, fa.text):
+        return False, "polarity differs", cont
+    why = [f"containment {cont:.2f}"]
+    if na & nb:
+        why.append(f"numbers {', '.join(sorted(na & nb))} shared")
+    if ma == mb and len(ma) >= 2 and not _same_order(fa.name_seq, fb.name_seq):
+        why.append("the names come in another order")
+    return True, "; ".join(why), cont
+
+
+def duplicate_pair(a, b):
+    """Whether two fact texts look like one fact: (True, why) or (False, why). `why` names the containment and the
+    shared numbers for the human's question; a difference in the order of names, which the rule cannot judge, is
+    named there too."""
+    ok, why, _cont = _dup_judge(_dup_features(a), _dup_features(b))
+    return ok, why
+
+
+class DupBudget(Exception):
+    """The night's budget of pair checks (`duplicates.max_pair_checks`) ran out."""
+
+
+def find_duplicate_pairs(facts, max_checks=None):
+    """[{"a", "b", "why", "containment"}] (fact ids, a < b by id) of every pair of *facts* ({fact_id, content}) the
+    rule calls one fact, and how many pairs were checked. Raises DupBudget past *max_checks*.
+
+    Candidates come from an inverted index over the significant stems, so a store is not compared with itself
+    whole. A pair the rule can accept shares at least need = max(1, ceil(min_containment · |S|)) stems with the
+    shorter side S — exactly the rule's bound, for every allowed `min_containment` above 0; S's rarest |S| − need + 1
+    stems are then sure to hold one of them (a prefix filter), so only the facts under those stems are looked at —
+    the pairs found are the same as when every pair is checked, at a fraction of the checks (stopwords are kept,
+    and they are in almost every fact). At `min_containment` 0 the rule needs no shared stem, so every pair of long
+    facts is checked, in the same budget. Short facts and facts without significant words have their own path: the
+    same numbers / @-handles, or the same text."""
+    feats = {f["fact_id"]: _dup_features(f["content"]) for f in facts}
+    ids = sorted(feats, key=lambda i: (str(type(i)), i))
+    rank = {i: n for n, i in enumerate(ids)}
+    checked = set()
+    found = []
+
+    def check(i, j):
+        key = (i, j) if rank[i] < rank[j] else (j, i)
+        if key in checked:
+            return
+        if max_checks is not None and len(checked) >= max_checks:
+            raise DupBudget(len(checked))
+        checked.add(key)
+        ok, why, cont = _dup_judge(feats[key[0]], feats[key[1]])
+        if ok:
+            found.append({"a": key[0], "b": key[1], "why": why, "containment": round(cont, 4)})
+
+    df = Counter(s for i in ids for s in feats[i].words)
+    postings = defaultdict(list)
+    for i in ids:
+        for s in feats[i].words:
+            postings[s].append(i)
+    floor = SETTINGS.DUP_MIN_CONTAINMENT
+    for i in ids:
+        words = feats[i].words
+        size = len(words)
+        if size < DUP_SHORT_WORDS:
+            continue
+        if floor <= 0:
+            # Containment 0 passes the rule's first test with no stem shared at all: there is nothing to index,
+            # every pair of long facts is checked (within the budget).
+            near = {j for j in ids if len(feats[j].words) >= DUP_SHORT_WORDS}
+            need = 0
+        else:
+            # As few shared stems as the rule accepts: one of four at 0.25 is a pair for it.
+            need = max(1, math.ceil(floor * size - 1e-9))
+            near = set()
+            for stem in sorted(words, key=lambda s: (df[s], s))[:size - need + 1]:
+                near.update(postings[stem])
+        near.discard(i)
+        for j in near:  # any order: past the budget the whole search is dropped, and `found` is sorted
+            other = feats[j].words
+            if len(other) >= size and len(words & other) >= need:
+                check(i, j)
+    # Short facts and facts without significant words: by their numbers / @-handles, and by the same text.
+    by_anchors, by_text = defaultdict(list), defaultdict(list)
+    for i in ids:
+        if feats[i].anchors:
+            by_anchors[feats[i].anchors].append(i)
+        by_text[feats[i].norm].append(i)
+    for group in by_anchors.values():
+        short = [i for i in group if len(feats[i].words) < DUP_SHORT_WORDS]
+        for i in short:
+            for j in group:
+                if j != i:
+                    check(i, j)
+    for group in by_text.values():
+        for n, i in enumerate(group):
+            for j in group[n + 1:]:
+                check(i, j)
+    found.sort(key=lambda p: (rank[p["a"]], rank[p["b"]]))
+    return found, len(checked)
 
 
 def feedback_floor(fact_source_name=None, home=None):
@@ -3691,10 +3976,17 @@ def _agent_acked(state_db, generated_at):
 
     Fail-soft: no state.db / no messages table → assume acked (old behaviour),
     otherwise a host that does not persist sessions would re-show every night."""
+    return _agent_answers(state_db, generated_at)[0]
+
+
+def _agent_answers(state_db, generated_at):
+    """(acked, the answers) of the agent turn that received the payload stamped `generated_at` — as
+    `_agent_acked`, with the texts of the answers it found (3.4.0: a merge question counts as asked only when the
+    answer names its number). The answers are None when they cannot be known (the fail-soft cases)."""
     if not generated_at:
-        return True
+        return True, None
     if not os.path.exists(state_db):
-        return True
+        return True, None
     when = _parse_iso(generated_at)
     since = when.timestamp() - 3600 if when else 0
     needles = (f'"generated_at":"{generated_at}"', f'"generated_at": "{generated_at}"')
@@ -3707,7 +3999,7 @@ def _agent_acked(state_db, generated_at):
                 "and (instr(coalesce(content,''),?)>0 or instr(coalesce(content,''),?)>0)",
                 (since, *needles))]
             if not sids:
-                return False
+                return False, []
             # An answer is an answer: not a harness notice, not a row the core
             # typed as a failed turn, not the text that preceded a tool call in
             # a turn that then died. "Operation interrupted." used to count
@@ -3718,13 +4010,11 @@ def _agent_acked(state_db, generated_at):
             if "tool_calls" in msg_cols:
                 where.append("coalesce(tool_calls,'')=''")
             sql = f"select content from messages where {' and '.join(where)} limit 20"
-            for sid in sids:
-                for (content,) in c.execute(sql, (sid,)):
-                    if not is_harness_envelope(content):
-                        return True
-            return False
+            answers = [content for sid in sids for (content,) in c.execute(sql, (sid,))
+                       if not is_harness_envelope(content)]
+            return bool(answers), answers
         except sqlite3.OperationalError:
-            return True
+            return True, None
     finally:
         c.close()
 
@@ -3736,7 +4026,9 @@ def _revert_unacked(seen, state_db):
     pending = seen.pop("_pending", None)
     if not isinstance(pending, dict) or not pending.get("generated_at"):
         return set()
-    if _agent_acked(state_db, pending.get("generated_at")):
+    acked, answers = _agent_answers(state_db, pending.get("generated_at"))
+    if acked:
+        _reopen_unnamed_proposals(pending, seen, answers)
         return set()
     dropped = 0
     for bucket_name, keys in (pending.get("seen") or {}).items():
@@ -4339,6 +4631,354 @@ def _decide(inputs, vetoes=frozenset()):
 
 
 # ---------------------------------------------------------------------------
+# Duplicates across the store (3.4.0): the night's pairs and the "merge?" proposals
+# ---------------------------------------------------------------------------
+# Part A of 3.4.0. The pass finds pairs of facts of the main store that look like one fact (`find_duplicate_pairs`)
+# and asks the human, one pair a night (`duplicates.per_night`), "merge?" — with both texts whole and a proposal
+# number (`D-17`) that is never reused. The number names a record of `cache/dream-proposals.json`: the texts the
+# human was shown, their `version_id`s, which side stays (`keep`) and which goes (`copy`). On a "yes" to that number
+# the agent calls `fact_store merge {fact_id: keep, from: [copy], keywords, expect: {keep: v, copy: v}}` — holographic
+# 0.19.0 merges only while both facts are still at those versions, and refuses a scheduled job a merge of facts it
+# did not store itself: at night nothing of this is written to the store, by the provider's code. The pass writes
+# nothing to the store either; it reads `fact_merges` to know what was merged (merge_sweep, below).
+#
+# Without holographic 0.19.0 (`fact_merges`), with a scope other than `profile` (the session that answers would
+# write to another database than the one the pass read), or with a non-holographic source, the section is off and
+# `stats.duplicate_pairs_skipped` says why. Chat stores take no part.
+DUP_OPEN_DAYS = 180         # an open proposal nobody answered goes stale after this long
+DUP_CLOSED_KEEP_DAYS = 30   # a closed one is kept this long, for a look at what happened, then removed
+DUP_KEYWORDS_MAX = 12
+PROPOSAL_RE = re.compile(r"(?<![\w-])D-(\d+)(?!\w)")
+_ORIGIN_RANK = {"said": 2, "confirmed": 2, "inferred": 0}  # unknown: 1
+
+
+def pair_key(text_a, text_b):
+    """The key of a pair of texts: a hash of their two fingerprints, sorted. A fingerprint is of the normalized
+    text — an edit of case or spaces only keeps the key."""
+    fps = sorted((_fact_fingerprint(text_a), _fact_fingerprint(text_b)))
+    return hashlib.sha256("|".join(fps).encode("utf-8")).hexdigest()[:20]
+
+
+def store_merges(db):
+    """{copy id: keep id} of holographic's `fact_merges` (0.19.0), or None when the store has no such table."""
+    c = _conn(db)
+    try:
+        if not c.execute("select 1 from sqlite_master where type='table' and name='fact_merges'").fetchone():
+            return None
+        return {int(f): int(t) for f, t in c.execute("select from_fact_id, into_fact_id from fact_merges")}
+    finally:
+        c.close()
+
+
+def store_versions(db):
+    """({fact_id: (current version_id, its text)}, {fact_id: number of versions}) of the store's history. The id
+    and the text of a version come from one statement — one snapshot of the database: a proposal must never pair
+    the text of one version with the id of another (a "yes" with `expect` would then merge a text nobody saw)."""
+    c = _conn(db)
+    try:
+        current = {int(f): (int(v), t) for f, v, t in c.execute(
+            "select fact_id, version_id, content from fact_versions where status = 'current'")}
+        counts = {int(f): int(n) for f, n in c.execute("select fact_id, count(*) from fact_versions group by fact_id")}
+        return current, counts
+    finally:
+        c.close()
+
+
+def proposals_path():
+    return _state_default("DREAM_PROPOSALS_STATE", "proposals")
+
+
+def load_proposals(path):
+    """{"next_proposal": n, "proposals": {"D-17": record}} of `cache/dream-proposals.json` (for the holder of the
+    state lock: a broken file is moved aside)."""
+    data = _load_state_file(path) if path else {}
+    props = data.get("proposals") if isinstance(data.get("proposals"), dict) else {}
+    props = {k: v for k, v in props.items() if isinstance(v, dict) and PROPOSAL_RE.fullmatch(k)}
+    try:
+        nxt = max(1, int(data.get("next_proposal") or 1))
+    except (TypeError, ValueError):
+        nxt = 1
+    return {"next_proposal": nxt, "proposals": props}
+
+
+def save_proposals(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    _write_private(path, json.dumps(data, ensure_ascii=False, indent=1))
+
+
+def _proposal_number(key):
+    return int(key.split("-", 1)[1])
+
+
+def _close_proposal(rec, status, now, why):
+    rec.update(status=status, closed_at=now.isoformat(timespec="seconds"), closed_why=why)
+
+
+def maintain_proposals(data, now, merges=None, current=None, store=None, released=None):
+    """Bring the open proposals up to what the store holds now; drop closed ones past DUP_CLOSED_KEEP_DAYS.
+    *store* (the database read now, None when unknown): a proposal made from another database is `stale` — its
+    ids and versions are that one's. *merges* ({copy: keep}): a pair merged into each other is `done`, a
+    participant merged elsewhere makes it `stale`. *current* ({fact_id: version_id}, None when unknown): a
+    participant gone (ended, forgotten) or at another version than the one shown makes it `stale` — the human
+    answered other texts; such a proposal's number goes to *released* (a list), whose pair may be asked about
+    again at once (`release_pair`). An open proposal older than DUP_OPEN_DAYS goes `stale` too. Returns whether
+    anything changed."""
+    changed = False
+    for key in sorted(data["proposals"], key=_proposal_number):
+        rec = data["proposals"][key]
+        keep, copy_ = (rec.get("keep") or {}), (rec.get("copy") or {})
+        k, c = keep.get("fact_id"), copy_.get("fact_id")
+        if rec.get("status") == "open":
+            merges = merges or {}
+            if store is not None and not same_file(rec.get("store"), store):
+                _close_proposal(rec, "stale", now, "made from another fact store than the one read now")
+            elif merges.get(c) == k or merges.get(k) == c:
+                _close_proposal(rec, "done", now, "merged")
+            elif k in merges or c in merges:
+                _close_proposal(rec, "stale", now, "a fact of the pair was merged into another")
+            elif current is not None and (current.get(k) != keep.get("version_id")
+                                          or current.get(c) != copy_.get("version_id")):
+                _close_proposal(rec, "stale", now, "a text changed or ended since it was shown")
+                if released is not None:
+                    released.append(key)
+            elif (_age_days(rec.get("created"), now) or 0) > DUP_OPEN_DAYS:
+                _close_proposal(rec, "stale", now, f"no answer in {DUP_OPEN_DAYS} days")
+            else:
+                continue
+            changed = True
+        elif (_age_days(rec.get("closed_at"), now) or 0) > DUP_CLOSED_KEEP_DAYS:
+            del data["proposals"][key]
+            changed = True
+    return changed
+
+
+def release_pair(seen, pair_key, number=None):
+    """Let the pair of *pair_key* be asked about again at once: its cooldown in the `duplicate_pairs` bucket (only
+    the one of proposal *number*, when given) and its entry in `_pending`. For a proposal closed `stale` — the
+    merge was refused, or a version changed while the pair kept its key (an edit of case or spaces): the 180 days
+    of rest were for an answer, and none came. Returns how many records went."""
+    removed = 0
+    bucket = seen.get("duplicate_pairs")
+    rec = bucket.get(pair_key) if isinstance(bucket, dict) else None
+    if rec is not None and (number is None or not isinstance(rec, dict) or rec.get("proposal") in (None, number)):
+        bucket.pop(pair_key)
+        removed += 1
+    pending = ((seen.get("_pending") or {}).get("seen") or {}) if isinstance(seen.get("_pending"), dict) else {}
+    keys = pending.get("duplicate_pairs") if isinstance(pending, dict) else None
+    if isinstance(keys, list) and pair_key in keys:
+        pending["duplicate_pairs"] = [k for k in keys if k != pair_key]
+        removed += 1
+    return removed
+
+
+def _keep_and_copy(a, b, fa, fb, versions):
+    """Which of two facts stays: the side whose numbers and names hold the other's (and more), then more
+    significant words, then the origin (said / confirmed over unknown over inferred), more versions, more
+    retrievals, the smaller id."""
+    def rank(f, mine, other):
+        superset = (mine.anchors >= other.anchors and mine.names >= other.names
+                    and (mine.anchors != other.anchors or mine.names != other.names))
+        return (superset, len(mine.words), _ORIGIN_RANK.get(f.get("origin"), 1), versions.get(f["fact_id"], 0),
+                f.get("retrieval_count") or 0, -f["fact_id"])
+    return ((a, fa), (b, fb)) if rank(a, fa, fb) >= rank(b, fb, fa) else ((b, fb), (a, fa))
+
+
+def _keywords_after(keep, copy_):
+    """The keep's keywords, then the copy's, distinct, through the screen, at most DUP_KEYWORDS_MAX."""
+    out, seen = [], set()
+    for kw in list(keep.get("keywords") or []) + list(copy_.get("keywords") or []):
+        folded = _norm(kw)
+        if folded and folded not in seen and not classify_unsafe(kw):
+            seen.add(folded)
+            out.append(kw)
+    return out[:DUP_KEYWORDS_MAX]
+
+
+DupNight = namedtuple("DupNight", "items stats alert pending")
+
+
+def _dup_skip(reason):
+    return DupNight([], {"duplicate_pairs_skipped": reason}, None, [])
+
+
+def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, write):
+    """The night's `duplicate_pairs` section. *excluded_ids*: facts in tonight's promotions, conflicts and
+    fact_decays (and their duplicates) — one question about a fact a night. *seen*: the pass's state (the
+    `duplicate_pairs` bucket, `dup_not`, the proposal counter), marked here when *write*; the proposals file is
+    written only then too. Returns DupNight(items, stats, alert, pending pair keys)."""
+    if not SETTINGS.DUP_ENABLED:
+        return _dup_skip("disabled")
+    if inputs.fact_source != "holographic":
+        return _dup_skip("not_holographic")
+    # The "yes" is carried out by whichever session answers, in the database its provider opens: the pass must read
+    # that very one. A scope that cannot be read, a provider path that cannot be resolved here, or a fact store
+    # set for the dream (`DREAM_FACT_STORE`, `fact_store_path`) other than the provider's turns the section off —
+    # ids and versions of two databases look alike, and `expect` cannot tell them apart.
+    if ".".join(_STORE) in hermes_config_unread():
+        return _dup_skip("scope_unknown")
+    scope = holographic_scope()
+    if scope != "profile":
+        return _dup_skip(f"scope_{scope}")
+    store = provider_store_path()
+    if store is None:
+        return _dup_skip("store_unknown")
+    db = fact_store_path()
+    if not db or not os.path.exists(db):
+        return _dup_skip("no_store")
+    if not same_file(db, store):
+        return _dup_skip("store_mismatch")
+    try:
+        merges = store_merges(db)
+        if merges is None:
+            return _dup_skip("merge_unavailable")
+        heads, versions = store_versions(db)
+    except sqlite3.Error as exc:
+        print(f"[dream] warn: duplicates: the fact store's history is unreadable: {exc}", file=sys.stderr)
+        return _dup_skip("unreadable")
+    if not proposals_file:
+        return _dup_skip("no_state")
+    current = {fid: vid for fid, (vid, _text) in heads.items()}
+    proposals = load_proposals(proposals_file)
+    released = []
+    changed = maintain_proposals(proposals, now, merges=merges, current=current, store=store, released=released)
+    for number in released:  # nobody answered those texts: the pair may be asked about again tonight
+        release_pair(seen, proposals["proposals"][number]["pair_key"], number)
+
+    scored = {s["fact_id"]: s for s in d.scored}
+    eligible = []
+    for f in inputs.facts:
+        fid, s = f["fact_id"], scored.get(f["fact_id"])
+        if f.get("store") or s is None or s["unsafe"] or s["rejected"] or fid in excluded_ids:
+            continue
+        if fid in merges or len(f.get("content") or "") > SETTINGS.DUP_MAX_CHARS:
+            continue
+        # The text loaded for the night must be the text of the version read now: the provider may have changed
+        # the fact in between (the pass's lock does not hold it back). Then the fact waits for the next night.
+        if fid not in heads or heads[fid][1] != f["content"]:
+            continue
+        eligible.append(f)
+    by_id = {f["fact_id"]: f for f in eligible}
+    alert = None
+    try:
+        found, _checks = find_duplicate_pairs(eligible, SETTINGS.DUP_MAX_PAIR_CHECKS)
+    except DupBudget:
+        last = _parse_iso((seen.get("_dup_budget_alert") or {}).get("at"))
+        if not last or (now - last) >= timedelta(days=SETTINGS.SEEN_COOLDOWN_DAYS):
+            alert = {"kind": "duplicates_budget", "facts": len(eligible),
+                     "message": (f"The search for duplicate facts was skipped tonight: {len(eligible)} facts need "
+                                 f"more than {SETTINGS.DUP_MAX_PAIR_CHECKS} pair checks "
+                                 "(`duplicates.max_pair_checks` in dreaming.json). Nothing else is affected.")}
+            if write:
+                seen["_dup_budget_alert"] = {"at": now.isoformat(timespec="seconds")}
+        if write and changed:
+            save_proposals(proposals_file, proposals)
+        return DupNight([], {"duplicate_pairs_skipped": "budget"}, alert, [])
+
+    pairs = []
+    for p in found:
+        a, b = by_id[p["a"]], by_id[p["b"]]
+        (keep, fk), (copy_, fc) = _keep_and_copy(a, b, _dup_features(a["content"]), _dup_features(b["content"]),
+                                                 versions)
+        extra = sorted(fc.word_of[w] for w in fc.words - fk.words)
+        pairs.append({"pair_key": pair_key(a["content"], b["content"]), "keep": keep, "copy": copy_,
+                      "covered": not extra, "extra_words": extra, "why": p["why"],
+                      "containment": p["containment"]})
+    dup_not = seen.get("dup_not") if isinstance(seen.get("dup_not"), dict) else {}
+    bucket = seen.get("duplicate_pairs") if isinstance(seen.get("duplicate_pairs"), dict) else {}
+    asked = [p for p in pairs if p["pair_key"] not in dup_not]
+    fresh = unseen(asked, bucket, now, cooldown_days=SETTINGS.DUP_COOLDOWN_DAYS, key=lambda p: p["pair_key"])
+    fresh.sort(key=lambda p: (-p["containment"], p["keep"]["fact_id"], p["copy"]["fact_id"]))
+    chosen, used = [], set()
+    for p in fresh:
+        ids = {p["keep"]["fact_id"], p["copy"]["fact_id"]}
+        if len(chosen) < SETTINGS.DUP_PER_NIGHT and not ids & used:
+            chosen.append(p)
+            used |= ids
+
+    # The number is never reused: the counter lives in the proposals file and in the seen state, and a number
+    # below one already given is never taken — a file lost or set aside does not bring an old number back.
+    counter = seen.get("_proposals") if isinstance(seen.get("_proposals"), dict) else {}
+    try:
+        kept_next = int(counter.get("next") or 1)
+    except (TypeError, ValueError):
+        kept_next = 1
+    nxt = max([proposals["next_proposal"], kept_next] + [_proposal_number(k) + 1 for k in proposals["proposals"]])
+    first_next = nxt
+    items = []
+    stamp = now.isoformat(timespec="seconds")
+    for p in chosen:
+        keep, copy_ = p["keep"], p["copy"]
+        side = {
+            "keep": {"fact_id": keep["fact_id"], "version_id": current[keep["fact_id"]], "content": keep["content"],
+                     "origin": keep.get("origin")},
+            "copy": {"fact_id": copy_["fact_id"], "version_id": current[copy_["fact_id"]],
+                     "content": copy_["content"], "origin": copy_.get("origin"), "covered": p["covered"],
+                     "extra_words": p["extra_words"]},
+        }
+        # The same open question again (not shown, or shown before its rest ran out): its number and its sides,
+        # even if tonight's ranking would pick the other side to keep — one pair, one open proposal.
+        versions_now = {keep["fact_id"]: side["keep"]["version_id"], copy_["fact_id"]: side["copy"]["version_id"]}
+        number = next((k for k, r in proposals["proposals"].items()
+                       if r.get("status") == "open" and r.get("pair_key") == p["pair_key"]
+                       and {(r.get(x) or {}).get("fact_id"): (r.get(x) or {}).get("version_id")
+                            for x in ("keep", "copy")} == versions_now), None)
+        if number is None:
+            number = f"D-{nxt}"
+            nxt += 1
+            # `store`: the database the proposal is about, as the provider's `fact_store stats` names it
+            # (`database`) — the agent compares the two before a merge (SKILL step 7e).
+            proposals["proposals"][number] = {"pair_key": p["pair_key"], "created": stamp, "status": "open",
+                                              "store": store, **side,
+                                              "keywords_after": _keywords_after(keep, copy_), "why": p["why"]}
+        rec = proposals["proposals"][number]
+        rec["last_published"] = stamp
+        changed = True
+        p["proposal"] = number
+        items.append({"proposal": number, "store": rec["store"], "keep": rec["keep"], "copy": rec["copy"],
+                      "keywords_after": rec["keywords_after"], "why": rec["why"]})
+    proposals["next_proposal"] = nxt
+    if write:
+        if changed or nxt != first_next:
+            save_proposals(proposals_file, proposals)
+        seen["_proposals"] = {"next": nxt}
+        bucket = seen.setdefault("duplicate_pairs", {})
+        mark_seen(chosen, bucket, now, key=lambda p: p["pair_key"])
+        for p in chosen:
+            rec = bucket[p["pair_key"]]
+            rec.pop("fact_id", None)
+            rec.update(fact_ids=[p["keep"]["fact_id"], p["copy"]["fact_id"]],
+                       fingerprints=[_fact_fingerprint(p["keep"]["content"]),
+                                     _fact_fingerprint(p["copy"]["content"])],
+                       proposal=p["proposal"])
+        prune_seen(bucket, now, cooldown_days=SETTINGS.DUP_COOLDOWN_DAYS)
+    stats = {"duplicate_pairs_found": len(pairs), "duplicate_pairs_published": len(items),
+             "duplicate_pairs_suppressed": len(pairs) - len(fresh),
+             "duplicate_pairs_deferred": len(fresh) - len(chosen)}
+    return DupNight(items, stats, alert, [p["pair_key"] for p in chosen])
+
+
+def _reopen_unnamed_proposals(pending, seen, answers):
+    """After an acknowledged night: a pair whose proposal number the agent's answer did not name was not shown to
+    the human, whatever the payload held — its cooldown is dropped and it comes back (`_pending` keeps cooldowns,
+    it proves nothing about what a human saw). *answers* None: unknown (no state.db) — left as shown."""
+    keys = ((pending.get("seen") or {}).get("duplicate_pairs") or []) if isinstance(pending, dict) else []
+    bucket = seen.get("duplicate_pairs")
+    if answers is None or not keys or not isinstance(bucket, dict):
+        return 0
+    named = {f"D-{n}" for text in answers for n in PROPOSAL_RE.findall(text or "")}
+    reopened = 0
+    for k in keys:
+        rec = bucket.get(k)
+        if isinstance(rec, dict) and rec.get("proposal") not in named:
+            bucket.pop(k)
+            reopened += 1
+    if reopened:
+        print(f"[dream] note: {reopened} merge question(s) of the pass of {pending.get('generated_at')} were not in "
+              "the agent's report — asked again", file=sys.stderr)
+    return reopened
+
+
+# ---------------------------------------------------------------------------
 # The cloud judge (3.3.0, optional): what may leave, the night's pass, its files
 # ---------------------------------------------------------------------------
 # The rules count a pair (fact, message) as a mention when they share enough words; the judge (dream_judge.py) asks
@@ -4723,7 +5363,8 @@ def judge_score(labels_path):
 
 
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
-        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None, judge=None):
+        rejected_state_path=None, seen_state_path=None, snapshot_state_path=None, judge=None,
+        proposals_state_path=None):
     state_db = os.path.join(HOME, "state.db")
     now = _now()
     generated_at = now.isoformat(timespec="seconds")
@@ -4770,6 +5411,12 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     published_promotions = promotions[:SETTINGS.PUBLISH_CAP]
     published_decays = decays[:SETTINGS.PUBLISH_CAP]
     published_conflicts = conflicts[:SETTINGS.PUBLISH_CAP]
+    # Duplicates across the store (3.4.0): one question about a fact a night — a fact in tonight's promotions,
+    # conflicts or relevance questions (or hidden behind one of them) is not asked about as a duplicate too.
+    busy = {i for s in published_promotions + published_conflicts + published_decays
+            for i in (s["fact_id"], *s.get("duplicates", ()))}
+    dups = duplicate_pairs_night(inputs, d, busy, seen, proposals_state_path if seen_state_path else None, now,
+                                 write=bool(seen_state_path))
     if seen_state_path:
         _mark_shown(seen, now, new_facts=new_facts + new_facts_dups, promotions=published_promotions,
                     trust_feedback=feedback, keywords_needed=keywords_needed, confirm=confirm,
@@ -4791,7 +5438,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                      # of 2.7.2).
                      "trust_feedback": [_feedback_key(i) for i in feedback],
                      "keywords_needed": [_feedback_key(i) for i in keywords_needed],
-                     "confirm": [_feedback_key(i) for i in confirm]},
+                     "confirm": [_feedback_key(i) for i in confirm],
+                     # The pairs put to the human tonight (3.4.0); the answer must name their numbers.
+                     **({"duplicate_pairs": dups.pending} if dups.pending else {})},
             "asked": [d["key"] for d in md_dec if d.get("key")],
         }
         try:
@@ -4818,6 +5467,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         alerts.append(queue_alert)
     if judge_alert:
         alerts.append(judge_alert)
+    if dups.alert:
+        alerts.append(dups.alert)
     store_note = fact_store_note()
     chat_stores = chat_stores_overview(window_days)
     diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
@@ -4874,6 +5525,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
                   "store_duplicates": len(promotions_dups) + len(new_facts_dups),
+                  # Duplicates across the store (3.4.0): found, put to the human, resting (cooldown or "these
+                  # are different"), left for another night — or why the search did not run.
+                  **dups.stats,
                   "alerts": len(alerts)},
         "memory_usage": usage,
         "alerts": alerts,
@@ -4896,6 +5550,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "quarantined": [_pub_quarantined(s) for s in quarantined[:SETTINGS.PUBLISH_CAP]],
         "diary": diary,
     }
+    if dups.items:
+        # "Merge?" questions (3.4.0): both texts whole, the proposal number the human answers to.
+        result["duplicate_pairs"] = dups.items
     if judge_stats:
         result["stats"]["judge"] = judge_stats  # counts only; present when the judge is on (or set but broken)
     # Present only when there is something to say: a single shared store keeps the output it always had.
@@ -5412,6 +6069,11 @@ def _drop_fact_items(node, ids):
             if isinstance(item, dict) and str(item.get("fact_id")) in ids:
                 removed += 1
                 continue
+            # A "merge?" pair (3.4.0) goes whole with either of its facts: half a pair is no question.
+            if isinstance(item, dict) and any(isinstance(item.get(side), dict)
+                                              and str(item[side].get("fact_id")) in ids for side in ("keep", "copy")):
+                removed += 1
+                continue
             if isinstance(item, dict) and isinstance(item.get("duplicates"), list):
                 twins = [d for d in item["duplicates"] if str(d) not in ids]
                 removed += len(item["duplicates"]) - len(twins)
@@ -5610,21 +6272,27 @@ def forget_sweep(db=None, home=None):
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
-               "judge": 0, "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0, "errors": store_errors}
+               "proposals": 0, "judge": 0, "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0,
+               "errors": store_errors}
     if not tombstones:
         return summary
     ids = {str(i) for i in tombstones}
     live = _load_state_file(index_path)
+    # A copy merged into another left the live index; its hashes wait in `merged` (merge_sweep).
+    merged = state.get("merged") if isinstance(state.get("merged"), dict) else {}
     index = {i: {"previews": sorted(set((done.get(i) or {}).get("previews") or [])
-                                    | set((live.get(i) or {}).get("previews") or []))} for i in ids}
-    fingerprints = {fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])} \
-        | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
+                                    | set((live.get(i) or {}).get("previews") or [])
+                                    | set((merged.get(i) or {}).get("previews") or []))} for i in ids}
+    fingerprints = ({fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])}
+                    | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
+                    | {fp for i in ids for fp in (merged.get(i) or {}).get("fingerprints", [])})
 
     # Each copy in turn, in this order: the night's payload, the reject list, the cooldowns, the diary, the logs, and
     # last the broken state files set aside — the loads above may have just set one aside.
     summary["payload"] = _sweep_payload(home, ids, index, fingerprints)
     summary["rejected"] = _sweep_rejected(ids, fingerprints)
     summary["seen"] = _sweep_seen(ids, fingerprints)
+    summary["proposals"] = _sweep_proposals(ids, fingerprints)
     summary["judge"] = _sweep_judge(ids)
     summary["diary_lines"] = _sweep_diary(home, ids, index, summary["errors"])
     summary["cron_logs"] = _sweep_cron_logs(home, ids, index, summary["errors"])
@@ -5645,7 +6313,9 @@ def forget_sweep(db=None, home=None):
         record = done.setdefault(i, {"at": stamp})
         record["previews"] = index[i]["previews"]
         record["fingerprints"] = sorted(set(record.get("fingerprints") or [])
-                                        | set((live.get(i) or {}).get("fingerprints") or []))
+                                        | set((live.get(i) or {}).get("fingerprints") or [])
+                                        | set((merged.get(i) or {}).get("fingerprints") or []))
+        merged.pop(i, None)
     if index_path and any(i in live for i in ids):
         for i in ids:
             live.pop(i, None)
@@ -5700,26 +6370,51 @@ def _sweep_rejected(ids, fingerprints):
     return len(gone)
 
 
-def _sweep_seen(ids, fingerprints):
-    """Forgotten facts out of the cooldowns and out of what tonight's pass showed (`_pending`); how many."""
+def _sweep_seen(ids, fingerprints, skip=()):
+    """Forgotten facts out of the cooldowns and out of what tonight's pass showed (`_pending`); how many. *skip*:
+    buckets left as they are (the merge sweep keeps `dup_not`: "these are different" outlives a merge)."""
     seen_path = _state_default("DREAM_SEEN_STATE", "seen")
     seen = _load_state_file(seen_path)
     removed = 0
+    gone_keys = set()  # keys of the records removed: a pair's key (3.4.0) is no fingerprint of a fact
     for name, bucket in seen.items():
-        if name == "_pending" and isinstance(bucket, dict):
-            for key, values in (bucket.get("seen") or {}).items():
-                if isinstance(values, list):
-                    kept = [v for v in values if v not in fingerprints]
-                    removed += len(values) - len(kept)
-                    bucket["seen"][key] = kept
-        elif isinstance(bucket, dict):
-            for key in [k for k, v in bucket.items()
-                        if k in fingerprints or (isinstance(v, dict) and str(v.get("fact_id")) in ids)]:
-                bucket.pop(key)
-                removed += 1
+        if name in skip or name == "_pending" or not isinstance(bucket, dict):
+            continue
+        for key in [k for k, v in bucket.items()
+                    if k in fingerprints or (isinstance(v, dict) and (
+                        str(v.get("fact_id")) in ids
+                        # a pair's record (3.4.0: `duplicate_pairs`, `dup_not`) names both of its facts
+                        or {str(i) for i in v.get("fact_ids") or []} & ids))]:
+            bucket.pop(key)
+            gone_keys.add(key)
+            removed += 1
+    pending = seen.get("_pending")
+    if "_pending" not in skip and isinstance(pending, dict) and isinstance(pending.get("seen"), dict):
+        for key, values in pending["seen"].items():
+            if isinstance(values, list):
+                kept = [v for v in values if v not in fingerprints and v not in gone_keys]
+                removed += len(values) - len(kept)
+                pending["seen"][key] = kept
     if removed:
         _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
     return removed
+
+
+def _sweep_proposals(ids, fingerprints):
+    """Merge proposals (3.4.0) that hold a forgotten fact, removed whole — they carry its text; how many."""
+    path = proposals_path()
+    if not path or not os.path.exists(path):
+        return 0
+    data = load_proposals(path)
+    gone = [k for k, rec in data["proposals"].items()
+            if any(str((rec.get(side) or {}).get("fact_id")) in ids
+                   or _fact_fingerprint((rec.get(side) or {}).get("content") or "") in fingerprints
+                   for side in ("keep", "copy"))]
+    for key in gone:
+        del data["proposals"][key]
+    if gone:
+        save_proposals(path, data)
+    return len(gone)
 
 
 def _sweep_judge(ids):
@@ -5819,6 +6514,7 @@ def _sweep_corrupt_copies(home, ids, index, fingerprints, wipe_all, errors):
                                _state_default("DREAM_FORGET_STATE", "forget_sweep"),
                                _state_default("DREAM_ASKED_STATE", "asked"),
                                _state_default("DREAM_SNAPSHOT_STATE", "snapshot"),
+                               proposals_path(),
                                *judge_files(),
                                os.path.join(home, "cache", "dream-extract-state.json")) if p}
     pattern = re.compile(r'"fact_id"\s*:\s*"?((?:[A-Za-z0-9_.-]+#)?\d+)\b')
@@ -5849,6 +6545,110 @@ def _sweep_corrupt_copies(home, ids, index, fingerprints, wipe_all, errors):
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Merged facts (holographic >= 0.19.0): merge_sweep
+# ---------------------------------------------------------------------------
+# `fact_store merge` makes a copy part of another fact (its keep): the copy's row leaves `facts`, its history stays
+# under its own id, and `fact_merges` says where it went. That is no forget: the copy's text is kept by the store,
+# so the diary lines and logs that mention it stay (the forget sweep is a private wipe; `fact_merges` is never
+# added to the tombstones). What goes is this skill's live state about the copy, which no longer matches anything:
+# its items in the night's payload, its cooldown and reject records, its row of the diary index and its records in
+# the judge's files; a merge proposal of the pair becomes `done`, one with a participant merged elsewhere `stale`.
+# The keep's own records stay. Runs on every pass (before and after it), whether or not anything was forgotten,
+# and is idempotent: a second run finds nothing. A later `forget` of the keep leaves a tombstone for every id of
+# the group, and the forget sweep then cleans the rest as for any forgotten fact.
+
+def merge_sweep(db=None, home=None):
+    """Clean this skill's live state of facts merged into others (see the section comment); counts of what went,
+    {} when the store keeps no merges."""
+    home = home or HOME
+    path = db or (fact_store_path() if fact_source() == "holographic" else None)
+    if not path or not os.path.exists(path):
+        return {}
+    c = _conn(path)
+    try:
+        if not c.execute("select 1 from sqlite_master where type='table' and name='fact_merges'").fetchone():
+            return {}
+        merges = {int(f): int(t) for f, t in c.execute("select from_fact_id, into_fact_id from fact_merges")}
+        texts = {int(f): t for f, t in c.execute(
+            "select v.fact_id, v.content from fact_versions v join fact_merges m on m.from_fact_id = v.fact_id "
+            "where v.status = 'merged'")}
+        # Every text a copy ever had (its history stays under its id until a forget): the forget sweep needs their
+        # hashes to find the diary lines and logs written before tags, once the copy has left the live index.
+        history = defaultdict(set)
+        for f, t in c.execute("select v.fact_id, v.content from fact_versions v join fact_merges m "
+                              "on m.from_fact_id = v.fact_id"):
+            history[int(f)].add(t)
+        kept = {_fact_fingerprint(t) for (t,) in c.execute("select content from facts")}
+    finally:
+        c.close()
+    summary = {"merged": len(merges), "payload": 0, "proposals": 0, "seen": 0, "rejected": 0, "index": 0,
+               "judge": 0}
+    if not merges:
+        return summary
+    ids = {str(i) for i in merges}
+    index_path = _state_default("DREAM_DIARY_INDEX", "diary_index")
+    index = _load_state_file(index_path) if index_path else {}
+    # The copies' fingerprints, but never one a current fact has: a copy that differed from its keep only in case
+    # or spaces shares the keep's key, and the keep's records stay.
+    fingerprints = ({_fact_fingerprint(t) for t in texts.values()}
+                    | {fp for i in ids for fp in (index.get(i) or {}).get("fingerprints", [])}) - kept
+    now = _now()
+
+    payload_path = os.path.join(home, "cache", "dream.json")
+    payload = _load_state_file(payload_path)
+    if payload:
+        summary["payload"] = _drop_fact_items(payload, ids)
+        if summary["payload"]:
+            _write_private(payload_path, json.dumps(payload, ensure_ascii=False, indent=2))
+    ppath = proposals_path()
+    if ppath and os.path.exists(ppath):
+        data = load_proposals(ppath)
+        before = {k: r.get("status") for k, r in data["proposals"].items()}
+        if maintain_proposals(data, now, merges=merges, store=path):
+            summary["proposals"] = sum(1 for k, r in data["proposals"].items() if before.get(k) != r.get("status"))
+            save_proposals(ppath, data)
+    summary["seen"] = _sweep_seen(ids, fingerprints, skip=("dup_not",))
+    summary["rejected"] = _sweep_rejected(ids, fingerprints)
+    # Before a copy leaves the live index, its hashes (and those of each of its texts) move to the forget sweep's
+    # archive of merged copies: a later forget of the group must still find its untagged diary lines.
+    _archive_merged(ids, index, history)
+    if index_path and any(i in index for i in ids):
+        summary["index"] = sum(1 for i in ids if index.pop(i, None) is not None)
+        _write_private(index_path, json.dumps(index, ensure_ascii=False))
+    summary["judge"] = _sweep_judge(ids)
+    return summary
+
+
+def _archive_merged(ids, index, history):
+    """Keep the hashes of merged copies for the forget sweep (`merged` in its state): the previews and fingerprints
+    the diary index held for each id in *ids*, and those of every text in *history* ({id: {texts}}). Hashes only,
+    never text; a copy forgotten later moves on from here to `swept`."""
+    state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    if not state_path:
+        return
+    state = _load_state_file(state_path)
+    archive = state.get("merged") if isinstance(state.get("merged"), dict) else {}
+    changed = False
+    for i in sorted(ids):
+        texts = (history.get(int(i)) or set()) if i.isdigit() else set()
+        old = archive.get(i) if isinstance(archive.get(i), dict) else {}
+        live = index.get(i) or {}
+        previews = sorted(set(old.get("previews") or []) | set(live.get("previews") or [])
+                          | {h for t in texts for h in _preview_hashes(t)})
+        fingerprints = sorted(set(old.get("fingerprints") or []) | set(live.get("fingerprints") or [])
+                              | {_fact_fingerprint(t) for t in texts})
+        if not previews and not fingerprints:
+            continue
+        if previews != old.get("previews") or fingerprints != old.get("fingerprints"):
+            archive[i] = {"previews": previews, "fingerprints": fingerprints}
+            changed = True
+    if changed:
+        state["merged"] = archive
+        os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+        _write_private(state_path, json.dumps(state, ensure_ascii=False))
+
+
 def forgotten_diary_index(ids):
     """{fact_id: {"previews": [...], "fingerprints": [...]}} for *ids*: from the sweep state once swept, else from
     the diary index — what scrub_diary_text needs to clean another copy of the diary (a backup) of those facts."""
@@ -5856,12 +6656,17 @@ def forgotten_diary_index(ids):
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
     # A reader, also for whoever cleans a backup of the diary without the state lock: it never moves a file.
     index = _read_state_file(index_path)[0]
-    swept = _read_state_file(state_path)[0].get("swept") or {}
+    sweep_state = _read_state_file(state_path)[0]
+    swept = sweep_state.get("swept") or {}
+    merged = sweep_state.get("merged") if isinstance(sweep_state.get("merged"), dict) else {}
     out = {}
     for i in (str(x) for x in ids):
         done = (swept.get(i) if isinstance(swept.get(i), dict) else None) or {}
-        previews = set(done.get("previews") or []) | set((index.get(i) or {}).get("previews") or [])
-        fingerprints = set(done.get("fingerprints") or []) | set((index.get(i) or {}).get("fingerprints") or [])
+        archived = (merged.get(i) if isinstance(merged.get(i), dict) else None) or {}
+        previews = (set(done.get("previews") or []) | set((index.get(i) or {}).get("previews") or [])
+                    | set(archived.get("previews") or []))
+        fingerprints = (set(done.get("fingerprints") or []) | set((index.get(i) or {}).get("fingerprints") or [])
+                        | set(archived.get("fingerprints") or []))
         out[i] = {"previews": sorted(previews), "fingerprints": sorted(fingerprints)}
     return out
 
@@ -5940,6 +6745,15 @@ def dry_run_summary(result, source):
     facts("conflicts (same subject, different numbers or negation)", result.get("conflicts") or [])
     facts("facts that look unused", result.get("fact_decays") or [])
     lines.append(f"facts people said again on different days (to confirm): {len(result.get('confirm') or [])}")
+    pairs = result.get("duplicate_pairs") or []
+    skipped = st.get("duplicate_pairs_skipped")
+    lines.append(f'pairs of facts to ask "merge?" about: {len(pairs)}'
+                 + (f" (the search did not run: {skipped})" if skipped else ""))
+    for p in pairs[:8]:
+        keep, copy_ = p.get("keep") or {}, p.get("copy") or {}
+        one, two = (re.sub(r"\s+", " ", side.get("content") or "")[:110] for side in (keep, copy_))
+        lines.append(f"  - {p.get('proposal')}: [{keep.get('fact_id')}] {one}")
+        lines.append(f"      and [{copy_.get('fact_id')}] {two}")
     md = result.get("md_decays") or []
     lines.append('memory entries to ask "still relevant?": ' + str(len(md)))
     for d in md[:8]:
@@ -6037,6 +6851,7 @@ def main(argv=None):
     rejected = args.rejected_state if args.rejected_state is not None else _state_default("DREAM_REJECTED_STATE", "rejected")
     seen = args.seen_state if args.seen_state is not None else _state_default("DREAM_SEEN_STATE", "seen")
     snapshot = args.snapshot_state if args.snapshot_state is not None else _state_default("DREAM_SNAPSHOT_STATE", "snapshot")
+    proposals = proposals_path()
 
     if args.dry_run:
         # The pass itself writes cooldowns and the loss-guard snapshot. A dry run
@@ -6044,7 +6859,7 @@ def main(argv=None):
         sandbox = tempfile.mkdtemp(prefix="dream-dry-")
         try:
             paths = []
-            for i, real in enumerate((asked, rejected, seen, snapshot)):
+            for i, real in enumerate((asked, rejected, seen, snapshot, proposals)):
                 if not real:
                     paths.append(None)
                     continue
@@ -6054,7 +6869,7 @@ def main(argv=None):
                 paths.append(copy)
             result = run(window, corr, md_days, mem_md, asked_state_path=paths[0],
                          rejected_state_path=paths[1], seen_state_path=paths[2],
-                         snapshot_state_path=paths[3],
+                         snapshot_state_path=paths[3], proposals_state_path=paths[4],
                          judge=JudgeRun(judge_files(), False, None, args.judge_replay))
         finally:
             shutil.rmtree(sandbox, ignore_errors=True)
@@ -6078,9 +6893,17 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 — a sweep hiccup must not cost the night's pass
             swept = {"errors": [f"{type(e).__name__}: {e}"]}
         if not args.forget_sweep and (swept.get("errors") or any(
-                swept.get(k) for k in ("payload", "rejected", "seen", "judge", "diary_lines", "cron_logs",
-                                       "corrupt_copies"))):
+                swept.get(k) for k in ("payload", "rejected", "seen", "proposals", "judge", "diary_lines",
+                                       "cron_logs", "corrupt_copies"))):
             print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
+        if not args.forget_sweep:
+            # Facts merged into others (holographic >= 0.19.0): live state only, never through the forget gate.
+            try:
+                merged = merge_sweep()
+            except Exception as e:  # noqa: BLE001 — as the forget sweep: the night's pass comes first
+                merged = {"errors": [f"{type(e).__name__}: {e}"]}
+            if merged.get("errors") or any(v for k, v in merged.items() if k != "merged"):
+                print(f"[dream] merge sweep ({when}): {json.dumps(merged, ensure_ascii=False)}", file=sys.stderr)
         return swept
 
     with _sweep_lock(HOME, wait=not args.forget_sweep) as held:
@@ -6097,6 +6920,7 @@ def main(argv=None):
                      rejected_state_path=rejected or None,
                      seen_state_path=seen or None,
                      snapshot_state_path=snapshot or None,
+                     proposals_state_path=proposals or None,
                      judge=JudgeRun(judge_files(), not args.judge_replay, args.deadline, args.judge_replay))
 
         scrub_result(result)  # a fact forgotten while the pass ran never reaches its output

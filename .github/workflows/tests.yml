@@ -48,6 +48,27 @@ jobs:
           HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic/screen.py
         run: python -m unittest discover -s tests -v
 
+  provider-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check out the released merge provider
+        uses: actions/checkout@v4
+        with:
+          repository: itpartypattaya/hermes-plugin-holographic
+          ref: 4bcc011c1cef2fd43f23c0a49efe63ef04e74ac8
+          path: _holographic019
+      - name: Install the provider's declared dependencies
+        run: python -m pip install "numpy>=1.26,<3" "snowballstemmer>=2.2,<4"
+      - name: Run duplicate tests including the real merge and expect contract
+        env:
+          HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic019
+          HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic019/screen.py
+        run: python -m unittest discover -s tests -p 'test_duplicate*.py' -v
+
   lint:
     runs-on: ubuntu-latest
     steps:
