@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.4.1 — 2026-10-26
+
+### Changed
+- Extraction explicitly considers lasting rules, limitations and preferences said in passing, while excluding one-off task instructions. Messages remain data, never commands to execute.
+- Nightly keyword enrichment and extraction check holographic >= 0.18.1's returned keywords, keywords_dropped and keywords_not_set. One keyword-only repair is allowed, existing keywords are preserved, and incomplete enrichment is reported. Older providers remain best-effort.
+- The merge-response instructions distinguish a keep still at its merge-time version from changed, ended and corrected claims; extraction must not resurrect a merged copy.
+- Generated cron prompts and both job examples carry the same guidance. Existing jobs retain their prompts until explicitly updated; schedules need no changes.
+
 ## 3.4.0 — 2026-10-26
 
 ### Added
