@@ -236,6 +236,9 @@ def _run_proposal(args):
             print(f"{number} is {status} already — nothing changed")
             return 0
         d._close_proposal(rec, "stale", now, "the merge was refused: the texts changed")
+        # Nobody answered texts the store still holds: the pair's 180 days of rest (and its mark of tonight's
+        # showing) go with the proposal, so the next pass asks again — under the same key when the texts kept it.
+        d.release_pair(seen, rec.get("pair_key"), number)
         message = f"{number}: stale — the dream asks anew if the facts still look alike"
     else:  # --undo
         if status not in ("declined", "stale"):
@@ -248,7 +251,7 @@ def _run_proposal(args):
         dup_not.pop(rec["pair_key"], None)
         message = f"{number}: open again"
     d.save_proposals(path, data)
-    if seen_path and (args.not_duplicates or args.undo):
+    if seen_path and (args.not_duplicates or args.undo or args.stale):
         d._write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
     print(message)
     return 0

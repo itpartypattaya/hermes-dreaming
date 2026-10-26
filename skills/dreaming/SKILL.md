@@ -232,6 +232,9 @@ in each of them (`references/scoring.md`, "Every language").
         them again before doing anything.
      2. Read the proposal: `read_file ~/.hermes/cache/dream-proposals.json`, `proposals["D-17"]`. A status other
         than `open` (`done`, `declined`, `stale`) → say so in one line and do nothing.
+        Before any merge, call `fact_store stats`: its `database` must be the proposal's `store`
+        (the same file, after resolving the paths). Missing `store`, a different database, or
+        no `database` to compare → stop; do not merge, and ask from the correct profile.
      3. "Yes" → `fact_store merge {fact_id: <keep.fact_id>, from: [<copy.fact_id>], keywords: <keywords_after>,
         expect: {"<keep.fact_id>": <keep.version_id>, "<copy.fact_id>": <copy.version_id>}}` — exactly the
         versions the human was shown. `changed_since`, any other error, or an answer whose `merged` and `already`

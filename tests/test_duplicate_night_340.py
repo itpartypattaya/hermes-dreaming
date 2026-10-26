@@ -30,6 +30,7 @@ Run:  python -m unittest discover -s tests   (from the skill directory)
 
 import io
 import json
+from pathlib import Path
 import sqlite3
 import sys
 import unittest
@@ -552,7 +553,8 @@ class MergeSweepTests(NightBase):
         self.assertEqual({k: v for k, v in again.items() if k != "merged"},
                          {"payload": 0, "proposals": 0, "seen": 0, "rejected": 0, "index": 0, "judge": 0},
                          "a second sweep finds nothing")
-        self.assertTrue(judge.cache)
+        self.assertEqual(json.loads(Path(judge.cache).read_text(encoding="utf-8")),
+                         {"entries": {"b": {"fact_ref": str(keep)}}})
 
     def test_a_merge_elsewhere_makes_the_proposal_stale(self):
         copy = self.fact(BRIDGE[0])

@@ -43,6 +43,7 @@ import unicodedata
 from collections import Counter, defaultdict, namedtuple
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
+from pathlib import Path
 
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo
@@ -736,6 +737,35 @@ def fact_store_path(home=None):
     raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
     raw = os.path.expanduser(raw)
     return raw if os.path.isabs(raw) else os.path.join(home, raw)
+
+
+def provider_store_path(home=None):
+    """The database holographic opens as the profile store, resolved as the provider resolves it — `db_path` of
+    its block (default `$HERMES_HOME/memory_store.db`), `$HERMES_HOME` replaced, `~` expanded — and spelled as its
+    `fact_store stats` gives it (`database`); or None when that cannot be known here: the block cannot be read for
+    sure, the path keeps another variable (the core expands it, this pass does not), it is `:memory:`, or it is
+    relative (the provider opens it from the gateway's working directory, not from the home)."""
+    home = home or HOME
+    if ".".join(_STORE) in hermes_config_unread(home):
+        return None
+    raw = _hermes_plugin_db_path(home) or "$HERMES_HOME/memory_store.db"
+    raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
+    if raw.strip() == ":memory:" or "$" in raw:
+        return None
+    raw = os.path.expanduser(raw)
+    return str(Path(raw)) if os.path.isabs(raw) else None
+
+
+def same_file(a, b):
+    """Whether two paths name one file: the same file on disk when both exist, else the same resolved path."""
+    if not a or not b:
+        return False
+    try:
+        if os.path.exists(a) and os.path.exists(b):
+            return os.path.samefile(a, b)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
 def _env(name, default, cast=str):
@@ -2850,11 +2880,13 @@ def find_duplicate_pairs(facts, max_checks=None):
     rule calls one fact, and how many pairs were checked. Raises DupBudget past *max_checks*.
 
     Candidates come from an inverted index over the significant stems, so a store is not compared with itself
-    whole. A pair the rule can accept shares at least max(2, ceil(min_containment · |S|)) stems with the shorter
-    side S; S's rarest |S| − that + 1 stems are then sure to hold one of them (a prefix filter), so only the facts
-    under those stems are looked at — the pairs found are the same as when every pair sharing two stems is
-    checked, at a fraction of the checks (stopwords are kept, and they are in almost every fact). Short facts and
-    facts without significant words have their own path: the same numbers / @-handles, or the same text."""
+    whole. A pair the rule can accept shares at least need = max(1, ceil(min_containment · |S|)) stems with the
+    shorter side S — exactly the rule's bound, for every allowed `min_containment` above 0; S's rarest |S| − need + 1
+    stems are then sure to hold one of them (a prefix filter), so only the facts under those stems are looked at —
+    the pairs found are the same as when every pair is checked, at a fraction of the checks (stopwords are kept,
+    and they are in almost every fact). At `min_containment` 0 the rule needs no shared stem, so every pair of long
+    facts is checked, in the same budget. Short facts and facts without significant words have their own path: the
+    same numbers / @-handles, or the same text."""
     feats = {f["fact_id"]: _dup_features(f["content"]) for f in facts}
     ids = sorted(feats, key=lambda i: (str(type(i)), i))
     rank = {i: n for n, i in enumerate(ids)}
@@ -2883,10 +2915,17 @@ def find_duplicate_pairs(facts, max_checks=None):
         size = len(words)
         if size < DUP_SHORT_WORDS:
             continue
-        need = max(2, math.ceil(floor * size - 1e-9))
-        near = set()
-        for stem in sorted(words, key=lambda s: (df[s], s))[:max(1, size - need + 1)]:
-            near.update(postings[stem])
+        if floor <= 0:
+            # Containment 0 passes the rule's first test with no stem shared at all: there is nothing to index,
+            # every pair of long facts is checked (within the budget).
+            near = {j for j in ids if len(feats[j].words) >= DUP_SHORT_WORDS}
+            need = 0
+        else:
+            # As few shared stems as the rule accepts: one of four at 0.25 is a pair for it.
+            need = max(1, math.ceil(floor * size - 1e-9))
+            near = set()
+            for stem in sorted(words, key=lambda s: (df[s], s))[:size - need + 1]:
+                near.update(postings[stem])
         near.discard(i)
         for j in near:  # any order: past the budget the whole search is dropped, and `found` is sorted
             other = feats[j].words
@@ -4632,11 +4671,13 @@ def store_merges(db):
 
 
 def store_versions(db):
-    """({fact_id: current version_id}, {fact_id: number of versions}) of the store's history."""
+    """({fact_id: (current version_id, its text)}, {fact_id: number of versions}) of the store's history. The id
+    and the text of a version come from one statement — one snapshot of the database: a proposal must never pair
+    the text of one version with the id of another (a "yes" with `expect` would then merge a text nobody saw)."""
     c = _conn(db)
     try:
-        current = {int(f): int(v) for f, v in c.execute(
-            "select fact_id, version_id from fact_versions where status = 'current'")}
+        current = {int(f): (int(v), t) for f, v, t in c.execute(
+            "select fact_id, version_id, content from fact_versions where status = 'current'")}
         counts = {int(f): int(n) for f, n in c.execute("select fact_id, count(*) from fact_versions group by fact_id")}
         return current, counts
     finally:
@@ -4673,12 +4714,15 @@ def _close_proposal(rec, status, now, why):
     rec.update(status=status, closed_at=now.isoformat(timespec="seconds"), closed_why=why)
 
 
-def maintain_proposals(data, now, merges=None, current=None):
+def maintain_proposals(data, now, merges=None, current=None, store=None, released=None):
     """Bring the open proposals up to what the store holds now; drop closed ones past DUP_CLOSED_KEEP_DAYS.
-    *merges* ({copy: keep}): a pair merged into each other is `done`, a participant merged elsewhere makes it
-    `stale`. *current* ({fact_id: version_id}, None when unknown): a participant gone (ended, forgotten) or at
-    another version than the one shown makes it `stale` — the human answered other texts. An open proposal
-    older than DUP_OPEN_DAYS goes `stale` too. Returns whether anything changed."""
+    *store* (the database read now, None when unknown): a proposal made from another database is `stale` — its
+    ids and versions are that one's. *merges* ({copy: keep}): a pair merged into each other is `done`, a
+    participant merged elsewhere makes it `stale`. *current* ({fact_id: version_id}, None when unknown): a
+    participant gone (ended, forgotten) or at another version than the one shown makes it `stale` — the human
+    answered other texts; such a proposal's number goes to *released* (a list), whose pair may be asked about
+    again at once (`release_pair`). An open proposal older than DUP_OPEN_DAYS goes `stale` too. Returns whether
+    anything changed."""
     changed = False
     for key in sorted(data["proposals"], key=_proposal_number):
         rec = data["proposals"][key]
@@ -4686,13 +4730,17 @@ def maintain_proposals(data, now, merges=None, current=None):
         k, c = keep.get("fact_id"), copy_.get("fact_id")
         if rec.get("status") == "open":
             merges = merges or {}
-            if merges.get(c) == k or merges.get(k) == c:
+            if store is not None and not same_file(rec.get("store"), store):
+                _close_proposal(rec, "stale", now, "made from another fact store than the one read now")
+            elif merges.get(c) == k or merges.get(k) == c:
                 _close_proposal(rec, "done", now, "merged")
             elif k in merges or c in merges:
                 _close_proposal(rec, "stale", now, "a fact of the pair was merged into another")
             elif current is not None and (current.get(k) != keep.get("version_id")
                                           or current.get(c) != copy_.get("version_id")):
                 _close_proposal(rec, "stale", now, "a text changed or ended since it was shown")
+                if released is not None:
+                    released.append(key)
             elif (_age_days(rec.get("created"), now) or 0) > DUP_OPEN_DAYS:
                 _close_proposal(rec, "stale", now, f"no answer in {DUP_OPEN_DAYS} days")
             else:
@@ -4702,6 +4750,25 @@ def maintain_proposals(data, now, merges=None, current=None):
             del data["proposals"][key]
             changed = True
     return changed
+
+
+def release_pair(seen, pair_key, number=None):
+    """Let the pair of *pair_key* be asked about again at once: its cooldown in the `duplicate_pairs` bucket (only
+    the one of proposal *number*, when given) and its entry in `_pending`. For a proposal closed `stale` — the
+    merge was refused, or a version changed while the pair kept its key (an edit of case or spaces): the 180 days
+    of rest were for an answer, and none came. Returns how many records went."""
+    removed = 0
+    bucket = seen.get("duplicate_pairs")
+    rec = bucket.get(pair_key) if isinstance(bucket, dict) else None
+    if rec is not None and (number is None or not isinstance(rec, dict) or rec.get("proposal") in (None, number)):
+        bucket.pop(pair_key)
+        removed += 1
+    pending = ((seen.get("_pending") or {}).get("seen") or {}) if isinstance(seen.get("_pending"), dict) else {}
+    keys = pending.get("duplicate_pairs") if isinstance(pending, dict) else None
+    if isinstance(keys, list) and pair_key in keys:
+        pending["duplicate_pairs"] = [k for k in keys if k != pair_key]
+        removed += 1
+    return removed
 
 
 def _keep_and_copy(a, b, fa, fb, versions):
@@ -4743,24 +4810,39 @@ def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, wr
         return _dup_skip("disabled")
     if inputs.fact_source != "holographic":
         return _dup_skip("not_holographic")
+    # The "yes" is carried out by whichever session answers, in the database its provider opens: the pass must read
+    # that very one. A scope that cannot be read, a provider path that cannot be resolved here, or a fact store
+    # set for the dream (`DREAM_FACT_STORE`, `fact_store_path`) other than the provider's turns the section off —
+    # ids and versions of two databases look alike, and `expect` cannot tell them apart.
+    if ".".join(_STORE) in hermes_config_unread():
+        return _dup_skip("scope_unknown")
     scope = holographic_scope()
     if scope != "profile":
         return _dup_skip(f"scope_{scope}")
+    store = provider_store_path()
+    if store is None:
+        return _dup_skip("store_unknown")
     db = fact_store_path()
     if not db or not os.path.exists(db):
         return _dup_skip("no_store")
+    if not same_file(db, store):
+        return _dup_skip("store_mismatch")
     try:
         merges = store_merges(db)
         if merges is None:
             return _dup_skip("merge_unavailable")
-        current, versions = store_versions(db)
+        heads, versions = store_versions(db)
     except sqlite3.Error as exc:
         print(f"[dream] warn: duplicates: the fact store's history is unreadable: {exc}", file=sys.stderr)
         return _dup_skip("unreadable")
     if not proposals_file:
         return _dup_skip("no_state")
+    current = {fid: vid for fid, (vid, _text) in heads.items()}
     proposals = load_proposals(proposals_file)
-    changed = maintain_proposals(proposals, now, merges=merges, current=current)
+    released = []
+    changed = maintain_proposals(proposals, now, merges=merges, current=current, store=store, released=released)
+    for number in released:  # nobody answered those texts: the pair may be asked about again tonight
+        release_pair(seen, proposals["proposals"][number]["pair_key"], number)
 
     scored = {s["fact_id"]: s for s in d.scored}
     eligible = []
@@ -4768,7 +4850,11 @@ def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, wr
         fid, s = f["fact_id"], scored.get(f["fact_id"])
         if f.get("store") or s is None or s["unsafe"] or s["rejected"] or fid in excluded_ids:
             continue
-        if fid in merges or fid not in current or len(f.get("content") or "") > SETTINGS.DUP_MAX_CHARS:
+        if fid in merges or len(f.get("content") or "") > SETTINGS.DUP_MAX_CHARS:
+            continue
+        # The text loaded for the night must be the text of the version read now: the provider may have changed
+        # the fact in between (the pass's lock does not hold it back). Then the fact waits for the next night.
+        if fid not in heads or heads[fid][1] != f["content"]:
             continue
         eligible.append(f)
     by_id = {f["fact_id"]: f for f in eligible}
@@ -4839,13 +4925,16 @@ def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, wr
         if number is None:
             number = f"D-{nxt}"
             nxt += 1
-            proposals["proposals"][number] = {"pair_key": p["pair_key"], "created": stamp, "status": "open", **side,
+            # `store`: the database the proposal is about, as the provider's `fact_store stats` names it
+            # (`database`) — the agent compares the two before a merge (SKILL step 7e).
+            proposals["proposals"][number] = {"pair_key": p["pair_key"], "created": stamp, "status": "open",
+                                              "store": store, **side,
                                               "keywords_after": _keywords_after(keep, copy_), "why": p["why"]}
         rec = proposals["proposals"][number]
         rec["last_published"] = stamp
         changed = True
         p["proposal"] = number
-        items.append({"proposal": number, "keep": rec["keep"], "copy": rec["copy"],
+        items.append({"proposal": number, "store": rec["store"], "keep": rec["keep"], "copy": rec["copy"],
                       "keywords_after": rec["keywords_after"], "why": rec["why"]})
     proposals["next_proposal"] = nxt
     if write:
@@ -6189,10 +6278,14 @@ def forget_sweep(db=None, home=None):
         return summary
     ids = {str(i) for i in tombstones}
     live = _load_state_file(index_path)
+    # A copy merged into another left the live index; its hashes wait in `merged` (merge_sweep).
+    merged = state.get("merged") if isinstance(state.get("merged"), dict) else {}
     index = {i: {"previews": sorted(set((done.get(i) or {}).get("previews") or [])
-                                    | set((live.get(i) or {}).get("previews") or []))} for i in ids}
-    fingerprints = {fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])} \
-        | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
+                                    | set((live.get(i) or {}).get("previews") or [])
+                                    | set((merged.get(i) or {}).get("previews") or []))} for i in ids}
+    fingerprints = ({fp for i in ids for fp in (live.get(i) or {}).get("fingerprints", [])}
+                    | {fp for i in ids for fp in (done.get(i) or {}).get("fingerprints", [])}
+                    | {fp for i in ids for fp in (merged.get(i) or {}).get("fingerprints", [])})
 
     # Each copy in turn, in this order: the night's payload, the reject list, the cooldowns, the diary, the logs, and
     # last the broken state files set aside — the loads above may have just set one aside.
@@ -6220,7 +6313,9 @@ def forget_sweep(db=None, home=None):
         record = done.setdefault(i, {"at": stamp})
         record["previews"] = index[i]["previews"]
         record["fingerprints"] = sorted(set(record.get("fingerprints") or [])
-                                        | set((live.get(i) or {}).get("fingerprints") or []))
+                                        | set((live.get(i) or {}).get("fingerprints") or [])
+                                        | set((merged.get(i) or {}).get("fingerprints") or []))
+        merged.pop(i, None)
     if index_path and any(i in live for i in ids):
         for i in ids:
             live.pop(i, None)
@@ -6281,23 +6376,25 @@ def _sweep_seen(ids, fingerprints, skip=()):
     seen_path = _state_default("DREAM_SEEN_STATE", "seen")
     seen = _load_state_file(seen_path)
     removed = 0
+    gone_keys = set()  # keys of the records removed: a pair's key (3.4.0) is no fingerprint of a fact
     for name, bucket in seen.items():
-        if name in skip:
+        if name in skip or name == "_pending" or not isinstance(bucket, dict):
             continue
-        if name == "_pending" and isinstance(bucket, dict):
-            for key, values in (bucket.get("seen") or {}).items():
-                if isinstance(values, list):
-                    kept = [v for v in values if v not in fingerprints]
-                    removed += len(values) - len(kept)
-                    bucket["seen"][key] = kept
-        elif isinstance(bucket, dict):
-            for key in [k for k, v in bucket.items()
-                        if k in fingerprints or (isinstance(v, dict) and (
-                            str(v.get("fact_id")) in ids
-                            # a pair's record (3.4.0: `duplicate_pairs`, `dup_not`) names both of its facts
-                            or {str(i) for i in v.get("fact_ids") or []} & ids))]:
-                bucket.pop(key)
-                removed += 1
+        for key in [k for k, v in bucket.items()
+                    if k in fingerprints or (isinstance(v, dict) and (
+                        str(v.get("fact_id")) in ids
+                        # a pair's record (3.4.0: `duplicate_pairs`, `dup_not`) names both of its facts
+                        or {str(i) for i in v.get("fact_ids") or []} & ids))]:
+            bucket.pop(key)
+            gone_keys.add(key)
+            removed += 1
+    pending = seen.get("_pending")
+    if "_pending" not in skip and isinstance(pending, dict) and isinstance(pending.get("seen"), dict):
+        for key, values in pending["seen"].items():
+            if isinstance(values, list):
+                kept = [v for v in values if v not in fingerprints and v not in gone_keys]
+                removed += len(values) - len(kept)
+                pending["seen"][key] = kept
     if removed:
         _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
     return removed
@@ -6476,6 +6573,12 @@ def merge_sweep(db=None, home=None):
         texts = {int(f): t for f, t in c.execute(
             "select v.fact_id, v.content from fact_versions v join fact_merges m on m.from_fact_id = v.fact_id "
             "where v.status = 'merged'")}
+        # Every text a copy ever had (its history stays under its id until a forget): the forget sweep needs their
+        # hashes to find the diary lines and logs written before tags, once the copy has left the live index.
+        history = defaultdict(set)
+        for f, t in c.execute("select v.fact_id, v.content from fact_versions v join fact_merges m "
+                              "on m.from_fact_id = v.fact_id"):
+            history[int(f)].add(t)
         kept = {_fact_fingerprint(t) for (t,) in c.execute("select content from facts")}
     finally:
         c.close()
@@ -6502,16 +6605,48 @@ def merge_sweep(db=None, home=None):
     if ppath and os.path.exists(ppath):
         data = load_proposals(ppath)
         before = {k: r.get("status") for k, r in data["proposals"].items()}
-        if maintain_proposals(data, now, merges=merges):
+        if maintain_proposals(data, now, merges=merges, store=path):
             summary["proposals"] = sum(1 for k, r in data["proposals"].items() if before.get(k) != r.get("status"))
             save_proposals(ppath, data)
     summary["seen"] = _sweep_seen(ids, fingerprints, skip=("dup_not",))
     summary["rejected"] = _sweep_rejected(ids, fingerprints)
+    # Before a copy leaves the live index, its hashes (and those of each of its texts) move to the forget sweep's
+    # archive of merged copies: a later forget of the group must still find its untagged diary lines.
+    _archive_merged(ids, index, history)
     if index_path and any(i in index for i in ids):
         summary["index"] = sum(1 for i in ids if index.pop(i, None) is not None)
         _write_private(index_path, json.dumps(index, ensure_ascii=False))
     summary["judge"] = _sweep_judge(ids)
     return summary
+
+
+def _archive_merged(ids, index, history):
+    """Keep the hashes of merged copies for the forget sweep (`merged` in its state): the previews and fingerprints
+    the diary index held for each id in *ids*, and those of every text in *history* ({id: {texts}}). Hashes only,
+    never text; a copy forgotten later moves on from here to `swept`."""
+    state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
+    if not state_path:
+        return
+    state = _load_state_file(state_path)
+    archive = state.get("merged") if isinstance(state.get("merged"), dict) else {}
+    changed = False
+    for i in sorted(ids):
+        texts = (history.get(int(i)) or set()) if i.isdigit() else set()
+        old = archive.get(i) if isinstance(archive.get(i), dict) else {}
+        live = index.get(i) or {}
+        previews = sorted(set(old.get("previews") or []) | set(live.get("previews") or [])
+                          | {h for t in texts for h in _preview_hashes(t)})
+        fingerprints = sorted(set(old.get("fingerprints") or []) | set(live.get("fingerprints") or [])
+                              | {_fact_fingerprint(t) for t in texts})
+        if not previews and not fingerprints:
+            continue
+        if previews != old.get("previews") or fingerprints != old.get("fingerprints"):
+            archive[i] = {"previews": previews, "fingerprints": fingerprints}
+            changed = True
+    if changed:
+        state["merged"] = archive
+        os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+        _write_private(state_path, json.dumps(state, ensure_ascii=False))
 
 
 def forgotten_diary_index(ids):
@@ -6521,12 +6656,17 @@ def forgotten_diary_index(ids):
     state_path = _state_default("DREAM_FORGET_STATE", "forget_sweep")
     # A reader, also for whoever cleans a backup of the diary without the state lock: it never moves a file.
     index = _read_state_file(index_path)[0]
-    swept = _read_state_file(state_path)[0].get("swept") or {}
+    sweep_state = _read_state_file(state_path)[0]
+    swept = sweep_state.get("swept") or {}
+    merged = sweep_state.get("merged") if isinstance(sweep_state.get("merged"), dict) else {}
     out = {}
     for i in (str(x) for x in ids):
         done = (swept.get(i) if isinstance(swept.get(i), dict) else None) or {}
-        previews = set(done.get("previews") or []) | set((index.get(i) or {}).get("previews") or [])
-        fingerprints = set(done.get("fingerprints") or []) | set((index.get(i) or {}).get("fingerprints") or [])
+        archived = (merged.get(i) if isinstance(merged.get(i), dict) else None) or {}
+        previews = (set(done.get("previews") or []) | set((index.get(i) or {}).get("previews") or [])
+                    | set(archived.get("previews") or []))
+        fingerprints = (set(done.get("fingerprints") or []) | set((index.get(i) or {}).get("fingerprints") or [])
+                        | set(archived.get("fingerprints") or []))
         out[i] = {"previews": sorted(previews), "fingerprints": sorted(fingerprints)}
     return out
 
