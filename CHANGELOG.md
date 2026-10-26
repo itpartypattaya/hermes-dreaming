@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.4.0 — 2026-10-26
 
 ### Added
 - **Duplicates across the whole fact store: "merge?"** (part A of 3.4.0, holographic ≥ 0.19.0). The pass finds
