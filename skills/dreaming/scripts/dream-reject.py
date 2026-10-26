@@ -258,10 +258,12 @@ def _run(ap, args):
         if content is None:
             ap.error(f"fact {args.fact_id} not found in the fact store — pass --content")
 
-    # The key is ALWAYS the text fingerprint. Keying by fact_id is unsafe:
-    # sqlite reuses ids after the last row is deleted, and a rejection of a new
-    # fact would silently overwrite the rejection of an old one. fact_id stays
-    # a tracing field and works in `--undo`.
+    # The key is ALWAYS the text fingerprint. Keying by fact_id is unsafe: the
+    # core may re-extract the same fact under a new id, and a generic `sqlite`
+    # source without AUTOINCREMENT reuses the id of a deleted last row (a
+    # rejection of a new fact would overwrite the rejection of an old one;
+    # holographic never reuses an id). fact_id stays a tracing field and works
+    # in `--undo`.
     key = _fingerprint(content)
     record = {
         "fact_id": args.fact_id,

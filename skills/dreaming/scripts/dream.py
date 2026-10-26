@@ -185,6 +185,16 @@ DEFAULT_CONFIG = {
     # holographic >= 0.6.1 — 0.6.0 stamped a fact "changed now" when it got
     # keywords, and old facts came back as new ones.
     "keywords": {"enabled": False, "cap": 10},
+    # Duplicates across the whole fact store (3.4.0, holographic >= 0.19.0): the pass looks for pairs of facts
+    # that say the same thing in other words and asks the human "merge?" — one question a night (`per_night`),
+    # with the whole texts and a proposal number (`D-17`). The agent merges only on a "yes" to that number,
+    # through `fact_store merge` with the versions the human saw; the pass itself writes nothing to the store.
+    # `min_containment`: the share of the shorter side's significant words the other side holds (0.7);
+    # `question_cooldown_days`: a pair asked about rests this long (180); `max_pair_checks`: the night's budget
+    # of candidate pairs (200 000) — past it the section is skipped for the night, with an alert; `max_chars`:
+    # a fact longer than this takes no part (2000). See references/scoring.md, "Duplicates across the store".
+    "duplicates": {"enabled": True, "min_containment": 0.7, "per_night": 1, "question_cooldown_days": 180,
+                   "max_pair_checks": 200000, "max_chars": 2000},
     # holographic `scope: user / chat / thread` keeps facts in one database per user / chat / topic, which the
     # dream does not read by default: one chat's facts would reach memory every chat sees. `read` lists every
     # such database in the report (counts only — no text, no ids); `promote_from` names the chats whose facts
@@ -216,10 +226,14 @@ DEFAULT_CONFIG = {
               "judge_cache": "cache/dream-judge.json",
               "judge_journal": "cache/dream-judge-journal.jsonl",
               "judge_health": "cache/dream-judge-health.json",
-              "judge_manifest": "cache/dream-judge-export-manifest.json"},
+              "judge_manifest": "cache/dream-judge-export-manifest.json",
+              # The "merge?" proposals of 3.4.0 (`D-17`): the texts and versions the human was shown, their
+              # status; the number counter lives in the same file, so one write keeps them together.
+              "proposals": "cache/dream-proposals.json"},
     "precheck": {"max_content": 300,
                  "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
-                                     "md_decays", "conflicts", "quarantined", "alerts"]},
+                                     "md_decays", "conflicts", "quarantined", "alerts",
+                                     "duplicate_pairs_published"]},
 }
 
 
@@ -813,6 +827,8 @@ _SETTING_NAMES = (
     "PROMOTION_COOLDOWN_DAYS", "PENDING_DIR", "PENDING_ALERT_MIN", "PENDING_ALERT_DAYS",
     "FEEDBACK_TRUST_FLOOR", "FEEDBACK_CAP", "KEYWORDS_ENABLED", "KEYWORDS_CAP",
     "FEEDBACK_FLOOR_EXPLICIT", "JUDGE",
+    "DUP_ENABLED", "DUP_MIN_CONTAINMENT", "DUP_PER_NIGHT", "DUP_COOLDOWN_DAYS", "DUP_MAX_PAIR_CHECKS",
+    "DUP_MAX_CHARS",
 )
 
 
@@ -933,6 +949,23 @@ def configure(cfg):
         s.KEYWORDS_CAP = max(0, int(kw.get("cap", 10)))
     except (TypeError, ValueError):
         s.KEYWORDS_CAP = _ignored("keywords.cap", kw.get("cap"), 10)
+    dup = cfg.get("duplicates") if isinstance(cfg.get("duplicates"), dict) else {}
+    s.DUP_ENABLED = dup.get("enabled", True) is not False
+    defaults = DEFAULT_CONFIG["duplicates"]
+    # One setting, one parse: a bad `per_night` must not reset the containment too.
+    for name, key, cast, low in (("DUP_MIN_CONTAINMENT", "min_containment", float, 0.0),
+                                 ("DUP_PER_NIGHT", "per_night", int, 0),
+                                 ("DUP_COOLDOWN_DAYS", "question_cooldown_days", int, 0),
+                                 ("DUP_MAX_PAIR_CHECKS", "max_pair_checks", int, 1),
+                                 ("DUP_MAX_CHARS", "max_chars", int, 1)):
+        raw = dup.get(key, defaults[key])
+        try:
+            value = cast(raw)
+            if value < low or (key == "min_containment" and value > 1.0) or value != value:
+                raise ValueError(raw)
+        except (TypeError, ValueError):
+            value = _ignored(f"duplicates.{key}", raw, defaults[key])
+        setattr(s, name, value)
     pend = cfg.get("pending") or {}
     s.PENDING_DIR = str(pend.get("dir") or "pending/memory")
     # Two settings, two parses — a bad `alert_days` reset a good `alert_min` too (review of 3.3.1).
@@ -2600,9 +2633,11 @@ def find_conflicts(content, memory_text):
 # edits MEMORY.md/USER.md only and cannot delete a row from memory_store.db,
 # and the only repeat filter is "already in durable memory". A rejected fact is
 # in neither, so it came back every night (live case: 12 identical questions
-# about a dead thread in 5 weeks). Matching is by TEXT, not fact_id: sqlite
-# reuses ids after the last row is deleted, and the core may re-extract the
-# same fact under a new id. fact_id is kept for tracing only.
+# about a dead thread in 5 weeks). Matching is by TEXT, not fact_id: the core
+# may re-extract the same fact under a new id, and a generic `sqlite` source
+# without AUTOINCREMENT reuses the id of a deleted last row (holographic's
+# `facts.fact_id` is AUTOINCREMENT and never reuses one). fact_id is kept for
+# tracing only.
 
 # ---------------------------------------------------------------------------
 # Near-duplicates inside the fact store
@@ -2664,6 +2699,214 @@ def collapse_store_duplicates(items):
 
 def _fact_fingerprint(content):
     return hashlib.md5(_norm(content).encode("utf-8")).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Duplicates across the whole store (3.4.0): the similarity rule
+# ---------------------------------------------------------------------------
+# `_store_duplicates` above is strict on purpose (every differing word must be a stopword or an inflection) and
+# sees only the candidates of one night; a retelling of a stored fact ("Thread 30 is for V's work tasks" /
+# "Thread 30: messages there are work tasks of V") never met it. This rule is looser and is a generator of
+# QUESTIONS for a human, not a test of identity: it finds pairs that look like one fact, and the human decides on
+# the two whole texts. What it cannot tell apart (two names in swapped roles, the tense of one verb) is written
+# in references/scoring.md as a limit, not hidden. A pair is a candidate when all of these hold:
+# - significant words: every word of the body (the leading date stamp and words with a digit left out, stopwords
+#   KEPT, a word of 5+ letters by its stem) — containment |A∩B| / min(|A|,|B|) >= `duplicates.min_containment`;
+# - a short fact (fewer than DUP_SHORT_WORDS significant words on the shorter side) pairs only at containment 1.0
+#   with the same non-empty numbers / @-handles; a fact without significant words pairs only with its own text;
+#   two texts equal but for case and spaces are a pair whatever their length;
+# - the numbers (`_numbers`: digits, months and weekdays in words) and @-handles of one side are a subset of the
+#   other's, and the shared ones come in the same order («в 71 доходы, в 74 расходы» against the swap);
+# - names (capitalized words, the first of a sentence included) of one side are a subset of the other's, and
+#   point the same way as the numbers when both differ («Виктор и Ольга ведут ветку 30» / «Виктор ведёт ветки 30
+#   и 31»: names added on one side, numbers on the other);
+# - a word substitution is no retelling: when each side has words the other lacks and there are at most
+#   DUP_SUBSTITUTION_MAX of them on each side, one word was swapped («утром» / «вечером», «разрешает» /
+#   «запрещает», «мама» / «папа», «до» / «после»);
+# - no opposite polarity (`polarity_differs`), checked last: it is the dearest test.
+_HANDLE_RE = re.compile(r"@\w+")
+DUP_SHORT_WORDS = 3
+DUP_SUBSTITUTION_MAX = 2
+
+
+def _dup_body(text):
+    return LEADING_DATE_STAMP_RE.sub("", text or "", count=1)
+
+
+def _dup_words(text):
+    """{stem: a word it stands for} of the significant words of *text* (see the section comment)."""
+    out = {}
+    for w in sorted(_store_words(text)):  # the stamp is already off, the text normalized
+        if any(c.isdigit() for c in w):
+            continue
+        out.setdefault(_stem(w) if len(w) >= 5 else w, w)
+    return out
+
+
+def _dup_anchors(text):
+    """The numbers (as `_numbers`, the leading date stamp left out) and @-handles of the body, as a set."""
+    return _numbers(text) | {m.group() for m in _HANDLE_RE.finditer(_norm(_dup_body(text)))}
+
+
+def _dup_anchor_seq(text):
+    """The digit numbers and @-handles of the body in order of first occurrence (months and weekdays in words
+    have no position here: they take part in the subset test only)."""
+    normalized = THOUSANDS_RE.sub("", _norm(_dup_body(text)))
+    found = [(m.start(), m.group().strip(".,:")) for m in NUMBER_RE.finditer(normalized)]
+    found += [(m.start(), m.group()) for m in _HANDLE_RE.finditer(normalized)]
+    seq = []
+    for _, anchor in sorted(found):
+        if anchor and anchor not in seq:
+            seq.append(anchor)
+    return seq
+
+
+def _dup_name_seq(text):
+    """Capitalized words of the body (the first word of a sentence too — a cost in recall, see scoring.md), folded
+    and stemmed, in order of first occurrence."""
+    seq = []
+    for tok in _WORD_RE.findall(_dup_body(text)):
+        if tok[0].isupper() and not any(c.isdigit() for c in tok):
+            low = _fold(tok).lower()
+            name = _stem(low) if len(low) >= 5 else low
+            if name not in seq:
+                seq.append(name)
+    return seq
+
+
+def _same_order(seq_a, seq_b):
+    shared = set(seq_a) & set(seq_b)
+    return [x for x in seq_a if x in shared] == [x for x in seq_b if x in shared]
+
+
+def _dup_directions(a, b):
+    return {d for d, ok in (("a", a <= b), ("b", b <= a)) if ok}
+
+
+DupFeatures = namedtuple("DupFeatures", "text norm word_of words anchors anchor_seq name_seq names")
+
+
+def _dup_features(text):
+    """What the rule compares of one text, computed once per fact (a night compares a fact with many)."""
+    word_of = _dup_words(text)
+    names = _dup_name_seq(text)
+    return DupFeatures(text, _norm(text), word_of, frozenset(word_of), frozenset(_dup_anchors(text)),
+                       tuple(_dup_anchor_seq(text)), tuple(names), frozenset(names))
+
+
+def _dup_judge(fa, fb):
+    """(pair?, why, containment) of two `_dup_features` (see the section comment)."""
+    wa, wb = fa.words, fb.words
+    if fa.norm == fb.norm:
+        return True, "the same text", 1.0
+    smaller = min(len(wa), len(wb))
+    cont = len(wa & wb) / smaller if smaller else 0.0
+    na, nb = fa.anchors, fb.anchors
+    if smaller < DUP_SHORT_WORDS:
+        if not (cont >= 1.0 and na and na == nb):
+            return False, "short: not the same words and numbers", cont
+    else:
+        if cont < SETTINGS.DUP_MIN_CONTAINMENT:
+            return False, f"containment {cont:.2f}", cont
+        only_a, only_b = wa - wb, wb - wa
+        if only_a and only_b and len(only_a) <= DUP_SUBSTITUTION_MAX and len(only_b) <= DUP_SUBSTITUTION_MAX:
+            return False, (f"a word substituted: {', '.join(sorted(fa.word_of[w] for w in only_a))} / "
+                           f"{', '.join(sorted(fb.word_of[w] for w in only_b))}"), cont
+    nd = _dup_directions(na, nb)
+    if not nd:
+        return False, f"numbers differ: {', '.join(sorted(na - nb))} / {', '.join(sorted(nb - na))}", cont
+    if not _same_order(fa.anchor_seq, fb.anchor_seq):
+        return False, "the shared numbers come in another order", cont
+    ma, mb = fa.names, fb.names
+    md = _dup_directions(ma, mb)
+    if not md:
+        return False, f"names differ: {', '.join(sorted(ma - mb))} / {', '.join(sorted(mb - ma))}", cont
+    if na != nb and ma != mb and not (nd & md):
+        return False, "names and numbers are added on opposite sides", cont
+    if polarity_differs(fa.text, fb.text) or polarity_differs(fb.text, fa.text):
+        return False, "polarity differs", cont
+    why = [f"containment {cont:.2f}"]
+    if na & nb:
+        why.append(f"numbers {', '.join(sorted(na & nb))} shared")
+    if ma == mb and len(ma) >= 2 and not _same_order(fa.name_seq, fb.name_seq):
+        why.append("the names come in another order")
+    return True, "; ".join(why), cont
+
+
+def duplicate_pair(a, b):
+    """Whether two fact texts look like one fact: (True, why) or (False, why). `why` names the containment and the
+    shared numbers for the human's question; a difference in the order of names, which the rule cannot judge, is
+    named there too."""
+    ok, why, _cont = _dup_judge(_dup_features(a), _dup_features(b))
+    return ok, why
+
+
+class DupBudget(Exception):
+    """The night's budget of pair checks (`duplicates.max_pair_checks`) ran out."""
+
+
+def find_duplicate_pairs(facts, max_checks=None):
+    """[{"a", "b", "why", "containment"}] (fact ids, a < b by id) of every pair of *facts* ({fact_id, content}) the
+    rule calls one fact, and how many pairs were checked. Raises DupBudget past *max_checks*.
+
+    Candidates come from an inverted index over the significant stems, so a store is not compared with itself
+    whole. A pair the rule can accept shares at least max(2, ceil(min_containment · |S|)) stems with the shorter
+    side S; S's rarest |S| − that + 1 stems are then sure to hold one of them (a prefix filter), so only the facts
+    under those stems are looked at — the pairs found are the same as when every pair sharing two stems is
+    checked, at a fraction of the checks (stopwords are kept, and they are in almost every fact). Short facts and
+    facts without significant words have their own path: the same numbers / @-handles, or the same text."""
+    feats = {f["fact_id"]: _dup_features(f["content"]) for f in facts}
+    ids = sorted(feats, key=lambda i: (str(type(i)), i))
+    rank = {i: n for n, i in enumerate(ids)}
+    checked = set()
+    found = []
+
+    def check(i, j):
+        key = (i, j) if rank[i] < rank[j] else (j, i)
+        if key in checked:
+            return
+        if max_checks is not None and len(checked) >= max_checks:
+            raise DupBudget(len(checked))
+        checked.add(key)
+        ok, why, cont = _dup_judge(feats[key[0]], feats[key[1]])
+        if ok:
+            found.append({"a": key[0], "b": key[1], "why": why, "containment": round(cont, 4)})
+
+    df = Counter(s for i in ids for s in feats[i].words)
+    postings = defaultdict(list)
+    for i in ids:
+        for s in feats[i].words:
+            postings[s].append(i)
+    floor = SETTINGS.DUP_MIN_CONTAINMENT
+    for i in ids:
+        words = feats[i].words
+        size = len(words)
+        if size < DUP_SHORT_WORDS:
+            continue
+        need = max(2, math.ceil(floor * size - 1e-9))
+        for stem in sorted(words, key=lambda s: (df[s], s))[:max(1, size - need + 1)]:
+            for j in postings[stem]:
+                other = feats[j].words
+                if j != i and len(other) >= size and len(words & other) >= need:
+                    check(i, j)
+    # Short facts and facts without significant words: by their numbers / @-handles, and by the same text.
+    by_anchors, by_text = defaultdict(list), defaultdict(list)
+    for i in ids:
+        if feats[i].anchors:
+            by_anchors[feats[i].anchors].append(i)
+        by_text[feats[i].norm].append(i)
+    for group in by_anchors.values():
+        short = [i for i in group if len(feats[i].words) < DUP_SHORT_WORDS]
+        for i in short:
+            for j in group:
+                if j != i:
+                    check(i, j)
+    for group in by_text.values():
+        for n, i in enumerate(group):
+            for j in group[n + 1:]:
+                check(i, j)
+    found.sort(key=lambda p: (rank[p["a"]], rank[p["b"]]))
+    return found, len(checked)
 
 
 def feedback_floor(fact_source_name=None, home=None):
