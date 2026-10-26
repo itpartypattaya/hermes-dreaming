@@ -5,7 +5,37 @@ is the one in `plugin.json`.
 
 ## Unreleased
 
+### Added
+- **Duplicates across the whole fact store: "merge?"** (part A of 3.4.0, holographic ≥ 0.19.0). The pass finds
+  pairs of facts that say one thing in other words over the whole main store and asks the human, one pair a night,
+  with both texts whole and a proposal number that is never reused (`duplicate_pairs`, `D-17`,
+  `cache/dream-proposals.json`). The agent merges only on a "yes" to that number, through `fact_store merge` with
+  `expect` — the versions shown (SKILL step 7e); nothing is merged at night. The rule generates questions, not
+  identities: significant words with stopwords kept, containment ≥ 0.7, numbers (months and weekdays included) and
+  names as subsets in one direction, shared numbers in one order, no one-word substitution, no opposite polarity;
+  short facts only by the same numbers / @-handles. Its limits (roles swapped, a verb's tense, a translation) are in
+  `references/scoring.md`. Pairs of one report share no fact; an asked pair rests 180 days, and counts as asked only
+  when the agent's report names its number. `dream-reject.py --not-duplicates / --stale / --undo D-17`, `--list`.
+  Settings `duplicates.*`; stats `duplicate_pairs_{found,published,suppressed,deferred,skipped}`; the gate wakes on
+  `duplicate_pairs_published` and passes the section without `max_content`. Off — with the reason in
+  `stats.duplicate_pairs_skipped` — without `fact_merges`, with a scope other than `profile`, or for another source.
+- **Facts merged into others leave the skill's live state** (`merge_sweep`, every pass): payload, cooldowns, reject
+  list, diary index and the judge's files let the copy go, proposals turn `done` / `stale`; the diary and the human's
+  "different" stay — a merge is no forget. The forget sweep removes the proposals of a forgotten fact.
+- **The extraction run merges its own retelling** (part B, SKILL step 9): when an `add` of the run answers
+  `similar` and the provider's hint offers `merge` into the old fact, and nothing new is in the new one, the run
+  merges exactly that — its own fact just added, into a fact `similar` names. Without 0.19.0 it leaves both, as
+  before.
+- **The job prompts `install_cron.py` writes** (and `examples/cron-job*.example.json`) say the same: the nightly
+  job asks each "merge?" in a line of its own beyond the 6, with the number and both texts, and calls no
+  `fact_store` for it; the extraction job merges only its own new retelling. A job installed before keeps its
+  prompt until it is installed again.
+
 ### Internal
+- The golden record of 3.3.0 gains `stats.duplicate_pairs_skipped` (`scope_chat`: its home has a store per chat) on
+  both nights; nothing else in it changed.
+- Comments on fact ids: holographic's `fact_id` is AUTOINCREMENT and never reused (the reject list keys by text for
+  the other reasons it names).
 - **The comparison with the provider finds a clone named `holographic` too** (independent review, Antigravity):
   only `hermes-plugin-holographic` next to this repository was looked for, so a clone under the plugin's own name
   was skipped and the comparison skipped with it.

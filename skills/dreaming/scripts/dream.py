@@ -228,7 +228,7 @@ DEFAULT_CONFIG = {
               "judge_health": "cache/dream-judge-health.json",
               "judge_manifest": "cache/dream-judge-export-manifest.json",
               # The "merge?" proposals of 3.4.0 (`D-17`): the texts and versions the human was shown, their
-              # status; the number counter lives in the same file, so one write keeps them together.
+              # status, the number counter (kept in the seen state too: a number is never given twice).
               "proposals": "cache/dream-proposals.json"},
     "precheck": {"max_content": 300,
                  "actionable_keys": ["new_facts_reviewed", "promotions", "fact_decays",
@@ -4829,11 +4829,13 @@ def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, wr
                      "content": copy_["content"], "origin": copy_.get("origin"), "covered": p["covered"],
                      "extra_words": p["extra_words"]},
         }
+        # The same open question again (not shown, or shown before its rest ran out): its number and its sides,
+        # even if tonight's ranking would pick the other side to keep — one pair, one open proposal.
+        versions_now = {keep["fact_id"]: side["keep"]["version_id"], copy_["fact_id"]: side["copy"]["version_id"]}
         number = next((k for k, r in proposals["proposals"].items()
                        if r.get("status") == "open" and r.get("pair_key") == p["pair_key"]
-                       and (r.get("keep") or {}).get("fact_id") == keep["fact_id"]
-                       and (r.get("keep") or {}).get("version_id") == side["keep"]["version_id"]
-                       and (r.get("copy") or {}).get("version_id") == side["copy"]["version_id"]), None)
+                       and {(r.get(x) or {}).get("fact_id"): (r.get(x) or {}).get("version_id")
+                            for x in ("keep", "copy")} == versions_now), None)
         if number is None:
             number = f"D-{nxt}"
             nxt += 1

@@ -272,6 +272,18 @@ class AnswerTests(NightBase):
         self.assertNotIn("duplicate_pairs", rested, "named in the report: asked")
         self.assertEqual(rested["stats"]["duplicate_pairs_suppressed"], 1)
 
+    def test_an_open_question_keeps_its_number_and_sides_when_the_ranking_turns(self):
+        """One pair, one open proposal: a retrieval that would make the other side the keep tonight does not
+        open a second proposal for the same texts."""
+        first = self.fact("Виктор пьёт кофе без сахара каждое утро.")
+        second = self.fact("Виктор каждое утро пьёт кофе без сахара.")
+        (item,) = self.night(answer="Ничего не записала.")["duplicate_pairs"]
+        self.assertEqual(item["keep"]["fact_id"], first, "a tie: the smaller id stays")
+        self.sql("update facts set retrieval_count = 5 where fact_id = ?", (second,))
+        (again,) = self.night(days=1)["duplicate_pairs"]
+        self.assertEqual((again["proposal"], again["keep"]["fact_id"]), ("D-1", first))
+        self.assertEqual(sorted(self.stored()), ["D-1"])
+
     def test_a_night_without_an_answer_asks_again(self):
         self.fact(BRIDGE[0])
         self.fact(BRIDGE[1])
@@ -648,6 +660,22 @@ class SkillTextTests(unittest.TestCase):
 
     def test_the_prerequisite_is_named(self):
         self.assertIn("holographic ≥ 0.19.0 (`fact_store merge`)", self.prerequisites)
+
+    def test_the_cron_prompts_install_cron_writes_say_the_same(self):
+        """A new install's nightly job asks the question beyond the 6 lines and merges nothing; its extraction job
+        merges only its own new retelling (the jobs carry their prompt inline)."""
+        import importlib.util
+        from test_dream import ROOT
+        spec = importlib.util.spec_from_file_location("install_cron_340", ROOT / "scripts" / "install_cron.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        dream_prompt, extract_prompt = (" ".join(p.split()) for p in (mod.DREAM_PROMPT, mod.EXTRACT_PROMPT))
+        self.assertIn("duplicate_pairs (holographic >= 0.19.0): for each pair one report line beyond the 6",
+                      dream_prompt)
+        self.assertIn("make no fact_store call for them tonight", dream_prompt)
+        self.assertIn("only the fact you have just added in this run, only into a fact similar names",
+                      extract_prompt)
+        self.assertIn("or fact_store has no merge, leave both", extract_prompt)
 
 
 if __name__ == "__main__":
