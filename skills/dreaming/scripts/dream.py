@@ -5560,6 +5560,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         result["fact_store_note"] = store_note  # why the fact store cannot fill up; not work
     if chat_stores:
         result["chat_stores"] = chat_stores  # per-chat databases: counts, which are promoted, which are missing
+    if SETTINGS.CONFIG.get("task_outcomes") is True:
+        # Counts/enums only: no new copy of corrections, source text, or attempt/fact identifiers in state/diary.
+        result["task_outcomes"] = memory_experience()
     return result
 
 
@@ -6675,6 +6678,33 @@ def forgotten_diary_index(ids):
 # CLI
 # ---------------------------------------------------------------------------
 
+def memory_experience(attempt_id=None, store=None):
+    """Live, explicit profile-store report; no stored lessons or copies of corrections."""
+    if fact_source() != "holographic":
+        return {"status": "unsupported"}
+    _, scope = chat_store_dir()
+    if scope not in ("profile", "user", "chat", "thread"):
+        return {"status": "unsupported_scope"}
+    if store is not None:
+        key = _promote_key(store)
+        _, allowed = chat_stores_settings()
+        if key not in allowed:
+            return {"status": "unsupported_scope"}
+        db = list_chat_stores().get(key)
+        if not db or Path(db).is_symlink():
+            return {"status": "unavailable"}
+    else:
+        if scope != "profile":
+            return {"status": "unsupported_scope"}
+        db = fact_store_path()
+    if not db:
+        return {"status": "unavailable"}
+    spec = importlib.util.spec_from_file_location("_dream_experience", Path(__file__).with_name("dream_experience.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.read_report(db, attempt_id)
+
+
 def explain(fact_id, mem_md, corr_days):
     """`--explain ID`: per-signal breakdown of one fact (OpenClaw promote-explain)."""
     facts = [f for f in load_all_facts() if str(f["fact_id"]) == str(fact_id)]
@@ -6814,6 +6844,14 @@ def main(argv=None):
                          "short plain-text report; writes nothing (no state, no diary)")
     ap.add_argument("--explain", default=None, metavar="FACT_ID",
                     help="print the score breakdown of one fact and exit")
+    experience_args = ap.add_mutually_exclusive_group()
+    experience_args.add_argument("--memory-outcomes", action="store_true",
+                                 help="read the live holographic task-outcome summary; no writes or model calls")
+    experience_args.add_argument("--memory-explain", metavar="ATTEMPT_ID",
+                                 help="explain a recorded memory attempt, without replaying search")
+    ap.add_argument("--memory-format", choices=("json", "text"), default="json")
+    ap.add_argument("--memory-store", metavar="STORE_KEY",
+                    help="one explicitly promoted store (chat_stores.promote_from); never joins stores")
     ap.add_argument("--forget-sweep", action="store_true",
                     help="only clean the copies of facts the store has forgotten (holographic >= 0.8.0) "
                          "and print what was removed; every pass does this first")
@@ -6832,6 +6870,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     load_for_home(args.hermes_home or HOME, args.config)
+    if args.memory_outcomes or args.memory_explain is not None:
+        report = memory_experience(args.memory_explain, args.memory_store)
+        if args.memory_format == "text":
+            spec = importlib.util.spec_from_file_location("_dream_experience", Path(__file__).with_name("dream_experience.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            print(mod.render(report))
+        else:
+            print(json.dumps(report, ensure_ascii=False))
+        return 0 if report["status"] == "ok" else 1
     if args.judge_export:
         return judge_export(args.judge_export)
     if args.judge_score:

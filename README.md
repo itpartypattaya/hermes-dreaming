@@ -15,6 +15,24 @@ memory; the agent applies its proposals through the regular `memory` tool and re
 optional cloud judge, off by default, can second-guess the rules' mention count — see
 [below](#optional-cloud-judge-off-by-default).
 
+## Task outcomes and recorded explanations (3.6.0)
+
+With holographic **0.20.0 or later**, read how stored facts helped or failed a task, separately from their truth/trust:
+
+```bash
+python3 skills/dreaming/scripts/dream.py --memory-outcomes
+python3 skills/dreaming/scripts/dream.py --memory-explain ATTEMPT_ID --memory-format text
+```
+
+Enable collection in the provider (`experience: on`; optional `experience_trace: on`). Add `"task_outcomes": true`
+to `dreaming.json` to include count-only summaries in the normal nightly report. Default is off. No additional model
+wakeup or network call is added, no correction text is copied into a lesson cache, and nothing automatically changes
+trust, ranking or MEMORY.md. Revisions count as one active outcome per attempt; these remain agent reports.
+
+The default is the configured profile store. A scoped store requires an explicit `--memory-store` already allowed by
+`chat_stores.promote_from`; reports never join stores. Old providers report `unsupported` and continue normal dreaming.
+See [docs/experience.md](docs/experience.md) for retention, erase boundaries, JSON output and limitations.
+
 ## How it works
 
 ![One night: inputs, the deterministic pass with the screen, the wake gate and the agent's turn; the weekly extraction
@@ -322,6 +340,9 @@ Such items carry `store` and ids like `telegram--1001234567890#17`; the agent wr
 shared store. The trust rules do not change: chats in `trusted_chat_ids` (and private chats, unless
 `trust_private_chats: false`) still corroborate shared facts and memory entries — on a bot serving many unrelated
 people, trust only the owner's chats.
+
+Optional live task-outcome reports and recorded retrieval explanations (no second text cache or model calls):
+[docs/experience.md](docs/experience.md). These reports do not change trust or ranking.
 
 ## Optional cloud judge (off by default)
 

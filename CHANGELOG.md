@@ -3,6 +3,11 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.6.0 — 2026-10-27
+
+### Added
+- Optional read-only task-outcome reports and unified recorded-attempt explanations from holographic's experience capability. No copied correction text, persistent lesson cache, model calls or truth/ranking changes. See docs/experience.md.
+
 ## 3.5.0 — 2026-10-27
 
 ### Fixed
