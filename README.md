@@ -78,12 +78,17 @@ the agent actually answered: a night that failed halfway re-shows the same items
 
 With holographic ≥ 0.8.0 (`stats.fact_history: true`) a human's answer about a **fact** goes to the
 store, which keeps the fact's history: "no longer true" → `fact_store end`, "it changed" → `change`,
-"that was wrong" → `correct`, "forget it" → `forget` (final: the history goes too) plus removing the
+"that was wrong" → `correct`, "forget it" → `forget` (final: the store's fact history goes too) plus removing the
 memory entry that carries it. After a `forget` the store keeps only a tombstone — the id, never the
 text — and this skill removes its own copies of the fact by that id: the last payload, the reject
 list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0; older ones through an index of
 line hashes kept while the fact still existed) and the logs of the dream cron jobs. Every pass does
 that first; the `no_agent` job `dream-forget-sweep.py` does it every 15 minutes without the model.
+
+This cleanup covers the store and the skill's own copies listed above. It does not rewrite Git commits,
+external database dumps, system backups or Hermes session history. Those copies need their own cleanup process.
+A report must distinguish successful deletion from the store from a retained external copy; a documented
+history boundary is not removed by retrying the same sweep. The skill does not rewrite repository history.
 
 A "merge?" question (holographic ≥ 0.19.0) has a number that is never reused. "Yes D-17" → `fact_store merge`
 with the versions shown; a text that changed since makes the merge refuse (`changed_since`) and the question is

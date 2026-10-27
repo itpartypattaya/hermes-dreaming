@@ -152,7 +152,7 @@ in each of them (`references/scoring.md`, "Every language").
    Give `change` the newer statement's `origin` (holographic ≥ 0.15.0) — the candidate's own `origin`
    when it has one, none when it has none: matching words do not make it `said`. Never `forget` a fact
    to tidy up or deduplicate, whatever a tool's hint suggests: `forget` follows a human's "forget it"
-   only, and it rewrites what keeps the fact (backups included).
+   only. It deletes the fact and its versions from the store; step 7c describes the copies this skill cleans.
 7. **Decay questions.** `fact_decays` and `md_decays` are questions, not deletion candidates. The
    human's answer is closed by substance. With `stats.fact_history: true` (holographic >= 0.8.0) a
    **fact** is closed through the store, which keeps its history:
@@ -161,7 +161,7 @@ in each of them (`references/scoring.md`, "Every language").
    - "it changed" → `fact_store change {fact_id, content}` with the new state;
    - "that was wrong" → `fact_store correct {fact_id, content}` with the right text; a fact with nothing
      true left in it → ask whether to forget it, and `forget` only on a yes;
-   - "forget it" → `fact_store forget {fact_id}` — final, the history goes too — **and** remove the
+   - "forget it" → `fact_store forget {fact_id}` — final, the store's fact history goes too — **and** remove the
      memory entry that carries it (`memory` remove). Only on the human's words, never on your own.
 
    Without `fact_history` an outdated **fact** → `dream-reject.py`, as before. An outdated **memory
@@ -203,7 +203,12 @@ in each of them (`references/scoring.md`, "Every language").
    `cache/dream.json`, the reject list, the cooldowns, the diary lines (tagged `[#<id>]` since 2.4.0;
    older lines through `cache/dream-diary-index.json`), the dream cron logs and the set-aside
    `*.corrupt-*` copies of broken state files (all of them on the first sweep after a forget). Do not quote a
-   forgotten fact in the report.
+   forgotten fact in the report. This sweep cleans only the skill's own files: it does not rewrite Git history,
+   external database dumps, system backups or Hermes session history. A successful store deletion does not prove
+   those copies were erased. If an external cleanup reports a retained archive or history boundary, report what
+   was cleaned and what remains separately, without the fact's text. Do not call it a failed store deletion or
+   promise that a retry will remove a documented boundary; use the external tool's actual result. Do not rewrite
+   repository history as part of this skill.
 7d. **`confirm` — people said it again.** holographic ≥ 0.15.0 records who stands behind a fact and
    counts confirmations. Each item is a fact of the main store that people in trusted chats said
    again on at least two different days, by messages that hold most of its words (60 % of its stems)
