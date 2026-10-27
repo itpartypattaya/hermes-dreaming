@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.5.0 — 2026-10-27
+
+### Fixed
+- Re-running the cron installer now refreshes recognized stock prompts in existing jobs; `--rebind` can refresh their skill binding in the same update. Custom/unknown prompts are preserved with a migration warning. Schedules, delivery, model and scheduler state are kept. `--dry-run` previews actual existing-job changes and `install.py --check` distinguishes outdated stock and custom prompts. Concurrent cron configuration edits during installation remain unsupported by the public update API.
+- Cron checks now report every role, execution mode, pause/terminal state, missing jobs and duplicates. `cron.expected_roles` records the desired installation without silently pausing existing jobs. Empty schedule flags explicitly report jobs that keep running.
+- Existing settings differences are reported; `--update-existing` applies only explicit arguments, `--job-id` scopes the whole operation, and `--inherit-model` explicitly clears both model/provider pins. `--force` warns about duplicate creation.
+- `--upgrade` validates the full request before repairing copied gates and synchronizing jobs, then checks the result independently. Corrupt job/config shapes, unconfirmed create IDs and observed edits stop writes. Explicit Hermes homes propagate through public home/store contexts; schedule validation precedes writes.
+
 ## 3.4.2 — 2026-10-27
 
 ### Fixed

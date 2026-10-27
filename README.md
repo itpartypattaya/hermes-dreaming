@@ -171,13 +171,57 @@ alerts, assistant bridges, machine-generated cards — under `excluded_threads`.
 The CLI has no flag for `enabled_toolsets`, and `cron/jobs.json` is live scheduler state, so job
 creation goes through the Hermes Python API. The jobs get the plugin skill's qualified name
 (`agent-plugin-hermes-dreaming-<hash>:dreaming`) straight from Hermes' plugin registry, so the plugin
-must be enabled first; all three gates likewise prefer the plugin's copy of `dream.py`. Existing jobs are
-skipped; one that loads another skill than this install provides is reported, and `--rebind` points
-it at the right one in place. Use
+must be enabled first; all three gates likewise prefer the plugin's copy of `dream.py`. Re-running
+`install_cron.py` updates existing jobs whose prompts exactly match a known shipped template for
+that job's role. Local edits (even whitespace), missing prompts and unknown templates are preserved
+with a warning: compare them with `DREAM_PROMPT` / `EXTRACT_PROMPT` in the installed script and
+migrate them manually. No Git checkout or separate migration state is needed. A job that loads
+another skill than this install provides is reported; `--rebind` also points it at the right skill
+in place, preserving any other attached skills. Prompt synchronization does not require `--rebind`.
+By default, schedules, delivery, model/provider, paused state and run counters are preserved.
+Explicitly supplied settings that differ from existing jobs are reported. Add `--update-existing`
+to apply only those supplied settings, for example `--update-existing --model cheaper-model`.
+`--inherit-model --update-existing` clears **both** model and provider pins; it cannot be combined
+with explicit model/provider values. Schedule changes support cron expressions to cron expressions;
+Hermes may recalculate the next run and clear pending/quota scheduling state. No job is resumed.
+
+`--job-id <exact-id>` limits the entire operation to that job, including prompt/rebind/settings
+changes; missing jobs of other roles are not created. Repeat it to select several jobs. Duplicates
+are reported with their IDs and active count. Untargeted updates of duplicate roles are refused;
+use explicit IDs to choose which jobs to maintain. Nothing is deleted automatically.
+
+Use `--upgrade --dry-run` after updating the plugin, then repeat without `--dry-run` to repair copied
+gates, synchronize jobs and run an independent final cron/gate check. All targets, config and arguments
+are checked before gate writes; public Hermes schedule validation runs before apply. A direct invocation
+without `--upgrade` refuses stale copied gates. This is staged work, not an atomic transaction: a
+failure stops later writes, reports partial progress and can be retried. Use `install.py --check`
+for the additional fact-source, memory and judge checks. `--hermes-home <path>` selects the same home
+for files, the registry and cron API; choosing an interpreter alone does not choose a data home.
+
+Use `--dry-run` to preview the actual creates and updates, including job IDs, changed fields and
+the stock prompt diff. This reads a snapshot of `cron/jobs.json` without importing the cron API or writing
+anything; it does not reserve that state for a later apply. Do not edit cron configuration at the
+same time as running the installer: Hermes' public update API has no conditional update. The
+installer re-reads before updating and skips edits it observes, but cannot close every race.
+`install.py --check` reports outdated stock prompts as problems and custom/unknown prompts as
+warnings. It also reports each role's execution mode, paused/terminal state and duplicates. Several
+active jobs of one role or an incorrect execution mode are problems. Missing optional jobs and paused
+jobs are warnings; a correct skill binding alone does not mean the job runs. `--force` explicitly
+creates additional jobs, with a count warning; it is incompatible with targeted/rebind/settings updates.
+Use
 `--deliver telegram:<chat_id>:<thread_id>` to receive the report in a chat and
 `--extract-schedule ""` to leave the extraction out. A third, `no_agent` job (`--sweep-schedule`,
 every 15 minutes) cleans the dream's copies of facts the store has forgotten — no model, empty
-output unless it removed something; `--sweep-schedule ""` skips it. The extraction job is cheap to run weekly — a
+output unless it removed something; `--sweep-schedule ""` skips it. Empty schedules skip this invocation
+only: existing jobs remain enabled, and the installer names them. To pause future starts use
+`hermes cron pause <exact-id>`; this does not cancel an execution already in progress.
+
+To persist a smaller installation, set `"cron": {"expected_roles": ["night", "sweep"]}` in
+`dreaming.json`. The allowed roles are `night`, `extract`, `sweep`; the default is all three, and `[]`
+deliberately expects/creates none. Installer and checker share this policy. Excluding a role does
+not pause an existing job: one that is still active is reported. Invalid config is an error, never
+an instruction to fall back to creating all jobs. No prompt/intent sidecar is needed.
+The extraction job is cheap to run weekly — a
 nightly run mostly answers `[SILENT]` on a small household.
 
 A job keeps the skill name it was created with. The hash in it comes from the plugin's `name` in
@@ -550,7 +594,8 @@ skills/dreaming/
   scripts/dream-forget-sweep.py      no_agent forget sweep    → ~/.hermes/scripts/
   scripts/dream-reject.py            reject list CLI
   scripts/install.py                 installs and verifies the gates
-  scripts/install_cron.py            creates the cron jobs
+  scripts/install_cron.py            creates jobs and synchronizes recognized stock prompts
+  scripts/cron-prompt-history.json   per-role SHA256 allowlist of shipped prompt templates
   references/scoring.md              signals, gates, sections, state files
   references/cron-memory.md          what cron sessions may touch
   examples/                          config and cron job examples

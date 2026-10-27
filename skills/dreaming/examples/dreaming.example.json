@@ -3,6 +3,9 @@
 
   "timezone": "Europe/Berlin",
 
+  "_comment_cron": "Expected cron roles for install/check. Excluded roles are not created; this never pauses existing jobs. [] deliberately expects no jobs.",
+  "cron": {"expected_roles": ["night", "extract", "sweep"]},
+
   "trusted_chat_ids": ["-1001234567890"],
   "trust_private_chats": true,
   "trust_sessions_without_chat": true,
