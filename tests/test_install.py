@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -79,6 +80,10 @@ class FakeJobs:
     def list_jobs(self, include_disabled=False):
         return [j for j in self.listed if include_disabled or j.get("enabled", True)]
 
+    def parse_schedule(self, value):
+        # API boundary stand-in; the installer must delegate validation before writes.
+        return {"kind": "cron", "expr": value}
+
     def create_job(self, **kw):
         self.created.append(kw)
         return {"id": f"new{len(self.created)}"}
@@ -141,7 +146,7 @@ class InstallCronTests(unittest.TestCase):
 
     def _complete_install(self):
         for name in (install_cron.DREAM_SCRIPT, install_cron.EXTRACT_SCRIPT, install_cron.SWEEP_SCRIPT):
-            (self.home / "scripts" / name).write_text("# gate", encoding="utf-8")
+            shutil.copyfile(ROOT / "scripts" / name, self.home / "scripts" / name)
         (self.home / "skills" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
 
     def test_preflight_names_every_missing_piece(self):
@@ -155,7 +160,7 @@ class InstallCronTests(unittest.TestCase):
     def test_preflight_finds_the_skill_in_a_category_folder(self):
         """`hermes skills install --category memory` puts it in skills/memory/dreaming."""
         for name in (install_cron.DREAM_SCRIPT, install_cron.EXTRACT_SCRIPT, install_cron.SWEEP_SCRIPT):
-            (self.home / "scripts" / name).write_text("# gate", encoding="utf-8")
+            shutil.copyfile(ROOT / "scripts" / name, self.home / "scripts" / name)
         (self.home / "skills" / "memory" / "dreaming").mkdir(parents=True)
         (self.home / "skills" / "memory" / "dreaming" / "SKILL.md").write_text("# skill", encoding="utf-8")
         self.assertEqual(install_cron._preflight(), [])
@@ -360,7 +365,9 @@ class InstallCronTests(unittest.TestCase):
             install_cron.main(["--dry-run", "--extract-schedule", ""])
         finally:
             sys.stdout = old
-        self.assertNotIn(install_cron.EXTRACT_SCRIPT, out.getvalue())
+        actions = json.loads(out.getvalue())
+        self.assertFalse(any(p.get("script") == install_cron.EXTRACT_SCRIPT
+                             and p["action"] in {"create", "update"} for p in actions))
 
     def test_prompts_carry_the_rules_that_cost_us_a_night(self):
         # Regression: the anchor rule and the honest-failure rule must be in the
@@ -489,12 +496,16 @@ class CheckJobsTests(unittest.TestCase):
         return skill
 
     def _jobs(self, *skills, sweep=True):
-        listed = [{"id": f"j{i}", "script": install.GATES[i % 2], "skills": [s]}
+        listed = [{"id": f"j{i}", "script": install.GATES[i % 2], "skills": [s],
+                   "prompt": (install_cron.DREAM_PROMPT, install_cron.EXTRACT_PROMPT)[i % 2]}
                   for i, s in enumerate(skills)]
         listed.append({"id": "other", "script": "backup.py", "skills": ["dreaming-not"]})
         if sweep:
             listed.append({"id": "sweep", "script": install.GATES[2], "no_agent": True})
         (self.home / "cron" / "jobs.json").write_text(json.dumps({"jobs": listed}), encoding="utf-8")
+        expected = ["night", "extract"] if len(skills) > 1 else ["night"]
+        (self.home / "dreaming.json").write_text(
+            json.dumps({"cron": {"expected_roles": expected + ["sweep"]}}), encoding="utf-8")
 
     def _check(self, check_only=True):
         r, out = install.Report(), io.StringIO()
@@ -549,7 +560,7 @@ class CheckJobsTests(unittest.TestCase):
     def test_no_jobs_warns_on_check_only(self):
         self._regular_skill()
         r, _ = self._check(check_only=True)
-        self.assertEqual(r.warn_n, 1)
+        self.assertEqual(r.warn_n, 3)  # each missing role is now reported independently
         r, out = self._check(check_only=False)       # first install: the next step says it
         self.assertEqual((r.ok_n, r.warn_n, r.bad_n), (0, 0, 0), out)
 

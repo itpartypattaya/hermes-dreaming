@@ -82,9 +82,12 @@ def check_gates(home, check_only, r):
 def check_config(cfg, check_only, r):
     if cfg.is_file():
         try:
-            json.loads(cfg.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            r.bad(f"config {cfg} is not valid JSON — the pass would fall back to defaults")
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("config must be an object")
+            _load_install_cron(cfg.parent).expected_roles(cfg.parent, cfg)
+        except (OSError, ValueError) as exc:
+            r.bad(f"config {cfg} is not a valid JSON config object: {exc} — refusing defaults")
             return
         if filecmp.cmp(cfg, EXAMPLE, shallow=False):
             # A seeded-but-unedited config is the most common half-install:
@@ -306,46 +309,49 @@ def _load_install_cron(home):
 
 
 def check_jobs(home, check_only, r):
-    # A job keeps the skill name it was created with. If that skill stops
-    # loading — a 2.0 job still bound to a regular `dreaming`, a plugin disabled
-    # or removed after install_cron — Hermes runs the job without it and only
-    # flags the skipped skill at the top of the nightly report.
-    path = home / "cron" / "jobs.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        data = {}
-    except (OSError, ValueError) as exc:
-        r.warn(f"cannot read {path}: {exc}")
-        return
-    listed = data.get("jobs", []) if isinstance(data, dict) else data
-    ours = [j for j in listed if isinstance(j, dict) and j.get("script") in SKILL_GATES]
-    if not ours:
-        if check_only:
-            r.warn("no dreaming cron jobs yet — create them with install_cron.py")
-        return
     ic = _load_install_cron(home)
-    # Jobs made before 2.4.0 have no forget sweep: a fact the human asked to forget then waits for the night
-    # in every copy the dream keeps, and nothing says so (review 2026-10-13).
-    if not any(isinstance(j, dict) and j.get("script") == ic.SWEEP_SCRIPT for j in listed):
-        r.warn(f"no {ic.SWEEP_SCRIPT} cron job — forgotten facts are cleaned from the dream's copies only "
-               "at night; run install_cron.py (it keeps the existing jobs), or --sweep-schedule '' on purpose")
     try:
-        expected, problem = ic.resolve_skill()
+        listed = ic.read_jobs(home)
+        expected_roles = ic.expected_roles(home)
+        groups, findings = ic.inventory(listed, expected_roles)
+    except (OSError, ValueError, TypeError, SystemExit) as exc:
+        r.bad(f"cannot inspect dreaming cron jobs: {exc}")
+        return
+    for level, message in findings:
+        if level == "info" or (not check_only and not listed and "missing" in message):
+            print(f"  -- {message}")
+        elif level == "problem":
+            r.bad(message)
+        else:
+            r.warn(message)
+    if not any(groups[role] for role in ("night", "extract")):
+        return
+    try:
+        with ic.home_environment(home):
+            expected, problem = ic.resolve_skill()
     except ic.RegistryError as exc:
         r.warn(f"cannot tell which skill the cron jobs should load: {exc}")
         return
     if problem:
         r.bad(f"the dreaming cron jobs cannot load their skill: {problem}")
         return
-    for job in ours:
-        label = f"job {job.get('id')} ({job.get('script')})"
-        if ic.bound_to(job, expected):
-            r.ok(f"{label} loads {expected}")
-        else:
-            current = ic.job_skills(job)
-            r.bad(f"{label} loads {', '.join(current) or 'no skill'}, but this install provides "
-                  f"{expected} — run install_cron.py --rebind")
+    for role in ("night", "extract"):
+        for job in groups[role]:
+            label = f"job {job.get('id')} ({job.get('script')})"
+            try:
+                status = ic.prompt_status(job)
+                bound = ic.bound_to(job, expected)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                r.bad(f"{label}: cannot inspect prompt/binding: {exc}")
+                continue
+            if status == "stale-stock":
+                r.bad(f"{label}: outdated stock prompt — run install_cron.py to synchronize")
+            elif status == "custom":
+                r.warn(f"{label}: custom/unknown prompt — preserved; review and migrate manually")
+            if bound:
+                r.ok(f"{label} loads {expected}" + ("; prompt current" if status == "current" else ""))
+            else:
+                r.bad(f"{label} has a stale skill binding; this install provides {expected} — run install_cron.py --rebind")
 
 
 def check_core(home, r):
@@ -391,8 +397,13 @@ def main(argv=None):
         return 1
 
     r = Report()
+    if cfg.exists():
+        check_config(cfg, True, r)
+        if r.bad_n:
+            return 1  # validate before any gate/config writes
     check_gates(home, args.check, r)
-    check_config(cfg, args.check, r)
+    if not cfg.exists():
+        check_config(cfg, args.check, r)
     dream = _load_dream(home, cfg)
     check_dry_run(dream, cfg, r)
     check_core(home, r)
@@ -405,7 +416,7 @@ def main(argv=None):
         print("\nNext — create the cron jobs (the CLI cannot set enabled_toolsets, so use the "
               "installer):\n\n"
               f"  {home / 'hermes-agent' / 'venv' / 'bin' / 'python'} \\\n"
-              f"      {SKILL_DIR / 'scripts' / 'install_cron.py'} --deliver local --dry-run\n"
+              f"      {SKILL_DIR / 'scripts' / 'install_cron.py'} --hermes-home '{home}' --deliver local --dry-run\n"
               "  # happy with the plan? drop --dry-run")
     return 1 if r.bad_n else 0
 

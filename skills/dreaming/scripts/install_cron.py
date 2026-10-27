@@ -19,10 +19,19 @@ Useful flags:
     --extract-schedule "30 2 * * 1"   when extraction runs (weekly) (set to "" to skip it)
     --model / --provider              pin a cheaper model for these jobs
     --rebind                          point existing jobs at the skill this install provides
-    --dry-run                         print what would be created and exit
+    --update-existing                 apply only explicitly supplied settings to existing jobs
+    --job-id ID                       limit the whole operation to exact job IDs (repeatable)
+    --inherit-model                   with --update-existing, release model AND provider pins
+    --upgrade                         repair copied gates before syncing, then check cron again
+    --hermes-home PATH                use this data home for filesystem, registry and cron API
+    --dry-run                         preview creates/updates from a read-only jobs snapshot
 
 Existing jobs are detected by their `script` field: re-running the installer
-reports them instead of creating duplicates (`--force` adds anyway). An existing
+updates recognized stock prompts instead of creating duplicates (`--force` adds anyway).
+Custom/unknown prompts are preserved and reported for manual migration. Do not
+edit cron configuration concurrently with installation: the public update API
+has no conditional update. A fresh read detects observed edits, not every race.
+An existing
 job that loads another skill than this install provides — a 2.0 job bound to a
 regular `dreaming`, or a plugin reinstalled under another name — is reported as
 a problem; `--rebind` updates its skill in place.
@@ -39,6 +48,13 @@ Requires Hermes >= 0.21: cron sessions reach memory and `fact_store` natively.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
+import filecmp
+import shutil
+import difflib
+import hashlib
+import importlib
 import json
 import os
 import sys
@@ -207,16 +223,52 @@ def _list_jobs(jobs):
             f"cannot list the existing cron jobs ({type(exc).__name__}: {exc}) — nothing was created, so nothing "
             f"is duplicated. Run this with the Hermes interpreter, e.g.\n"
             f"  {HOME}/hermes-agent/venv/bin/python {Path(__file__).name} --help") from exc
-    if isinstance(listed, dict):
-        listed = listed.get("jobs", [])
-    if not isinstance(listed, (list, tuple)):
-        raise SystemExit(f"the cron API listed the jobs as {type(listed).__name__}, not a list — nothing was "
-                         "created; this Hermes is newer than the installer knows")
-    return list(listed)
+    return validate_jobs(listed)
 
 
 def _existing(listed, script):
     return [j for j in listed if (j or {}).get("script") == script]
+
+
+def prompt_status(job):
+    """Exact text only: local edits, missing prompts and other roles stay custom."""
+    role = {DREAM_SCRIPT: "DREAM_PROMPT", EXTRACT_SCRIPT: "EXTRACT_PROMPT"}.get(job.get("script"))
+    current = {"DREAM_PROMPT": DREAM_PROMPT, "EXTRACT_PROMPT": EXTRACT_PROMPT}.get(role)
+    text = job.get("prompt")
+    if role is None or not isinstance(text, str):
+        return "custom"
+    if text == current:
+        return "current"
+    history = json.loads(Path(__file__).with_name("cron-prompt-history.json").read_text(encoding="utf-8"))
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return "stale-stock" if digest in history[role] else "custom"
+
+
+def plan_existing(job, plan, skill, rebind):
+    """One shared preview/apply plan; never copy a whole scheduler record back."""
+    status = prompt_status(job)
+    updates = {}
+    if status == "stale-stock":
+        updates["prompt"] = plan["prompt"]
+    needs_rebind = not bound_to(job, skill)
+    if needs_rebind and rebind:
+        new = rebound_skills(job, skill)
+        updates.update(skill=new[0], skills=new)
+    action = ("update" if updates else "rebind-required" if needs_rebind and not rebind
+              else "custom-preserved" if status == "custom" else "unchanged")
+    result = {"script": plan["script"], "id": job.get("id"), "prompt_status": status,
+              "action": action, "updates": updates,
+              "rebind_required": needs_rebind and not rebind}
+    if "prompt" in updates:
+        result["prompt_diff"] = "\n".join(difflib.unified_diff(
+            job["prompt"].splitlines(), plan["prompt"].splitlines(),
+            fromfile="installed", tofile="current", lineterm=""))
+    return result
+
+
+def _preview_jobs():
+    """Offline read-only snapshot, like install.py --check; no Hermes import."""
+    return read_jobs(HOME)
 
 
 def job_skills(job):
@@ -227,7 +279,9 @@ def job_skills(job):
         skills = [job["skill"]] if job.get("skill") else []
     elif isinstance(skills, str):
         skills = [skills]
-    return [str(s).strip() for s in skills if str(s).strip()]
+    if not isinstance(skills, (list, tuple)) or any(not isinstance(s, str) for s in skills):
+        raise ValueError("job skills must be a string or a list of strings")
+    return [s.strip() for s in skills if s.strip()]
 
 
 def _is_dreaming(name):
@@ -311,134 +365,396 @@ def skill_ref():
         return None, str(exc)
 
 
+ROLES = {"night": DREAM_SCRIPT, "extract": EXTRACT_SCRIPT, "sweep": SWEEP_SCRIPT}
+DEFAULTS = {"dream_schedule": "0 3 * * *", "extract_schedule": "30 2 * * 1",
+            "sweep_schedule": "*/15 * * * *", "deliver": "local", "name_prefix": "Dreaming",
+            "model": None, "provider": None}
+SCHEDULE_FLAGS = {"night": "dream_schedule", "extract": "extract_schedule", "sweep": "sweep_schedule"}
+
+
+@contextlib.contextmanager
+def home_environment(home):
+    """Core and registry must use the same home as the explicit filesystem checks."""
+    previous = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(home)
+    try:
+        sys.path.insert(0, str(Path(home) / "hermes-agent"))
+        try:
+            core = importlib.import_module("hermes_constants")
+        except ModuleNotFoundError as exc:
+            if exc.name != "hermes_constants":
+                raise
+            core = None  # offline preview or an older core using the environment only
+        with contextlib.ExitStack() as stack:
+            setter = getattr(core, "set_hermes_home_override", None)
+            resetter = getattr(core, "reset_hermes_home_override", None)
+            if callable(setter) and callable(resetter):
+                stack.callback(resetter, setter(str(home)))
+            getter = getattr(core, "get_hermes_home", None)
+            if callable(getter) and Path(getter()).resolve() != Path(home).resolve():
+                raise ValueError("Hermes core resolves a different home — refusing cross-home access")
+            yield
+    finally:
+        if previous is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous
+
+
+def validate_jobs(data):
+    if isinstance(data, dict):
+        if "jobs" not in data:
+            raise SystemExit("cron API/store has no jobs field — nothing was created")
+        data = data["jobs"]
+    if not isinstance(data, (list, tuple)):
+        raise SystemExit("cron jobs must be a list — nothing was created")
+    seen = set()
+    for job in data:
+        if not isinstance(job, dict) or not isinstance(job.get("id"), str) or not job["id"].strip():
+            raise SystemExit("cron jobs contain an invalid record/ID — nothing was created")
+        if job["id"] in seen:
+            raise SystemExit(f"duplicate job ID {job['id']} — nothing was created")
+        seen.add(job["id"])
+    return copy.deepcopy(list(data))
+
+
+def read_jobs(home):
+    path = Path(home) / "cron" / "jobs.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {path}: {exc}") from exc
+    return validate_jobs(data)
+
+
+def expected_roles(home, config=None):
+    path = Path(config or os.environ.get("DREAM_CONFIG") or Path(home) / "dreaming.json")
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return list(ROLES)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read config {path}: {exc}") from exc
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("cron", {}), dict):
+        raise ValueError("config and cron must be JSON objects")
+    roles = cfg.get("cron", {}).get("expected_roles", list(ROLES))
+    if (not isinstance(roles, list) or any(not isinstance(r, str) or r not in ROLES for r in roles)
+            or len(set(roles)) != len(roles)):
+        raise ValueError("cron.expected_roles must be a list of distinct night/extract/sweep roles")
+    return roles
+
+
+def job_state(job):
+    if not isinstance(job.get("enabled", True), bool) or not isinstance(job.get("state", ""), str):
+        return "unknown"
+    if job.get("state", "") not in {"", "scheduled", "running", "paused", "completed", "error"}:
+        return "unknown"
+    if job.get("state") in {"completed", "error"}:
+        return "terminal"
+    if not job.get("enabled", True) or job.get("state") == "paused" or job.get("paused_at"):
+        return "paused"
+    return "active"
+
+
+def inventory(listed, expected):
+    """Independent role/state/mode findings, before any registry lookup."""
+    groups, findings = {}, []
+    for role, script in ROLES.items():
+        group = groups[role] = _existing(listed, script)
+        if not group:
+            findings.append(("warning" if role in expected else "info",
+                             f"{role}: missing {script} — requires configuration (possibly intentionally skipped); run install_cron.py"
+                             if role in expected else f"{role}: intentionally omitted"))
+        if len(group) > 1:
+            active = sum(job_state(j) == "active" for j in group)
+            findings.append(("problem" if active > 1 else "warning",
+                             f"{role}: duplicate jobs {', '.join(j['id'] for j in group)} ({active} active)"))
+        for job in group:
+            state = job_state(job)
+            findings.append(("info" if state == "active" else "problem" if state == "unknown" else "warning",
+                             f"{role}: {state}, job {job['id']}"))
+            if state == "paused":
+                findings.append(("info", f"job {job['id']}: paused; existing executions are not cancelled"))
+            mode = job.get("no_agent", False)
+            if not isinstance(mode, bool) or mode != (role == "sweep") or job.get("monitor_script") or job.get("monitor_url"):
+                findings.append(("problem", f"job {job['id']} ({role}): incorrect execution mode"))
+            if role not in expected and state == "active":
+                findings.append(("warning", f"job {job['id']} ({role}): excluded from expected_roles but still running"))
+    return groups, findings
+
+
+def gate_plan(scripts):
+    result = []
+    source = Path(__file__).parent
+    for script in scripts:
+        src, dst = source / script, HOME / "scripts" / script
+        if not src.is_file():
+            raise ValueError(f"missing source gate {src}")
+        if not dst.is_file() or not filecmp.cmp(src, dst, shallow=False):
+            result.append({"action": "copy-gate", "script": script, "source": str(src), "destination": str(dst)})
+    return result
+
+
 def _preflight(sweep=True):
-    """Fail loudly on the things that silently produce a broken install."""
-    problems = []
-    # The sweep gate too: a no_agent job made over a stale scripts/ copy fails at its first tick.
-    for script in (DREAM_SCRIPT, EXTRACT_SCRIPT) + ((SWEEP_SCRIPT,) if sweep else ()):
-        if not (HOME / "scripts" / script).is_file():
-            problems.append(f"missing {HOME}/scripts/{script} — run scripts/install.py first "
-                            "(Hermes only runs cron scripts from that directory)")
+    scripts = (DREAM_SCRIPT, EXTRACT_SCRIPT) + ((SWEEP_SCRIPT,) if sweep else ())
+    problems = [f"{'missing' if not Path(p['destination']).exists() else 'differs'} {p['destination']} — run install.py or --upgrade"
+                for p in gate_plan(scripts)]
     _, problem = skill_ref()
     if problem:
         problems.append(problem)
     return problems
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="Create the dreaming cron jobs")
-    ap.add_argument("--deliver", default="local",
-                    help="where the report goes: local | origin | telegram:<chat_id>[:<thread_id>]")
-    ap.add_argument("--dream-schedule", default="0 3 * * *")
-    ap.add_argument("--extract-schedule", default="30 2 * * 1",
-                    help='cron expression; empty string skips the extraction job')
-    ap.add_argument("--sweep-schedule", default="*/15 * * * *",
-                    help="cron expression of the no_agent job that cleans the dream's copies of facts the "
-                         "store has forgotten (holographic >= 0.8.0); empty string skips it")
-    ap.add_argument("--model", default=None, help="pin a model for these jobs")
-    ap.add_argument("--provider", default=None, help="pin a provider for these jobs")
-    ap.add_argument("--name-prefix", default="Dreaming",
-                    help="prefix for the job names shown in `hermes cron list`")
-    ap.add_argument("--force", action="store_true", help="create even if a job already exists")
-    ap.add_argument("--rebind", action="store_true",
-                    help="point existing dreaming jobs at the skill this install provides")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args(argv)
+def _cron_expr(schedule):
+    if isinstance(schedule, str):
+        return " ".join(schedule.split()) if len(schedule.split()) == 5 else None
+    if isinstance(schedule, dict) and schedule.get("kind") == "cron":
+        return _cron_expr(schedule.get("expr"))
+    return None
 
-    problems = _preflight(sweep=bool(args.sweep_schedule))
-    if problems:
-        for p in problems:
-            print(f"ERROR: {p}", file=sys.stderr)
-        return 1
-    skill, _ = skill_ref()
 
-    planned = [{
-        "script": DREAM_SCRIPT,
-        "name": f"{args.name_prefix}: nightly memory consolidation",
-        "schedule": args.dream_schedule,
-        "prompt": DREAM_PROMPT,
-    }]
-    if args.extract_schedule:
-        planned.append({
-            "script": EXTRACT_SCRIPT,
-            "name": f"{args.name_prefix}: extract candidate facts",
-            "schedule": args.extract_schedule,
-            "prompt": EXTRACT_PROMPT,
-        })
+def _setting_patch(job, plan, role, supplied, apply):
+    requested = {}
+    for key in ("model", "provider"):
+        if role != "sweep" and key in supplied:
+            requested[key] = supplied[key]
+    if role != "sweep" and supplied.get("inherit_model"):
+        requested.update(model=None, provider=None)
+    if "deliver" in supplied:
+        requested.update(deliver=supplied["deliver"], attach_to_session=supplied["deliver"] != "local")
+    if "name_prefix" in supplied:
+        requested["name"] = plan["name"]
+    schedule_key = SCHEDULE_FLAGS[role]
+    if schedule_key in supplied and supplied[schedule_key]:
+        if _cron_expr(job.get("schedule")) != _cron_expr(plan["schedule"]):
+            if apply and _cron_expr(job.get("schedule")) is None:
+                raise ValueError(f"job {job['id']}: only cron-to-cron schedule updates are supported")
+            requested["schedule"] = plan["schedule"]
+    differences = {k: {"current": job.get(k), "requested": v} for k, v in requested.items() if job.get(k) != v}
+    return ({k: v["requested"] for k, v in differences.items()} if apply else {}), differences
 
-    if args.sweep_schedule:
-        planned.append({
-            "script": SWEEP_SCRIPT,
-            "name": f"{args.name_prefix}: clean copies of forgotten facts",
-            "schedule": args.sweep_schedule,
-            "prompt": "",
-            "no_agent": True,
-        })
 
+def _parser():
+    ap = argparse.ArgumentParser(description="Create or upgrade dreaming cron jobs")
+    for key in DEFAULTS:
+        ap.add_argument("--" + key.replace("_", "-"), default=argparse.SUPPRESS)
+    ap.add_argument("--hermes-home", default=None)
+    for key in ("force", "rebind", "dry-run", "update-existing", "inherit-model", "upgrade"):
+        ap.add_argument("--" + key, action="store_true")
+    ap.add_argument("--job-id", action="append", default=[])
+    return ap
+
+
+def _build(args, supplied, listed, expected, skill):
+    groups, findings = inventory(listed, expected)
+    ids = set(args.job_id)
+    owned = {j['id'] for group in groups.values() for j in group}
+    if ids - owned:
+        raise ValueError(f"unknown/foreign --job-id: {', '.join(sorted(ids - owned))}")
+    if args.force and (args.update_existing or args.rebind or ids or args.inherit_model):
+        raise ValueError("--force cannot be combined with update/rebind/job-id/reset")
+    if args.inherit_model and (not args.update_existing or "model" in supplied or "provider" in supplied):
+        raise ValueError("--inherit-model requires --update-existing and no explicit model/provider")
+    for key in ("model", "provider", "name_prefix", "deliver"):
+        if key in supplied and not str(supplied[key]).strip():
+            raise ValueError(f"--{key.replace('_', '-')} cannot be empty")
+    for key in SCHEDULE_FLAGS.values():
+        if key in supplied and supplied[key] and _cron_expr(supplied[key]) is None:
+            raise ValueError(f"--{key.replace('_', '-')}: use a five-field cron expression")
+    mode_errors = [m for level, m in findings if level == "problem" and "duplicate jobs" not in m]
+    if mode_errors:
+        raise ValueError("; ".join(mode_errors))
+    result = []
+    labels = {"night": "nightly memory consolidation", "extract": "extract candidate facts",
+              "sweep": "clean copies of forgotten facts"}
+    for role, script in ROLES.items():
+        schedule = getattr(args, SCHEDULE_FLAGS[role])
+        group = groups[role]
+        selected = [j for j in group if j["id"] in ids] if ids else group
+        if ids and not selected:
+            continue
+        if not schedule or (role not in expected and not ids):
+            for job in selected:
+                result.append({"action": "skip-role", "script": script, "id": job["id"],
+                               "state": job_state(job), "updates": {}})
+            continue
+        plan = dict(script=script, name=f"{args.name_prefix}: {labels[role]}", schedule=schedule,
+                    prompt={"night": DREAM_PROMPT, "extract": EXTRACT_PROMPT, "sweep": ""}[role])
+        if selected and not args.force:
+            if len(group) > 1 and not ids:
+                raise ValueError(f"{role}: duplicate jobs require exact --job-id before any changes")
+            for job in selected:
+                item = (dict(script=script, id=job["id"], action="unchanged", updates={}) if role == "sweep"
+                        else plan_existing(job, plan, skill, args.rebind))
+                patch, differences = _setting_patch(job, plan, role, supplied, args.update_existing)
+                item["updates"].update(patch)
+                if differences:
+                    item["settings_differences"] = differences
+                if item["updates"]:
+                    item["action"] = "update"
+                if job_state(job) == "terminal" and item["updates"]:
+                    raise ValueError(f"job {job['id']}: terminal — manage lifecycle explicitly with Hermes")
+                result.append(item)
+        elif not ids:
+            payload = dict(plan, deliver=args.deliver, attach_to_session=args.deliver != "local")
+            if role == "sweep":
+                payload["no_agent"] = True
+            else:
+                payload.update(skill=skill, skills=[skill], enabled_toolsets=["memory"], model=args.model,
+                               provider=args.provider)
+            result.append(dict(action="create", script=script, payload=payload, skill=payload.get("skill"),
+                               additional=len(group), validation="schedule/delivery validation by Hermes API at apply"))
+    return result, findings
+
+
+def _emit(findings):
+    for level, message in findings:
+        print(f"{level.upper()}: {message}")
+
+
+def _verify(jobs, expected, skill, scripts):
+    listed = _list_jobs(jobs)
+    groups, findings = inventory(listed, expected)
+    for role, group in groups.items():
+        if role == "sweep":
+            continue
+        for job in group:
+            if prompt_status(job) == "stale-stock":
+                findings.append(("problem", f"job {job['id']}: outdated stock prompt"))
+            if not bound_to(job, skill):
+                findings.append(("problem", f"job {job['id']}: stale skill binding"))
+            if prompt_status(job) == "custom":
+                findings.append(("warning", f"job {job['id']}: custom/unknown prompt preserved"))
+    for plan in gate_plan(scripts):
+        findings.append(("problem", f"gate {plan['script']} still differs"))
+    print("Running final cron upgrade check:")
+    _emit(findings)
+    return 1 if any(level == "problem" for level, _ in findings) else 0
+
+
+def _run(args, supplied):
+    expected = expected_roles(HOME)
+    jobs = None if args.dry_run else _import_jobs()
+    store = getattr(jobs, "use_cron_store", None)
+    if not callable(store) and hasattr(jobs, "CRON_DIR"):
+        if Path(jobs.CRON_DIR).resolve() != (HOME / "cron").resolve():
+            raise ValueError("cron API uses a different home — refusing cross-home access")
+    with store(HOME) if callable(store) else contextlib.nullcontext():
+        return _run_jobs(args, supplied, expected, jobs)
+
+
+def _run_jobs(args, supplied, expected, jobs):
+    listed = _preview_jobs() if args.dry_run else _list_jobs(jobs)
+    agent_needed = bool(set(expected) & {"night", "extract"}) or any(
+        j.get("script") in (DREAM_SCRIPT, EXTRACT_SCRIPT) for j in listed)
+    skill, problem = skill_ref() if agent_needed else (None, None)
+    if problem:
+        _emit(inventory(listed, expected)[1])
+        raise ValueError(problem)
+    planned, findings = _build(args, supplied, listed, expected, skill)
+    scripts = list(dict.fromkeys(p["script"] for p in planned if p["action"] != "skip-role"))
+    gates = gate_plan(scripts)
+    if gates and not args.upgrade:
+        raise ValueError("; ".join(f"gate {g['script']} missing or differs — run install.py or --upgrade" for g in gates))
     if args.dry_run:
-        print(json.dumps([dict({k: (v[:80] + "…" if k == "prompt" else v) for k, v in p.items()},
-                               skill=None if p.get("no_agent") else skill) for p in planned],
-                         ensure_ascii=False, indent=2))
+        print(json.dumps(gates + planned + [{"action": "diagnostic", "level": level, "message": msg}
+                                          for level, msg in findings], ensure_ascii=False, indent=2))
         return 0
-
-    jobs = _import_jobs()
-    listed = _list_jobs(jobs)  # once, before anything is created: a failure leaves no half-made install
-    created, skipped, rebound, stale = [], [], [], []
-    for plan in planned:
-        already = _existing(listed, plan["script"])
-        if plan.get("no_agent"):  # no skill to bind: one job is enough
-            if already and not args.force:
-                skipped.extend((plan["script"], job.get("id")) for job in already)
-                continue
-            job = jobs.create_job(prompt="", schedule=plan["schedule"], name=plan["name"], deliver=args.deliver,
-                                  attach_to_session=args.deliver != "local", script=plan["script"],
-                                  no_agent=True)
-            created.append((plan["script"], job["id"]))
+    # Validate every requested schedule before copying gates or changing any job.
+    parser = getattr(jobs, "parse_schedule", None)
+    for item in planned:
+        payload = item.get("payload", item.get("updates", {}))
+        if "schedule" in payload:
+            if not callable(parser):
+                raise ValueError("cron API has no public parse_schedule validator — no writes performed")
+            parsed = parser(payload["schedule"])
+            if not isinstance(parsed, dict) or parsed.get("kind") != "cron":
+                raise ValueError("Hermes did not validate a cron schedule")
+    # All options, records, targets and gate sources have been validated before copying anything.
+    _emit(findings)
+    for gate in gates:
+        dst = Path(gate["destination"])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(gate["source"], dst)
+        os.chmod(dst, 0o755)
+        print(f"OK: copied gate {gate['script']}")
+    failed = False
+    known_ids = {j["id"] for j in listed}
+    for item in planned:
+        jid = item.get("id")
+        if item["action"] == "skip-role":
+            print(f"WARNING: job {jid} ({item['script']}) skipped, {item['state']}"
+                  + (" — still running" if item['state'] == 'active' else "")
+                  + f"; skipping does not disable it. To pause future starts: hermes cron pause {jid}")
             continue
-        if already and not args.force:
-            for job in already:
-                current = job_skills(job)
-                if bound_to(job, skill):
-                    skipped.append((plan["script"], job.get("id")))
-                elif args.rebind:
-                    new = rebound_skills(job, skill)
-                    jobs.update_job(job["id"], {"skill": new[0], "skills": new})
-                    rebound.append((plan["script"], job.get("id"), current))
-                else:
-                    stale.append((plan["script"], job.get("id"), current))
+        if item.get("prompt_status") == "custom":
+            print(f"WARNING: job {jid}: custom/unknown prompt — preserved; review and migrate manually")
+        if item.get("rebind_required"):
+            print(f"ERROR: job {jid}: wrong skill binding — run with --rebind", file=sys.stderr)
+            failed = True
+        if item.get("settings_differences"):
+            print(f"{'OK' if args.update_existing else 'WARNING'}: job {jid} requested/current settings: "
+                  + json.dumps(item["settings_differences"], ensure_ascii=False)
+                  + ("" if args.update_existing else " — preserved; use --update-existing to apply"))
+        if item["action"] == "create":
+            if item["additional"]:
+                print(f"WARNING: --force creates an additional {item['script']} job: {item['additional']} → {item['additional'] + 1}")
+            try:
+                created = jobs.create_job(**item["payload"])
+                if (not isinstance(created, dict) or not isinstance(created.get("id"), str)
+                        or not created["id"].strip() or created["id"] in known_ids):
+                    raise ValueError("create was not confirmed")
+                known_ids.add(created["id"])
+            except Exception as exc:  # noqa: BLE001 — stop after partial progress; safe retry lists jobs again
+                print(f"ERROR: create failed: {exc}", file=sys.stderr)
+                return 1
+            print(f"OK: created {item['script']} → job {created['id']}")
             continue
-        job = jobs.create_job(
-            prompt=plan["prompt"],
-            schedule=plan["schedule"],
-            name=plan["name"],
-            deliver=args.deliver,
-            # A non-local report goes to a chat, so the job needs a session
-            # attached; without it the delivery quietly stays local.
-            attach_to_session=args.deliver != "local",
-            skill=skill,
-            skills=[skill],
-            script=plan["script"],
-            enabled_toolsets=["memory"],
-            model=args.model,
-            provider=args.provider,
-        )
-        created.append((plan["script"], job["id"]))
+        updates = item["updates"]
+        if not updates:
+            print(f"-- job {jid} ({item['script']}) left alone")
+            continue
+        old = next(j for j in listed if j['id'] == jid)
+        fresh = [j for j in _list_jobs(jobs) if j['id'] == jid]
+        fields = {"script", "prompt", "skill", "skills", "no_agent", "state", "enabled", "paused_at"} | set(updates)
+        if len(fresh) != 1 or any(fresh[0].get(k) != old.get(k) for k in fields):
+            print(f"ERROR: job {jid} changed during installation — left alone; retry", file=sys.stderr)
+            return 1
+        try:
+            result = jobs.update_job(jid, updates)
+        except Exception as exc:  # noqa: BLE001 — preserve truthful partial-progress output
+            print(f"ERROR: job {jid} update failed: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(result, dict) or result.get("id") != jid:
+            print(f"ERROR: job {jid} update was not confirmed — inspect and retry", file=sys.stderr)
+            return 1
+        print(f"OK: job {jid} updated" + ("; stock prompt updated" if "prompt" in updates else ""))
+    if args.upgrade:
+        return max(int(failed), _verify(jobs, expected, skill, scripts))
+    return int(failed)
 
-    for script, jid in created:
-        print(f"OK: created {script} → job {jid}")
-    for script, jid in skipped:
-        print(f"-- {script} already exists as job {jid} — left alone (use --force to add another)")
-    for script, jid, old in rebound:
-        print(f"OK: job {jid} ({script}) now loads {skill} (was: {', '.join(old) or 'no skill'})")
-    for script, jid, old in stale:
-        # Left as is, the job would run tonight without this install's skill:
-        # Hermes skips a skill it cannot load and only flags it in the report.
-        print(f"ERROR: job {jid} ({script}) loads {', '.join(old) or 'no skill'}, but this install "
-              f"provides {skill} — re-run with --rebind", file=sys.stderr)
-    if created:
-        print("\nNext: check them with `hermes cron list`, and trigger one run by hand:")
-        print(f"  hermes cron run {created[0][1]}")
-    return 1 if stale else 0
+
+def main(argv=None):
+    global HOME
+    ap = _parser()
+    args = ap.parse_args(argv)
+    supplied = {k: v for k, v in vars(args).items() if k in DEFAULTS or k == "inherit_model"}
+    for key, value in DEFAULTS.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    old_home = HOME
+    if args.hermes_home:
+        HOME = Path(args.hermes_home).expanduser().resolve()
+    try:
+        with home_environment(HOME):
+            return _run(args, supplied)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        HOME = old_home
 
 
 if __name__ == "__main__":
