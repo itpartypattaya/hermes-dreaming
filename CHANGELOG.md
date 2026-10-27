@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.4.2 — 2026-10-27
 
 ### Fixed
 - The forget instructions no longer promise cleanup of arbitrary backups. They name the store and the skill's own files, exclude Git history and external archives, and require reports to distinguish successful store deletion from a retained external copy without repeating the forgotten text. A documented cleanup boundary must not be described as a failure that a retry will resolve.
