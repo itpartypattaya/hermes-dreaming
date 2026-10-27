@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects, and the human's answers to its questions."
-version: 3.5.0
+version: 3.6.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.5)
@@ -53,6 +53,10 @@ in each of them (`references/scoring.md`, "Every language").
 - **A real pass by hand** (writes the state and the diary exactly like the nightly gate):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --out ~/.hermes/cache/dream.json --diary ~/.hermes/memories/DREAMS.md`
 - **Why a fact scored like that:** `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --explain <fact_id>`
+- **Task outcomes / recorded retrieval:** in a manual terminal session, `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --memory-outcomes`
+  or `--memory-explain <attempt_id>` (`--memory-format text` for a short report). These are live agent reports from
+  holographic's optional experience journal, not truth votes: never turn them into helpful/unhelpful or fact changes
+  automatically. There is no stored lesson cache. See `docs/experience.md` in the plugin repository.
 - **Close a question** (manual session only):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream-reject.py" <fact_id> --reason "<short why>"`;
   `--list` shows what is muted and how old; `--undo <id>` lifts a mistake. A "merge?" question (step 7e):
