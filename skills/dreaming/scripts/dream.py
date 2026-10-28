@@ -2099,6 +2099,7 @@ _LATIN_FOLD = str.maketrans({"ł": "l", "ı": "i", "ß": "ss", "ø": "o", "æ": 
                              "þ": "th", "ð": "d"})
 
 
+@functools.lru_cache(maxsize=65536)
 def latin_fold(token):
     """The token without diacritics when it is written in Latin letters (szkoła → szkola, öğretmen → ogretmen,
     Größe → grosse); any other token unchanged. One word must not get two stems because one of its forms happens
@@ -2110,6 +2111,7 @@ def latin_fold(token):
     return plain if plain.isascii() else token
 
 
+@functools.lru_cache(maxsize=65536)
 def _stem(token):
     """One crude stem for fuzzy comparison. Latin (diacritics folded) keeps the old 5-char prefix; an n-gram of
     unsegmented script is its own stem."""
@@ -2559,15 +2561,32 @@ def _month_markers(text):
     _LANG._CJK_WEEKDAY_NUM)
 
 
+# The cells of _WEEKDAY_PREFIXES_NUM looked up instead of tried one by one (3.7.0): every word of every fact went
+# through all ~100 of them, and the whole-store duplicate search spent most of a large store's time there. A word
+# takes the day of the first cell that names it, in the list's own order, exactly as the loop did.
+_WEEKDAY_WHOLE, _WEEKDAY_PREFIX = {}, {}
+for _pos, (_cell, _day) in enumerate(_WEEKDAY_PREFIXES_NUM):
+    _WEEKDAY_WHOLE.setdefault(_cell.rstrip("="), (_pos, _day))
+    if len(_cell) >= 5 and not _cell.endswith("="):
+        _WEEKDAY_PREFIX.setdefault(_cell, (_pos, _day))
+_WEEKDAY_PREFIX_LENS = sorted({len(p) for p in _WEEKDAY_PREFIX})
+
+
+@functools.lru_cache(maxsize=65536)
+def _weekday_of(word):
+    """The day (1 = Monday) a lowercased, Latin-folded word names, or None."""
+    hits = [_WEEKDAY_WHOLE.get(word)] + [_WEEKDAY_PREFIX.get(word[:k]) for k in _WEEKDAY_PREFIX_LENS if len(word) >= k]
+    hits = [h for h in hits if h]
+    return min(hits)[1] if hits else None
+
+
 def _weekday_markers(text):
     """`weekday:N` (1 = Monday) for every day of the week named in the text."""
     days = set()
     for m in _WEEKDAY_WORD_RE.finditer(text or ""):
-        word = latin_fold(m.group(0).lower())
-        for prefix, n in _WEEKDAY_PREFIXES_NUM:
-            if word == prefix.rstrip("=") or (len(prefix) >= 5 and not prefix.endswith("=") and word.startswith(prefix)):
-                days.add(n)
-                break
+        n = _weekday_of(latin_fold(m.group(0).lower()))
+        if n is not None:
+            days.add(n)
     for m in _CJK_WEEKDAY_RE.finditer(text or ""):
         ch = next(g for g in m.groups() if g)
         days.add(7 if m.group(2) == "日" else _CJK_WEEKDAY_NUM[ch])
@@ -2850,12 +2869,15 @@ def _dup_directions(a, b):
 DupFeatures = namedtuple("DupFeatures", "text norm word_of words anchors anchor_seq name_seq names")
 
 
-def _dup_features(text):
-    """What the rule compares of one text, computed once per fact (a night compares a fact with many)."""
-    word_of = _dup_words(text)
-    names = _dup_name_seq(text)
-    return DupFeatures(text, _norm(text), word_of, frozenset(word_of), frozenset(_dup_anchors(text)),
-                       tuple(_dup_anchor_seq(text)), tuple(names), frozenset(names))
+def _dup_features(text, shared=None):
+    """What the rule compares of one text, computed once per fact (a night compares a fact with many). *shared*: a
+    dict that keeps one copy of each word, stem, number and name across the facts of a search — a large store
+    repeats them in almost every fact, and their copies were a third of the search's memory."""
+    one = (lambda x: shared.setdefault(x, x)) if shared is not None else (lambda x: x)
+    word_of = {one(stem): one(word) for stem, word in _dup_words(text).items()}
+    names = tuple(one(n) for n in _dup_name_seq(text))
+    return DupFeatures(text, _norm(text), word_of, frozenset(word_of), frozenset(one(a) for a in _dup_anchors(text)),
+                       tuple(one(a) for a in _dup_anchor_seq(text)), names, frozenset(names))
 
 
 def _dup_judge(fa, fb):
@@ -2909,19 +2931,34 @@ class DupBudget(Exception):
     """The night's budget of pair checks (`duplicates.max_pair_checks`) ran out."""
 
 
+def _rarest(items, df):
+    return min(items, key=lambda x: (df[x], x))
+
+
 def find_duplicate_pairs(facts, max_checks=None):
     """[{"a", "b", "why", "containment"}] (fact ids, a < b by id) of every pair of *facts* ({fact_id, content}) the
     rule calls one fact, and how many pairs were checked. Raises DupBudget past *max_checks*.
 
-    Candidates come from an inverted index over the significant stems, so a store is not compared with itself
-    whole. A pair the rule can accept shares at least need = max(1, ceil(min_containment · |S|)) stems with the
-    shorter side S — exactly the rule's bound, for every allowed `min_containment` above 0; S's rarest |S| − need + 1
-    stems are then sure to hold one of them (a prefix filter), so only the facts under those stems are looked at —
-    the pairs found are the same as when every pair is checked, at a fraction of the checks (stopwords are kept,
-    and they are in almost every fact). At `min_containment` 0 the rule needs no shared stem, so every pair of long
-    facts is checked, in the same budget. Short facts and facts without significant words have their own path: the
-    same numbers / @-handles, or the same text."""
-    feats = {f["fact_id"]: _dup_features(f["content"]) for f in facts}
+    The rule decides every pair; the indexes below only choose which pairs it is shown, and each of them leaves out
+    only pairs the rule is sure to reject, so the pairs found are the same as when every pair is checked:
+    - stems (3.4.0): a pair the rule can accept shares at least need = max(1, ceil(min_containment · |S|)) stems
+      with the shorter side S — exactly the rule's bound, for every allowed `min_containment` above 0; S's rarest
+      |S| − need + 1 stems are then sure to hold one of them (a prefix filter);
+    - numbers and names (3.7.0): the rule wants the numbers / @-handles of one side to be a subset of the other's,
+      and the names too. When both sides have numbers, the side with fewer holds all of its own in the other, its
+      rarest one included: the other is listed under that number, or the side itself is listed under its rarest
+      number, which the other holds. Names alike. Reminders («оплата 2026-11-03 в 10:00», a hundred days of them)
+      or one sentence said of many people have nothing rare in their stems: each was a candidate of every other,
+      the checks grew with the square of the store and ran out of the night's budget; now each meets the facts
+      with its own date or its own person.
+    For each kind of other side (with numbers or not, with names or not) the smallest of the lists that may hold it
+    is read, and a pair is shown to the rule only when it shares enough stems and its numbers and names are
+    subsets one way. At `min_containment` 0 the rule needs no shared stem, so every pair of long facts is checked,
+    in the same budget. Short facts and facts without significant words have their own path: the same numbers /
+    @-handles, or the same text."""
+    shared = {}
+    feats = {f["fact_id"]: _dup_features(f["content"], shared) for f in facts}
+    del shared
     ids = sorted(feats, key=lambda i: (str(type(i)), i))
     rank = {i: n for n, i in enumerate(ids)}
     checked = set()
@@ -2938,33 +2975,57 @@ def find_duplicate_pairs(facts, max_checks=None):
         if ok:
             found.append({"a": key[0], "b": key[1], "why": why, "containment": round(cont, 4)})
 
-    df = Counter(s for i in ids for s in feats[i].words)
-    postings = defaultdict(list)
-    for i in ids:
-        for s in feats[i].words:
-            postings[s].append(i)
+    long_ids = [i for i in ids if len(feats[i].words) >= DUP_SHORT_WORDS]
     floor = SETTINGS.DUP_MIN_CONTAINMENT
-    for i in ids:
-        words = feats[i].words
-        size = len(words)
-        if size < DUP_SHORT_WORDS:
-            continue
-        if floor <= 0:
-            # Containment 0 passes the rule's first test with no stem shared at all: there is nothing to index,
-            # every pair of long facts is checked (within the budget).
-            near = {j for j in ids if len(feats[j].words) >= DUP_SHORT_WORDS}
-            need = 0
-        else:
+    if floor <= 0:
+        # Containment 0 passes the rule's first test with no stem shared at all: there is nothing to index,
+        # every pair of long facts is checked (within the budget).
+        for n, i in enumerate(long_ids):
+            for j in long_ids[n + 1:]:
+                check(i, j)
+    else:
+        df = Counter(x for i in long_ids for f in (feats[i],) for x in f.words | f.anchors | f.names)
+        kind = {i: (bool(feats[i].anchors), bool(feats[i].names)) for i in long_ids}
+        stems = defaultdict(lambda: defaultdict(list))  # kind of fact -> stem -> facts
+        # with names / without -> a number -> the facts holding it, and the facts whose rarest number it is
+        by_number, by_rarest_number = defaultdict(lambda: defaultdict(list)), defaultdict(lambda: defaultdict(list))
+        by_name, by_rarest_name = defaultdict(lambda: defaultdict(list)), defaultdict(lambda: defaultdict(list))
+        for i in long_ids:
+            f, (has_numbers, has_names) = feats[i], kind[i]
+            for s in f.words:
+                stems[kind[i]][s].append(i)
+            for x in f.anchors:
+                by_number[has_names][x].append(i)
+            for x in f.names:
+                by_name[has_numbers][x].append(i)
+            if has_numbers:
+                by_rarest_number[has_names][_rarest(f.anchors, df)].append(i)
+            if has_names:
+                by_rarest_name[has_numbers][_rarest(f.names, df)].append(i)
+        for i in long_ids:
+            f = feats[i]
+            words, size = f.words, len(f.words)
             # As few shared stems as the rule accepts: one of four at 0.25 is a pair for it.
             need = max(1, math.ceil(floor * size - 1e-9))
-            near = set()
-            for stem in sorted(words, key=lambda s: (df[s], s))[:size - need + 1]:
-                near.update(postings[stem])
-        near.discard(i)
-        for j in near:  # any order: past the budget the whole search is dropped, and `found` is sorted
-            other = feats[j].words
-            if len(other) >= size and len(words & other) >= need:
-                check(i, j)
+            prefix = sorted(words, key=lambda s: (df[s], s))[:size - need + 1]
+            for other_kind in ((False, False), (False, True), (True, False), (True, True)):
+                sources = [[stems[other_kind].get(s, ()) for s in prefix]]
+                if f.anchors and other_kind[0]:
+                    sources.append([by_number[other_kind[1]].get(_rarest(f.anchors, df), ())]
+                                   + [by_rarest_number[other_kind[1]].get(x, ()) for x in f.anchors])
+                if f.names and other_kind[1]:
+                    sources.append([by_name[other_kind[0]].get(_rarest(f.names, df), ())]
+                                   + [by_rarest_name[other_kind[0]].get(x, ()) for x in f.names])
+                near = set()
+                for lists in min(sources, key=lambda ls: sum(map(len, ls))):
+                    near.update(lists)
+                near.discard(i)
+                for j in near:  # any order: past the budget the whole search is dropped, and `found` is sorted
+                    g = feats[j]
+                    if (len(g.words) >= size and len(words & g.words) >= need
+                            and (f.anchors <= g.anchors or g.anchors <= f.anchors)
+                            and (f.names <= g.names or g.names <= f.names)):
+                        check(i, j)
     # Short facts and facts without significant words: by their numbers / @-handles, and by the same text.
     by_anchors, by_text = defaultdict(list), defaultdict(list)
     for i in ids:
@@ -2972,10 +3033,19 @@ def find_duplicate_pairs(facts, max_checks=None):
             by_anchors[feats[i].anchors].append(i)
         by_text[feats[i].norm].append(i)
     for group in by_anchors.values():
-        short = [i for i in group if len(feats[i].words) < DUP_SHORT_WORDS]
+        short = [i for i in group if 0 < len(feats[i].words) < DUP_SHORT_WORDS]
+        if not short:
+            continue
+        # A short pair needs every word of its smaller side in the other: the other holds the smaller side's rarest
+        # word. A fact without significant words pairs with no other but its own text (the rule's containment is 0).
+        holding = defaultdict(list)
+        for j in group:
+            for s in feats[j].words:
+                holding[s].append(j)
         for i in short:
-            for j in group:
-                if j != i:
+            words = feats[i].words
+            for j in holding[min(words, key=lambda s: (len(holding[s]), s))]:
+                if j != i and len(feats[j].words) >= len(words):
                     check(i, j)
     for group in by_text.values():
         for n, i in enumerate(group):
@@ -6738,7 +6808,11 @@ def memory_experience(attempt_id=None, store=None):
     spec = importlib.util.spec_from_file_location("_dream_experience", Path(__file__).with_name("dream_experience.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.read_report(db, attempt_id)
+    report = mod.read_report(db, attempt_id)
+    if attempt_id is None and report.get("status") == "ok":
+        # The summary's groups are problems of this one store (3.7.0): say which — stores are never counted together.
+        report["store"] = key if store is not None else "profile"
+    return report
 
 
 def explain(fact_id, mem_md, corr_days):

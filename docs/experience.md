@@ -23,8 +23,10 @@ corrupt or inaccessible databases are unavailable. No missing database file is c
 read-only snapshot and close the connection afterwards.
 
 Summary groups use the reason code and count one active outcome per attempt. Revisions such as dead_end → corrected
-→ useful remain one attempt. A single report is labelled single; multiple reports remain agent reports; different
-outcomes stay mixed. None are treated as independent human confirmations, true/false votes, or automatic lessons.
+→ useful remain one attempt, counted under the reason of its active outcome. A single report is labelled single;
+multiple reports remain agent reports; different outcomes stay mixed. Since 3.7.0 the summary names its store
+(`"store": "profile"`, or the key of the one `--memory-store` asked for), so repeated problems read by store and
+reason; one report never counts two stores together. None are treated as independent human confirmations, true/false votes, or automatic lessons.
 There is no conversion to helpful/unhelpful, no trust change and no automatic MEMORY.md / USER.md promotion.
 
 Explain shows the stored retrieval stages and emitted fact/version ids, plus the outcome history. It never repeats
