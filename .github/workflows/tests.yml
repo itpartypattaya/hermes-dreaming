@@ -68,6 +68,17 @@ jobs:
           HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic019
           HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic019/screen.py
         run: python -m unittest discover -s tests -p 'test_duplicate*.py' -v
+      # Task outcomes (3.6.2): the nightly summary and the manual reports over a journal the provider wrote itself.
+      - name: Check out the experience-journal provider (holographic v0.20.1)
+        uses: actions/checkout@v4
+        with:
+          repository: itpartypattaya/hermes-plugin-holographic
+          ref: 355e55f1a71a3c472663d226e141cbd901a003f8
+          path: _holographic020
+      - name: Run task-outcome tests against the provider's own journal
+        env:
+          HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic020
+        run: python -m unittest discover -s tests -p 'test_task_outcomes*.py' -v
 
   lint:
     runs-on: ubuntu-latest

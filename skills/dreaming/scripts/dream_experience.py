@@ -31,9 +31,11 @@ def read_report(path, attempt_id=None):
                 if not attempts:
                     return {"status": "not_recorded"}
                 row = attempts[0]
+                if not isinstance(row["kind"], str) or not isinstance(row["trace_status"], str):
+                    raise ValueError("Invalid experience attempt")
                 return {"status": "ok", "schema": 1, "attempt_id": attempt_id, "kind": row["kind"],
-                        "trace_status": row["trace_status"], "stages": json.loads(row["stages"]),
-                        "emitted": json.loads(row["emitted"]), "outcomes": _events(conn, attempt_id),
+                        "trace_status": row["trace_status"], "stages": _stages(json.loads(row["stages"])),
+                        "emitted": _refs(json.loads(row["emitted"])), "outcomes": _events(conn, attempt_id),
                         "source": "live_provider_snapshot", "interpretation": "Agent reports; not truth votes"}
             groups = defaultdict(list)
             for row in attempts:
@@ -74,6 +76,24 @@ def _events(conn, aid):
         result.append({"event_id": e["event_id"], "outcome": e["outcome"], "reason": e["reason"],
                        "actor": "agent", "human_verified": False, "active": e["event_id"] not in replaced})
     return result
+
+
+def _refs(value):
+    """Fact/version id pairs, as the provider records them; any other shape is a damaged journal."""
+    if not isinstance(value, list) or any(
+            not isinstance(r, dict) or any(type(r.get(k)) is not int for k in ("fact_id", "version_id"))
+            for r in value):
+        raise ValueError("Invalid experience attempt")
+    return [{"fact_id": r["fact_id"], "version_id": r["version_id"]} for r in value]
+
+
+def _stages(value):
+    """Recorded retrieval stages: a name and its fact refs each. Only these fields cross the boundary."""
+    if not isinstance(value, list) or any(not isinstance(s, dict) or not isinstance(s.get("stage"), str)
+                                          for s in value):
+        raise ValueError("Invalid experience attempt")
+    return [{"stage": s["stage"], "facts": _refs(s.get("facts")), "truncated": s.get("truncated") is True}
+            for s in value]
 
 
 def render(report):
