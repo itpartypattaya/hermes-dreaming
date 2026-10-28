@@ -3,7 +3,18 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## 3.6.1 — 2026-10-28
+## 3.6.2 — 2026-10-28
+
+### Fixed
+- Gates are copied whole or not at all. `install_cron.py --upgrade` and `install.py` write the new gate beside the old one, flush it and rename it over; a copy interrupted half-way used to leave a truncated script that the 15-minute sweep then ran. On failure the previous gate stays, no temporary file remains, and `install.py` reports the failure as a problem instead of a traceback.
+- A job the cron installer refuses to change is named with its role, its state and the fix: a finished or failed job that needs a stock prompt update (`hermes cron resume` / `hermes cron remove`, or `--job-id` for the other jobs), a record whose state the installer cannot classify (inspect it with `hermes cron list --all`). As in 3.5.0 the whole run still stops before the first write and exits 1.
+- `--memory-explain` treats an attempt row of an unknown shape as `unavailable` (exit 1), like a damaged outcome row; `--memory-format text` no longer ends in a traceback on it. Only the stage name, fact/version ids and the truncation flag leave the journal.
+
+### Tests
+- Task outcomes end to end against a journal written by holographic itself (v0.20.1 in CI): counts only in the nightly result and the files the pass writes, a forgotten fact leaves the next summary, the gate does not hand the summary to the agent, and the text format of both manual reports.
+
+### Changed
+- `truedev.project.json`, a local file of an external workflow tool, is no longer tracked.
 
 ### Fixed
 - Reuse number parsing within a nightly pass to avoid repeatedly processing the same messages for each fact. The cache is bounded, memory-only, and cleared after the pass.
