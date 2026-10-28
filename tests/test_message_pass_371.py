@@ -7,19 +7,24 @@ requirement: within a pass a message's numbers, sentences and the rest are read 
 one the rules for two texts (polarity_flip, numbers_changed, contradicts) give.
 
 All people, places and numbers below are made up."""
+import contextlib
 import gc
 import os
 import random
+import string
 import sys
+import tracemalloc
 import unittest
 import weakref
 from collections import Counter
+from datetime import datetime, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 from test_dream import dream  # noqa: E402  (same directory)
 
 DAY = "2026-10-20"
+NIGHT = datetime(2026, 10, 21, 3, 0, tzinfo=timezone.utc)  # the night's clock: scores read the time
 
 
 def _message(text, n=0, day=DAY):
@@ -76,7 +81,7 @@ class ReadOncePerPassTests(unittest.TestCase):
         splitter = _CountingSplitter(dream._SENTENCE_SPLIT_RE)
         with mock.patch.object(dream, "_number_kinds", wraps=dream._number_kinds) as numbers, \
                 mock.patch.object(dream, "_SENTENCE_SPLIT_RE", splitter):
-            scored = dream._score_facts(self.FACTS, messages, None, [], "", "", rules=self.rules())
+            scored = dream._score_facts(self.FACTS, messages, None, [], "", "", now=NIGHT, rules=self.rules())
         # Every message mentions every fact: the person spoke of them, no number of theirs changed, nothing negated.
         self.assertEqual([s["meta"]["mentions"] for s in scored], [len(messages)] * len(self.FACTS))
         parsed = Counter(call.args[0] for call in numbers.call_args_list)
@@ -90,8 +95,8 @@ class ReadOncePerPassTests(unittest.TestCase):
         """What a pass read is not carried into the next one: a message is read once in each."""
         messages = self._window()[:3]
         with mock.patch.object(dream, "_number_kinds", wraps=dream._number_kinds) as numbers:
-            dream._score_facts(self.FACTS, messages, None, [], "", "", rules=self.rules())
-            dream._score_facts(self.FACTS, messages, None, [], "", "", rules=self.rules())
+            dream._score_facts(self.FACTS, messages, None, [], "", "", now=NIGHT, rules=self.rules())
+            dream._score_facts(self.FACTS, messages, None, [], "", "", now=NIGHT, rules=self.rules())
         own_words = dream.re.sub(r"\[[^\]]*\]", " ", dream._own_words(messages[2]["content"]))
         self.assertEqual(sum(call.args[0] == own_words for call in numbers.call_args_list), 2)
 
@@ -226,7 +231,7 @@ class SameDecisionsTests(unittest.TestCase):
                     seen["contradicts"] += contradicts
                     seen["counts"] += counts
                     seen["counts, numbers aside"] += reference_pair_counts(probe, m) and not counts
-                    seen["many sentences, flipped"] += flip is not None and d.sentence_count() > 1
+                    seen["many sentences, flipped"] += flip is not None and d.sentences().count > 1
         check()
         # The window is no easy one: mentions, flips (in messages of many sentences too) and new numbers all happen.
         self.assertGreaterEqual(seen["counts"], 300)
@@ -240,7 +245,7 @@ class SameDecisionsTests(unittest.TestCase):
         in one pass are those of each fact in a pass of its own (wide and plain facts, replies, negations)."""
         def scores(facts):
             counted = set()
-            scored = dream._score_facts(facts, self.messages, None, [], "", "", rules=self.rules, counted=counted)
+            scored = dream._score_facts(facts, self.messages, None, [], "", "", now=NIGHT, rules=self.rules, counted=counted)
             return [(s["fact_id"], s["score"], s["meta"]) for s in scored], counted
 
         together, counted = scores(self.facts)
@@ -268,6 +273,135 @@ class SameDecisionsTests(unittest.TestCase):
         check()
 
 
+@contextlib.contextmanager
+def memory_limit(mb):
+    """The pass's limit set as an install sets it: `corroboration.memory_mb` in dreaming.json."""
+    saved = dream.SETTINGS.CONFIG
+    dream.configure(dict(saved, corroboration={"memory_mb": mb}))
+    try:
+        yield
+    finally:
+        dream.configure(saved)
+
+
+def pasted_ids_window(messages=60, words=600, seed=7):
+    """Messages of pasted identifiers and log tokens: random 10-letter words, nearly all of them seen once in the
+    whole window (the most a pass can keep per character), a few of them the words of the facts; some messages negate,
+    every one has a number. Facts: two of those words, a negation, a number and a weekday."""
+    r = random.Random(seed)
+
+    def word():
+        return "".join(r.choice(string.ascii_lowercase) for _ in range(10))
+    shared = [word() for _ in range(24)]
+    window = []
+    for n in range(messages):
+        ws = [word() for _ in range(words)]
+        for _ in range(3):
+            ws[r.randrange(words)] = r.choice(shared)
+        text = " ".join(ws[:words // 2]) + ".\n" + " ".join(ws[words // 2:]) + (" не 1500" if n % 3 == 0 else " 1200")
+        window.append(_message(text, n))
+    facts = [{"fact_id": i + 1, "content": f"{shared[2 * i]} {shared[2 * i + 1]} не 1200 по понедельникам",
+              "trust_score": 0.6} for i in range(12)]
+    return facts, window
+
+
+class MemoryLimitTests(unittest.TestCase):
+    """What a pass keeps is held under `corroboration.memory_mb`; past it parts are let go and read again, and no
+    decision changes. 6c55540 kept everything it read until the pass ended (a window of unique words: 13 MB for
+    0.4 MiB of text)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.facts, cls.messages = pasted_ids_window()
+        cls.rules = dream.rules_context(f["content"] for f in cls.facts)
+
+    def scores(self):
+        counted = set()
+        scored = dream._score_facts(self.facts, self.messages, None, [], "", "", now=NIGHT, rules=self.rules, counted=counted)
+        return [(s["fact_id"], s["score"], s["meta"]) for s in scored], counted
+
+    def held_by_a_pass(self):
+        """Bytes the pass holds at its end and lets go with it, and the most it held at any time (tracemalloc; the
+        window read once before, so that the process's own word caches are warm and not counted)."""
+        @dream._message_pass
+        def night():
+            dream._score_facts(self.facts, self.messages, None, [], "", "", now=NIGHT, rules=self.rules)
+            return tracemalloc.get_traced_memory()[0]
+        night()
+        tracemalloc.start()
+        try:
+            base = tracemalloc.get_traced_memory()[0]
+            inside = night()
+            after, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        return inside - after, peak - base
+
+    def test_what_a_pass_keeps_stays_under_the_limit(self):
+        mib = 1024 * 1024
+        unlimited, _ = self.held_by_a_pass()
+        self.assertGreater(unlimited, 3 * mib)  # the window needs more than the limit below
+        with memory_limit(1):
+            held, peak = self.held_by_a_pass()
+        self.assertLess(held, 1.5 * mib)
+        self.assertLess(peak, 2.5 * mib)
+
+    def test_past_the_limit_the_decisions_are_the_same(self):
+        together, counted = self.scores()
+        with memory_limit(1):
+            limited, counted_limited = self.scores()
+        self.assertEqual(limited, together)
+        self.assertEqual(counted_limited, counted)
+        self.assertTrue(any(meta["mentions"] for _, _, meta in together))
+        seen = Counter()
+        with memory_limit(1):
+            @dream._message_pass
+            def check():
+                for f in self.facts:
+                    content = f["content"]
+                    probe = dream.fact_probe(dream.fact_tokens(content), self.rules)
+                    for m in self.messages:
+                        counts = reference_pair_counts(probe, m, content)
+                        with self.subTest(fact=content, message=m["key"]):
+                            self.assertEqual(dream._pair_counts(probe, m, content), counts)
+                        seen["counts"] += counts
+                        seen["counts, numbers or negation aside"] += reference_pair_counts(probe, m) and not counts
+            check()
+        self.assertGreater(seen["counts"], 0)
+        self.assertGreater(seen["counts, numbers or negation aside"], 0)
+
+    def test_past_the_limit_what_was_let_go_is_read_again(self):
+        """A real count of how often each message's stems are taken: once a pass under the default limit; more than
+        once for some messages under a limit the window does not fit in (let go, then read again for a later fact)."""
+        def stem_reads():
+            with mock.patch.object(dream, "_stems", wraps=dream._stems) as stems:
+                dream._score_facts(self.facts, self.messages, None, [], "", "", now=NIGHT, rules=self.rules)
+            reads = Counter(id(call.args[0]) for call in stems.call_args_list)
+            return [reads[id(m["tokens"])] for m in self.messages]
+
+        self.assertEqual(stem_reads(), [1] * len(self.messages))
+        with memory_limit(1):
+            self.assertGreater(max(stem_reads()), 1)
+
+
+class MemoryLimitSettingTests(unittest.TestCase):
+    def test_the_limit_is_read_from_dreaming_json(self):
+        for raw, expected in ((64, 64), (0.5, 256), (0, 256), (-5, 256), ("abc", 256), (True, 256),
+                              (float("nan"), 256), (float("inf"), 256), (None, 256), ("96", 96)):
+            with self.subTest(raw=raw), mock.patch("sys.stderr"):
+                with memory_limit(raw):
+                    self.assertEqual(dream.SETTINGS.PASS_MEMORY_MB, expected)
+
+    def test_the_default_is_256(self):
+        self.assertEqual(dream.DEFAULT_CONFIG["corroboration"], {"memory_mb": 256})
+        saved = dream.SETTINGS.CONFIG
+        try:
+            dream.configure({k: v for k, v in saved.items() if k != "corroboration"})
+            self.assertEqual(dream.SETTINGS.PASS_MEMORY_MB, 256)
+        finally:
+            dream.configure(saved)
+
+
 class ReleasedAfterThePassTests(unittest.TestCase):
     def _pass_reads(self, fail=False):
         facts, messages = seeded_store(seed=5, facts=6, messages=40)
@@ -275,8 +409,8 @@ class ReleasedAfterThePassTests(unittest.TestCase):
 
         @dream._message_pass
         def night():
-            dream._score_facts(facts, messages, None, [], "", "", rules=dream.rules_context(f["content"] for f in facts))
-            refs.extend(weakref.ref(d) for d in dream._PASS_DATA.get()["messages"].values())
+            dream._score_facts(facts, messages, None, [], "", "", now=NIGHT, rules=dream.rules_context(f["content"] for f in facts))
+            refs.extend(weakref.ref(d) for d in dream._PASS_DATA.get().messages.values())
             if fail:
                 raise RuntimeError("interrupted")
         if fail:

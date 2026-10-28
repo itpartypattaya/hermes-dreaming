@@ -30,6 +30,7 @@ import contextvars
 import copy
 import functools
 import hashlib
+import heapq
 import importlib.util
 import json
 import math
@@ -199,6 +200,12 @@ DEFAULT_CONFIG = {
     # a fact longer than this takes no part (2000). See references/scoring.md, "Duplicates across the store".
     "duplicates": {"enabled": True, "min_containment": 0.7, "per_night": 1, "question_cooldown_days": 180,
                    "max_pair_checks": 200000, "max_chars": 2000},
+    # What one pass keeps of what it read from the window's messages (3.7.1), in MiB, estimated on the high side:
+    # past it the parts cheapest to read again are let go and read again when a fact needs them — slower, the same
+    # decisions. 256 holds about twice what a busy 60-day window of 16.8 MiB needs (an estimated 138) and is a few per
+    # cent of an 8 GB machine; lower it on a small one, raise it for a larger window when the night is slow. See
+    # references/scoring.md, "Each message is read once a pass".
+    "corroboration": {"memory_mb": 256},
     # holographic `scope: user / chat / thread` keeps facts in one database per user / chat / topic, which the
     # dream does not read by default: one chat's facts would reach memory every chat sees. `read` lists every
     # such database in the report (counts only — no text, no ids); `promote_from` names the chats whose facts
@@ -861,7 +868,7 @@ _SETTING_NAMES = (
     "FEEDBACK_TRUST_FLOOR", "FEEDBACK_CAP", "KEYWORDS_ENABLED", "KEYWORDS_CAP",
     "FEEDBACK_FLOOR_EXPLICIT", "JUDGE",
     "DUP_ENABLED", "DUP_MIN_CONTAINMENT", "DUP_PER_NIGHT", "DUP_COOLDOWN_DAYS", "DUP_MAX_PAIR_CHECKS",
-    "DUP_MAX_CHARS",
+    "DUP_MAX_CHARS", "PASS_MEMORY_MB",
 )
 
 
@@ -999,6 +1006,14 @@ def configure(cfg):
         except (TypeError, ValueError):
             value = _ignored(f"duplicates.{key}", raw, defaults[key])
         setattr(s, name, value)
+    corr = cfg.get("corroboration") if isinstance(cfg.get("corroboration"), dict) else {}
+    raw = corr.get("memory_mb", DEFAULT_CONFIG["corroboration"]["memory_mb"])
+    try:
+        s.PASS_MEMORY_MB = float(raw)
+        if isinstance(raw, bool) or not 1 <= s.PASS_MEMORY_MB < float("inf"):
+            raise ValueError(raw)
+    except (TypeError, ValueError):
+        s.PASS_MEMORY_MB = _ignored("corroboration.memory_mb", raw, DEFAULT_CONFIG["corroboration"]["memory_mb"])
     pend = cfg.get("pending") or {}
     s.PENDING_DIR = str(pend.get("dir") or "pending/memory")
     # Two settings, two parses — a bad `alert_days` reset a good `alert_min` too (review of 3.3.1).
@@ -2671,12 +2686,109 @@ def contradicts(content, text):
 # message past it was read again for every fact, and the nightly pass outran the gate's 600 s (killed at 34 min).
 # With the numbers read once, the negation check was next: it split a message into sentences and took the stems of
 # each, again for every fact (5 min 44 s). Issue #3, from the measurements of @sprd-tmu. Now a pass keeps what it read
-# from each message it meets, keyed by the message (the dict the pass loaded), never by its text, with no budget to
-# fall off: sets of stems, numbers by kind, where each sentence starts and ends and which sentences hold which stem
-# (a sorted array of integers) — not the text again. It is dropped with the pass. Every decision is the one the rules
-# for two texts give (polarity_flip, numbers_changed); tests/test_message_pass_371.py holds the two side by side.
+# from each message, keyed by the message (the dict the pass loaded), never by its text: sets of stems, numbers by
+# kind, where each sentence starts and ends and which sentences hold which stem (a sorted array of integers) — not
+# the text again. What it keeps is held under `corroboration.memory_mb` (an estimate of its bytes): past it, the parts
+# that cost least time per byte to read again are let go first, and read again when a fact needs them — slower,
+# never another answer; nothing stops being kept because the limit was reached once. It is dropped with the pass.
+# Every decision is the one the rules for two texts give (polarity_flip, numbers_changed);
+# tests/test_message_pass_371.py holds the two side by side.
 _PASS_DATA = contextvars.ContextVar("dream_pass_data", default=None)
-_PENDING = object()  # a part of a message not read yet (None is an answer: "no reply quote", "nothing unsafe")
+_PENDING = object()  # a part not read yet (None is an answer: "no reply quote", "nothing unsafe")
+# Bytes a record and a kept part cost besides their values: the object, its entries in the pass's dicts.
+_RECORD_BYTES, _PART_BYTES = 400, 200
+
+
+def _footprint(value):
+    """Bytes *value* holds, on the high side: the object and the strings, numbers and containers in it (a string
+    several parts share — a word common to many messages — is counted in each)."""
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        return size + sum(_footprint(k) + _footprint(v) for k, v in value.items())
+    if isinstance(value, (tuple, list, set, frozenset)):
+        if set(map(type, value)) == {str}:  # a set of stems, the words of a sentence: sized in one sweep
+            return size + sum(map(sys.getsizeof, value))
+        return size + sum(_footprint(v) for v in value)
+    return size
+
+
+class _PassData:
+    """What one pass has read from messages and from the texts of facts, held under *limit* bytes (estimated)."""
+    __slots__ = ("messages", "facts", "limit", "held", "parts", "order", "kept_parts", "evictions")
+
+    def __init__(self, limit):
+        self.messages, self.facts, self.parts = {}, {}, {}
+        self.order = []  # a heap of (seconds per byte, number, key): the part cheapest to read again on top
+        self.limit, self.held, self.kept_parts, self.evictions = limit, 0, 0, 0
+
+    def add(self, table, key, record):
+        old = table.get(key)
+        if old is not None:
+            self.forget(old)
+        table[key] = record
+        record.keeper, record.home, record.parts = self, (table, key), 0
+        self.held += _RECORD_BYTES
+
+    def kept(self, record, name, size, seconds):
+        """*record* now holds part *name* of *size* bytes, read in *seconds*; past the limit, let parts go."""
+        size += _PART_BYTES
+        key, number = (id(record), name), self.kept_parts
+        self.kept_parts += 1
+        self.parts[key] = (size, record, name, number)
+        heapq.heappush(self.order, (seconds / size, number, key))
+        record.parts += 1
+        self.held += size
+        # The cheapest to read again per byte go first — the sets of a long paste before its numbers and sentences,
+        # and a part read again just now before any kept since long (it is the one that costs least). A window that
+        # does not fit keeps the same parts fact after fact and reads the rest again; nothing stops being kept. The
+        # record being read may lose a part too: its caller keeps the value it was given.
+        while self.held > self.limit and self.order:
+            _density, number, key = heapq.heappop(self.order)
+            entry = self.parts.get(key)
+            if entry is not None and entry[3] == number:  # else let go already
+                self._let_go(entry[1], entry[2], entry[0])
+
+    def _let_go(self, record, name, size):
+        del self.parts[(id(record), name)]
+        setattr(record, name, _PENDING)
+        self.held -= size
+        self.evictions += 1
+        record.parts -= 1
+        if record.parts == 0:
+            self._drop(record)
+
+    def forget(self, record):
+        """Let go of *record* and all it holds (a message given another text, or read under other settings)."""
+        if record.keeper is not self:
+            return
+        for key in [k for k in self.parts if k[0] == id(record)]:
+            size, _record, name, _number = self.parts.pop(key)
+            setattr(record, name, _PENDING)
+            self.held -= size
+        self._drop(record)
+
+    def close(self):
+        """Let go of everything at the end of the pass, at once: records point back at the pass, and without this the
+        memory would wait for the garbage collector."""
+        for record in [*self.messages.values(), *self.facts.values()]:
+            record.keeper = record.home = None
+        self.messages.clear()
+        self.facts.clear()
+        self.parts.clear()
+        self.order.clear()
+        self.held = 0
+
+    def _drop(self, record):
+        table, key = record.home
+        if table.get(key) is record:
+            del table[key]
+        record.keeper = record.home = None
+        record.parts = 0
+        self.held -= _RECORD_BYTES
+
+
+def _pass_limit():
+    return int(SETTINGS.PASS_MEMORY_MB * 1024 * 1024)
 
 
 def _message_pass(fn):
@@ -2686,12 +2798,29 @@ def _message_pass(fn):
     def wrapped(*args, **kwargs):
         if _PASS_DATA.get() is not None:
             return fn(*args, **kwargs)
-        token = _PASS_DATA.set({"messages": {}, "facts": {}, "pool": {}})
+        data = _PassData(_pass_limit())
+        token = _PASS_DATA.set(data)
         try:
             return fn(*args, **kwargs)
         finally:
             _PASS_DATA.reset(token)
+            data.close()
     return wrapped
+
+
+class _Kept:
+    """A record whose parts are read when first asked for and kept by the pass (see _PassData)."""
+    __slots__ = ("keeper", "home", "parts")
+
+    def _part(self, name, read):
+        value = getattr(self, name)
+        if value is _PENDING:
+            started = time.perf_counter()
+            value = read()
+            setattr(self, name, value)
+            if self.keeper is not None:
+                self.keeper.kept(self, name, _footprint(value), time.perf_counter() - started)
+        return value
 
 
 class _PolaritySide(namedtuple("_PolaritySide", "words negations neg_stems two_way norm cjk")):
@@ -2721,132 +2850,114 @@ def _flip_sides(mine, theirs):
     return sorted(a.values()), sorted(b.values())
 
 
-class _MessageData:
-    """What one pass has read from one message, each part when first asked for (_message_data)."""
-    __slots__ = ("m", "content", "tokens", "generation", "pool", "_stems", "_wide", "_distinctive", "_own",
-                 "_numbers", "_negates", "_count", "_spans", "_sizes", "_index", "_whole", "_unsafe", "_snippet",
-                 "__weakref__")
+class _Sentences(namedtuple("_Sentences", "count whole spans sizes index")):
+    """The sentences polarity_flip finds in a message: how many (blank ones left out); the side of the one sentence
+    (or of the text, with none); else where each starts and ends, how many stems each has, and which sentence holds
+    which stem — (hash of the stem, 32 bits) << 32 | number of the sentence, sorted."""
+    __slots__ = ()
 
-    def __init__(self, m, generation, pool):
-        # The message itself is held, so its id is nobody else's while the pass keeps this. *pool*: the pass's
-        # {string: (the one copy of it, its number)}, so that what many messages hold is held once.
+
+def _read_sentences(chunk, generation):
+    pieces, start = [], 0  # the pieces _SENTENCE_SPLIT_RE.split gives, as (start, end)
+    for found in _SENTENCE_SPLIT_RE.finditer(chunk):
+        if chunk[start:found.start()].strip():
+            pieces.append((start, found.start()))
+        start = found.end()
+    if chunk[start:].strip():
+        pieces.append((start, len(chunk)))
+    if len(pieces) <= 1:
+        return _Sentences(len(pieces), _polarity_side(chunk[pieces[0][0]:pieces[0][1]] if pieces else chunk),
+                          None, None, None)
+    sizes, index = array("I"), []
+    for i, (a, b) in enumerate(pieces):
+        stems = _sentence_stems.__wrapped__(chunk[a:b], generation)
+        sizes.append(len(stems))
+        index.extend((hash(s) & 0xFFFFFFFF) << 32 | i for s in stems)
+    index.sort()
+    return _Sentences(len(pieces), None, array("I", (p for span in pieces for p in span)), sizes, array("Q", index))
+
+
+def _like_sentences(sentences, item, chunk, generation):
+    """The sentences (in their order) whose stems are as near the stems *item* of a fact as polarity_flip demands
+    (Jaccard ≥ POLARITY_MIN_JACCARD). Counted by the hashes of the stems first, which may only overcount (two stems
+    may share a hash, none is missed), with the union counted, not built: |item ∪ s| = |item| + |s| − |item ∩ s|.
+    A sentence the count lets through is checked by its own stems, as polarity_flip checks it."""
+    shared, index = {}, sentences.index
+    for h in {hash(s) & 0xFFFFFFFF for s in item}:
+        lo = bisect.bisect_left(index, h << 32)
+        for k in index[lo:bisect.bisect_left(index, (h + 1) << 32, lo)]:
+            i = k & 0xFFFFFFFF
+            shared[i] = shared.get(i, 0) + 1
+    n, spans, keep = len(item), sentences.spans, []
+    for i in sorted(shared):
+        k = shared[i]
+        if k / (n + sentences.sizes[i] - k) < POLARITY_MIN_JACCARD:
+            continue  # its Jaccard is no higher than this
+        st = _sentence_stems.__wrapped__(chunk[spans[2 * i]:spans[2 * i + 1]], generation)
+        if st and item and len(item & st) / len(item | st) >= POLARITY_MIN_JACCARD:
+            keep.append(i)
+    return keep
+
+
+class _MessageData(_Kept):
+    """What one pass has read from one message, each part when first asked for (_message_data)."""
+    __slots__ = ("m", "content", "tokens", "generation", "_stems", "_wide", "_distinctive", "_own", "_own_wide",
+                 "_numbers", "_negates", "_sentences", "_unsafe", "_snippet", "__weakref__")
+
+    def __init__(self, m, generation):
+        # The message itself is held, so its id is nobody else's while the pass keeps this.
         self.m, self.content, self.tokens, self.generation = m, m.get("content"), m.get("tokens"), generation
-        self.pool = pool
-        self._stems = self._wide = self._distinctive = self._numbers = self._negates = self._count = None
-        self._spans = self._sizes = self._index = self._whole = None
-        self._own = {}
-        self._unsafe = self._snippet = _PENDING
+        self.keeper = self.home = None
+        self.parts = 0
+        self._stems = self._wide = self._distinctive = self._own = self._own_wide = self._numbers = _PENDING
+        self._negates = self._sentences = self._unsafe = self._snippet = _PENDING
 
     def stems(self):
-        if self._stems is None:
-            self._stems = _stems(self.tokens)
-        return self._stems
+        return self._part("_stems", lambda: _stems(self.tokens))
 
     def wide_stems(self):
         """Its stems with those of its words read wide, against a fact of short words."""
-        if self._wide is None:
-            self._wide = self.stems() | _wide_stems.__wrapped__(self.content or "", self.generation)
-        return self._wide
-
-    def _pooled(self, text):
-        entry = self.pool.get(text)
-        if entry is None:
-            entry = self.pool[text] = (text, len(self.pool))
-        return entry
+        return self._part("_wide", lambda: self.stems() | _wide_stems.__wrapped__(self.content or "", self.generation))
 
     def has_distinctive(self, wanted):
-        """Whether one of its words has a distinctive stem of *wanted* (a fact's, from _distinctive_stem). Kept as
-        the stems of each script, "latin" and "other" being the only two tags."""
-        if self._distinctive is None:
-            by_script = {"latin": set(), "other": set()}
-            for t in self.tokens:
-                if not is_gram(t):
-                    script, stem = _distinctive_stem(t)
-                    by_script[script].add(self._pooled(stem)[0])
-            self._distinctive = by_script
-        return any(stem in self._distinctive[script] for script, stem in wanted)
+        """Whether one of its words has a distinctive stem of *wanted* (a fact's, from _distinctive_stem)."""
+        # Such a word has that stem among the message's stems: "other" is _stem itself, and a Latin word's stem is the
+        # first STEM_CHARS_LATIN of its DISTINCTIVE_PREFIX_LATIN. A message with none of them is answered without
+        # reading (nor keeping) its distinctive stems — most messages, for most facts.
+        stems = self.stems()
+        if not any((s[:STEM_CHARS_LATIN] in stems if STEM_CHARS_LATIN <= DISTINCTIVE_PREFIX_LATIN else True)
+                   if script == "latin" else s in stems for script, s in wanted):
+            return False
+        by_script = self._part("_distinctive", self._read_distinctive)
+        return any(s in by_script[script] for script, s in wanted)
+
+    def _read_distinctive(self):
+        by_script = {"latin": set(), "other": set()}  # the only two tags of _distinctive_stem
+        for t in self.tokens:
+            if not is_gram(t):
+                script, stem = _distinctive_stem(t)
+                by_script[script].add(stem)
+        return by_script
 
     def own_stems(self, wide):
         """_own_stems: the stems of a reply's own words, None for a message without a reply quote."""
-        own = self._own.get(wide, _PENDING)
-        if own is _PENDING:
-            own = self._own[wide] = _own_stems.__wrapped__(self.content or "", self.generation, wide)
-        return own
+        return self._part("_own_wide" if wide else "_own",
+                          lambda: _own_stems.__wrapped__(self.content or "", self.generation, wide))
 
     def numbers(self):
-        if self._numbers is None:
-            self._numbers = _message_number_kinds(self.content)
-        return self._numbers
+        return self._part("_numbers", lambda: _message_number_kinds(self.content))
 
     def negates(self):
-        if self._negates is None:
-            self._negates = _negates_anything.__wrapped__(self.content or "")
-        return self._negates
+        return self._part("_negates", lambda: _negates_anything.__wrapped__(self.content or ""))
 
-    def sentence_count(self):
-        """How many sentences polarity_flip finds in the message (blank ones left out)."""
-        if self._count is None:
-            self._read_sentences()
-        return self._count
-
-    def whole_side(self):
-        """The side a message of one sentence (or none) is checked by, whatever the fact."""
-        if self._count is None:
-            self._read_sentences()
-        return self._whole
-
-    def _read_sentences(self):
-        chunk = self.content or ""
-        pieces, start = [], 0  # the pieces _SENTENCE_SPLIT_RE.split gives, as (start, end)
-        for found in _SENTENCE_SPLIT_RE.finditer(chunk):
-            if chunk[start:found.start()].strip():
-                pieces.append((start, found.start()))
-            start = found.end()
-        if chunk[start:].strip():
-            pieces.append((start, len(chunk)))
-        self._count = len(pieces)
-        if len(pieces) <= 1:
-            self._whole = _polarity_side(chunk[pieces[0][0]:pieces[0][1]] if pieces else chunk)
-            return
-        # Which sentence holds which stem, as (number of the stem << 32 | number of the sentence), sorted: the
-        # sentences of one stem lie together.
-        sizes, index = array("I"), []
-        for i, (a, b) in enumerate(pieces):
-            stems = _sentence_stems.__wrapped__(chunk[a:b], self.generation)
-            sizes.append(len(stems))
-            index.extend(self._pooled(s)[1] << 32 | i for s in stems)
-        index.sort()
-        self._spans = array("I", (p for span in pieces for p in span))
-        self._sizes, self._index = sizes, array("Q", index)
-
-    def like_sentences(self, item):
-        """The sentences (in their order) whose stems are as near the stems *item* of a fact as polarity_flip
-        demands (Jaccard ≥ POLARITY_MIN_JACCARD). Only the sentences that share a stem with it are looked at; the
-        union is counted, not built: |item ∪ s| = |item| + |s| − |item ∩ s|."""
-        shared, index = {}, self._index
-        for s in item:
-            entry = self.pool.get(s)
-            if entry is None:
-                continue  # no message of the pass holds this stem
-            lo = bisect.bisect_left(index, entry[1] << 32)
-            for k in index[lo:bisect.bisect_left(index, (entry[1] + 1) << 32, lo)]:
-                i = k & 0xFFFFFFFF
-                shared[i] = shared.get(i, 0) + 1
-        n, sizes = len(item), self._sizes
-        return sorted(i for i, k in shared.items() if k / (n + sizes[i] - k) >= POLARITY_MIN_JACCARD)
-
-    def sentence(self, i):
-        return self.content[self._spans[2 * i]:self._spans[2 * i + 1]]
+    def sentences(self):
+        return self._part("_sentences", lambda: _read_sentences(self.content or "", self.generation))
 
     def unsafe(self):
-        if self._unsafe is _PENDING:
-            self._unsafe = classify_unsafe(self.content)
-        return self._unsafe
+        return self._part("_unsafe", lambda: classify_unsafe(self.content))
 
     def snippet(self):
-        if self._snippet is _PENDING:
-            self._snippet = _snippet(self.content)
-        return self._snippet
+        return self._part("_snippet", lambda: _snippet(self.content))
 
 
 def _message_data(m):
@@ -2854,41 +2965,36 @@ def _message_data(m):
     generation = (SETTINGS_GENERATION, id(SETTINGS))
     data = _PASS_DATA.get()
     if data is None:
-        return _MessageData(m, generation, {})
-    d = data["messages"].get(id(m))
+        return _MessageData(m, generation)
+    d = data.messages.get(id(m))
     if (d is None or d.generation != generation or d.content is not m.get("content")
             or d.tokens is not m.get("tokens")):
-        d = data["messages"][id(m)] = _MessageData(m, generation, data["pool"])
+        d = _MessageData(m, generation)
+        data.add(data.messages, id(m), d)
     return d
 
 
-class _FactData:
+class _FactData(_Kept):
     """What one pass has read from the text of a fact (or a memory entry) for the negation and number checks."""
     __slots__ = ("content", "generation", "_negates", "_side", "_item", "_numbers")
 
     def __init__(self, content, generation):
         self.content, self.generation = content, generation
-        self._negates = self._side = self._item = self._numbers = None
+        self.keeper = self.home = None
+        self.parts = 0
+        self._negates = self._side = self._item = self._numbers = _PENDING
 
     def negates(self):
-        if self._negates is None:
-            self._negates = _negates_anything(self.content or "")
-        return self._negates
+        return self._part("_negates", lambda: _negates_anything(self.content or ""))
 
     def side(self):
-        if self._side is None:
-            self._side = _polarity_side(self.content or "")
-        return self._side
+        return self._part("_side", lambda: _polarity_side(self.content or ""))
 
     def item(self):
-        if self._item is None:
-            self._item = _sentence_stems(self.content or "", self.generation)
-        return self._item
+        return self._part("_item", lambda: _sentence_stems(self.content or "", self.generation))
 
     def numbers(self):
-        if self._numbers is None:
-            self._numbers = _fact_number_kinds(self.content)
-        return self._numbers
+        return self._part("_numbers", lambda: _fact_number_kinds(self.content))
 
 
 def _fact_data(content):
@@ -2896,9 +3002,10 @@ def _fact_data(content):
     data = _PASS_DATA.get()
     if data is None:
         return _FactData(content, generation)
-    f = data["facts"].get((content, generation))
+    f = data.facts.get((content, generation))
     if f is None:
-        f = data["facts"][(content, generation)] = _FactData(content, generation)
+        f = _FactData(content, generation)
+        data.add(data.facts, (content, generation), f)
     return f
 
 
@@ -2908,13 +3015,15 @@ def _message_flip(content, d):
     f = _fact_data(content)
     if not (f.negates() or d.negates()):
         return None
-    if d.sentence_count() > 1:
-        keep = d.like_sentences(f.item())
+    sentences = d.sentences()
+    if sentences.count > 1:
+        keep = _like_sentences(sentences, f.item(), d.content, d.generation)
         if not keep:
             return None
-        theirs = _polarity_side(". ".join(d.sentence(i) for i in keep))
+        spans = sentences.spans
+        theirs = _polarity_side(". ".join(d.content[spans[2 * i]:spans[2 * i + 1]] for i in keep))
     else:
-        theirs = d.whole_side()
+        theirs = sentences.whole
     return _flip_sides(f.side(), theirs)
 
 

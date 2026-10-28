@@ -125,7 +125,13 @@ provenance shown to the reviewer).
 a message is made of does not depend on the fact: its stems and rare words, a reply's own words, its numbers by
 kind, whether it negates anything, where its sentences start and end and which of them hold which stem. A pass reads
 these from a message the first time a fact needs them and keeps them, keyed by the message (not by its text), until
-the pass ends; a fact then costs a few set lookups per message. 3.6.1 kept only the numbers, in a cache of 4 MiB of
+the pass ends; a fact then costs a few set lookups per message. What it keeps is held under `corroboration.memory_mb`
+(256 MiB by default), an estimate on the high side — a word many messages hold is counted in each. Past the limit
+the parts that cost least time per byte to read again are let go first — the sets of words of a long paste before
+its numbers and sentences, a part read again just now before one kept since long — and read again when a fact needs
+them: a slower night, the same decisions, and nothing stops being kept because the limit was reached once. A
+message's rare (distinctive) stems are read only for a fact one of whose could be there (its stem is among the
+message's): a window of pasted identifiers does not keep them all. 3.6.1 kept only the numbers, in a cache of 4 MiB of
 text that stopped taking new messages when full: a busy single-user desktop (1 562 messages, 17.6 MiB in the 60-day
 window) was parsed again for every fact past those 4 MiB, and the negation check split every message into sentences
 again for every fact — the pass ran past the gate's 600 s (issue #3). The decisions are those of `polarity_flip` and
@@ -141,15 +147,27 @@ with other work — CPU seconds are rough, the facts scored by the deadline are 
 
 | window | 3.7.0 | 3.7.0, budget raised to 64 MiB | 3.7.1 |
 |---|---|---|---|
-| 190 facts, 1 600 messages, 16.8 MiB | 56 of 190 facts scored at the gate's 600 s; 160 MB | 1 222 s, 174 MB | 86 s, 249 MB |
+| 190 facts, 1 600 messages, 16.8 MiB | 56 of 190 facts scored at the gate's 600 s; 160 MB | 1 222 s, 174 MB | 86 s, 252 MB |
 | the same with a small vocabulary (every paste mentions nearly every fact), 16.6 MiB | 35 of 190 facts at 600 s; 134 MB | — | 45 s, 189 MB |
 | 190 facts, 980 messages, 3.3 MiB (fits the old budget) | 318 s, 71 MB | the same | 52 s, 81 MB |
 
 Memory is peak working set of the process (the loaded window included). What the pass keeps grows with the words of
-its messages — about 5 bytes per character of the window, 90 MB of the 249 — and is released when it ends. The rest
-of the time is reading: tokens when the window is loaded, numbers, months and weekdays, the stems of each sentence,
-and the secret screen of the messages offered as evidence, each once. On the 16.8 MiB and the 3.3 MiB windows the
-night's output of 3.7.0 and 3.7.1 is byte-identical (same clock, same hash seed).
+its messages — on the 16.8 MiB window an estimated 138 MiB (about 90 MB really held) — and is released when it
+ends. The rest of the time is reading: tokens when the window is loaded, numbers, months and weekdays, the stems of
+each sentence, and the secret screen of the messages offered as evidence, each once. On the 16.8 MiB and the
+3.3 MiB windows the night's output of 3.7.0 and 3.7.1 is byte-identical (same clock, same hash seed), and so it is
+under a lower limit:
+
+| `corroboration.memory_mb`, 16.8 MiB window | CPU | peak working set | parts let go and read again |
+|---|---|---|---|
+| 256 (default) | 86 s | 252 MB | 0 |
+| 64 | 192 s | 212 MB | 402 476 |
+| 32 | 237 s | 190 MB | 680 349 |
+
+256 MiB is about twice what that busy window needs, and at most a few per cent of the 8 GB machine the gate shares
+with the agent's other services. A window of pasted identifiers keeps the most per character: 100 messages of 1 000
+random 10-letter words (1.1 MB) held 25 MB at the end of the pass while every part was kept and every rare stem read
+(tracemalloc), 7 MB as it is now, and 3 MB under a 4 MiB limit (5 s, against 2 s without and 11 s for 3.7.0).
 
 **A cloud judge may take a pair out (3.3.0, off by default).** Every (fact, message) pair the count accepts
 has an id (`PairId`: the fact id and a key of session, time and text), and `_pair_counts` is the one rule that

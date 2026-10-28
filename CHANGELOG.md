@@ -13,13 +13,21 @@ is the one in `plugin.json`.
   by hand, the negation check was next: it split each message into sentences and took their stems again for every
   fact (5 min 44 s). A pass now reads each message once — its stems and rare words, a reply's own words, its numbers,
   what it negates, where its sentences are and which of them hold which stem — keeps that by the message, not by its
-  text, with no budget to fall off, and drops it when the pass ends. Every decision is the one 3.7.0 made: the rules
-  for two texts (`polarity_flip`, `numbers_changed`) are kept as they were, the tests hold the pass to them pair
-  by pair, and the night's output is byte-identical to 3.7.0's on the synthetic windows. On one of that shape (190
-  facts, 1 600 messages, 16.8 MiB) the pass takes 86 s of CPU; 3.7.0 had scored 56 of the 190 facts when the gate's
-  600 s ran out, and needed 1 222 s with the budget raised to 64 MiB. The price is memory: what the pass keeps is
-  about 5 bytes per character of the window (peak 249 MB against 174 MB). Profile in `references/scoring.md`.
-  Reported and measured in issue #3 by @sprd-tmu.
+  text, under a memory limit that lets the cheapest parts go rather than stop keeping (below), and drops it when the
+  pass ends. Every decision is the one 3.7.0 made: the rules for two texts (`polarity_flip`, `numbers_changed`) are
+  kept as they were, the tests hold the pass to them pair by pair, and the night's output is byte-identical to
+  3.7.0's on the synthetic windows. On one of that shape (190 facts, 1 600 messages, 16.8 MiB) the pass takes 86 s of
+  CPU; 3.7.0 had scored 56 of the 190 facts when the gate's 600 s ran out, and needed 1 222 s with the budget raised
+  to 64 MiB. Profile in `references/scoring.md`. Reported and measured in issue #3 by @sprd-tmu.
+
+### Added
+- `corroboration.memory_mb` (256 by default, at least 1): what one pass may keep of what it read, estimated on the
+  high side. Past it the parts cheapest to read again per byte are let go and read again when a fact needs them — a
+  slower night, the same decisions; nothing stops being kept because the limit was reached once. The 16.8 MiB window
+  needs an estimated 138 MiB (peak working set 252 MB against 174 MB for 3.7.0 with the 64 MiB budget); at 64 MiB it
+  takes 192 s, at 32 MiB 237 s, with the night's output unchanged. A message's rare stems are read only for a fact one
+  of whose could be there, so a window of pasted identifiers does not keep them all (100 messages of random words:
+  7 MB held at the end of the pass, 3 MB under a 4 MiB limit). In the README and the example config.
 
 ### Tests
 - `test_message_pass_371`: in a window over 4 MiB each message's numbers are parsed once and its sentences split once
@@ -27,8 +35,12 @@ is the one in `plugin.json`.
   numbers, dates, replies, voice messages and messages of many sentences, every fact × message pair is decided as the
   rules for two texts decide it, and all facts in one pass score as each fact alone; a message given another text
   within a pass is read again; what a pass read is released after it, also when it fails.
-- `test_number_cache_issue3` no longer asserts that the cache is bounded: there is no budget any more (the bound was
-  what re-parsed the busy window).
+- `test_message_pass_371`, the limit: on a window of pasted identifiers larger than a 1 MiB limit what the pass holds
+  stays under it (tracemalloc), parts are let go and read again (a count of stem readings), and the scores, the
+  counted pairs and every pair's decision are those without a limit; `corroboration.memory_mb` is validated (below 1,
+  not a number, NaN, infinity: 256 with a warning).
+- `test_number_cache_issue3` no longer asserts that the old cache held at most N entries: the character budget is
+  gone (it was what re-parsed the busy window); the new limit is tested above.
 
 ## 3.7.0 — 2026-10-28
 
