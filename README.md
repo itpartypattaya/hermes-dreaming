@@ -542,6 +542,7 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 | `windows`, `gates`, `weights` | scoring knobs — `references/scoring.md`; `gates.md_confirmed_cooldown_days` (90) is the rest period of a confirmed entry |
 | `precheck.memory_full_pct` | fill level (%) at which a memory file alone wakes the agent (default 85; `0` disables) |
 | `precheck.timeout_sec` | how long the gate waits for `dream.py` before reporting `dream_error` (default 600) |
+| `corroboration.memory_mb` | what one nightly pass may keep of what it read from the window's messages, in MiB (default 256, at least 1; an estimate on the high side). Past it the parts cheapest to read again are let go and read again when a fact needs them — a slower night, the same decisions. Lower it on a small machine; raise it if a large window makes the night slow — `references/scoring.md`, "Each message is read once a pass" |
 | `extract.*` | extraction chunking: `max_messages` 200, `max_chars` 40000, `min_messages` 15, `backfill_days` 60, `max_retries` 3 |
 | `diary.heading`, `diary.keep_sections`, `diary.path` | diary header, rotation and where it lives (`memories/DREAMS.md`) |
 | `memory_loss_alert_fraction` | loss-guard threshold (0.25) — applied to the share of lost entries **and** of lost characters |

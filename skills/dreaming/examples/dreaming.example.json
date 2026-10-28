@@ -57,6 +57,8 @@
             "send_fact_stores": [], "send_no_chat_sessions": false, "max_attempts": 250, "max_cost_usd": 0.05},
 
   "windows": {"themes_days": 14, "corroboration_days": 60, "md_decay_days": 60},
+  "_comment_corroboration": "memory_mb: what one nightly pass may keep of what it read from the window's messages (MiB, estimated on the high side; at least 1). Past it the parts cheapest to read again are let go and read again when needed: the night is slower, its decisions the same. 256 holds several times a busy 60-day window; lower it on a small machine. See references/scoring.md.",
+  "corroboration": {"memory_mb": 256},
   "gates": {"min_score": 0.55, "min_mentions": 3, "new_facts_cap": 30,
             "seen_cooldown_days": 14, "md_ask_cooldown_days": 14,
             "md_confirmed_cooldown_days": 90, "publish_cap": 15},
