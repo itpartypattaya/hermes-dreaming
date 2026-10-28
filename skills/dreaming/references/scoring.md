@@ -121,6 +121,36 @@ Outputs: **mentions** (messages), **ref_days** (distinct local days —
 `timezone` from the config), **evidence** (up to 3 day+snippet pairs, the
 provenance shown to the reviewer).
 
+**Each message is read once a pass (3.7.1).** Every fact is checked against every message of the window, and what
+a message is made of does not depend on the fact: its stems and rare words, a reply's own words, its numbers by
+kind, whether it negates anything, where its sentences start and end and which of them hold which stem. A pass reads
+these from a message the first time a fact needs them and keeps them, keyed by the message (not by its text), until
+the pass ends; a fact then costs a few set lookups per message. 3.6.1 kept only the numbers, in a cache of 4 MiB of
+text that stopped taking new messages when full: a busy single-user desktop (1 562 messages, 17.6 MiB in the 60-day
+window) was parsed again for every fact past those 4 MiB, and the negation check split every message into sentences
+again for every fact — the pass ran past the gate's 600 s (issue #3). The decisions are those of `polarity_flip` and
+`numbers_changed`, the rules for two texts, which stay as they were; `tests/test_message_pass_371.py` holds the pass
+to them pair by pair. The negation check finds the sentences near a fact by the stems they share with it and counts
+the union instead of building it (|item ∪ s| = |item| + |s| − |item ∩ s|), so a long paste costs per fact only the
+sentences that share a word with it.
+
+Seeded synthetic homes (made-up words, 60 % Russian / 40 % English, numbers, times, dates, months, weekdays and
+negations; most messages short, a few hundred long pastes of logs and notes of 17–95 KB; 1 500 cron rows the trust
+filter drops; 20 MEMORY.md entries), a whole `run()` with no judge, one core of an i5-1135G7 laptop that was busy
+with other work — CPU seconds are rough, the facts scored by the deadline are exact:
+
+| window | 3.7.0 | 3.7.0, budget raised to 64 MiB | 3.7.1 |
+|---|---|---|---|
+| 190 facts, 1 600 messages, 16.8 MiB | 56 of 190 facts scored at the gate's 600 s; 160 MB | 1 222 s, 174 MB | 86 s, 249 MB |
+| the same with a small vocabulary (every paste mentions nearly every fact), 16.6 MiB | 35 of 190 facts at 600 s; 134 MB | — | 45 s, 189 MB |
+| 190 facts, 980 messages, 3.3 MiB (fits the old budget) | 318 s, 71 MB | the same | 52 s, 81 MB |
+
+Memory is peak working set of the process (the loaded window included). What the pass keeps grows with the words of
+its messages — about 5 bytes per character of the window, 90 MB of the 249 — and is released when it ends. The rest
+of the time is reading: tokens when the window is loaded, numbers, months and weekdays, the stems of each sentence,
+and the secret screen of the messages offered as evidence, each once. On the 16.8 MiB and the 3.3 MiB windows the
+night's output of 3.7.0 and 3.7.1 is byte-identical (same clock, same hash seed).
+
 **A cloud judge may take a pair out (3.3.0, off by default).** Every (fact, message) pair the count accepts
 has an id (`PairId`: the fact id and a key of session, time and text), and `_pair_counts` is the one rule that
 accepts it. With `judge.mode: veto` and a night the judge covered (verdicts for at least half the pairs it

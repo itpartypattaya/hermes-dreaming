@@ -3,6 +3,33 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.7.1 — 2026-10-29
+
+### Fixed
+- **A busy window fits in the gate's time again.** The nightly count checks every fact against every message of the
+  window. 3.6.1 kept a message's numbers in a cache of 4 MiB of text that stopped taking new messages when full: on a
+  busy single-user desktop (1 562 human messages, 17.6 MiB in the 60-day window) every message past it was parsed
+  again for every fact, and the pass ran past the gate's 600 s every night (killed at 34 min). With that budget lifted
+  by hand, the negation check was next: it split each message into sentences and took their stems again for every
+  fact (5 min 44 s). A pass now reads each message once — its stems and rare words, a reply's own words, its numbers,
+  what it negates, where its sentences are and which of them hold which stem — keeps that by the message, not by its
+  text, with no budget to fall off, and drops it when the pass ends. Every decision is the one 3.7.0 made: the rules
+  for two texts (`polarity_flip`, `numbers_changed`) are kept as they were, the tests hold the pass to them pair
+  by pair, and the night's output is byte-identical to 3.7.0's on the synthetic windows. On one of that shape (190
+  facts, 1 600 messages, 16.8 MiB) the pass takes 86 s of CPU; 3.7.0 had scored 56 of the 190 facts when the gate's
+  600 s ran out, and needed 1 222 s with the budget raised to 64 MiB. The price is memory: what the pass keeps is
+  about 5 bytes per character of the window (peak 249 MB against 174 MB). Profile in `references/scoring.md`.
+  Reported and measured in issue #3 by @sprd-tmu.
+
+### Tests
+- `test_message_pass_371`: in a window over 4 MiB each message's numbers are parsed once and its sentences split once
+  per pass (3.7.0: once per fact); on a seeded Russian / English / Chinese window with negations in other tenses, new
+  numbers, dates, replies, voice messages and messages of many sentences, every fact × message pair is decided as the
+  rules for two texts decide it, and all facts in one pass score as each fact alone; a message given another text
+  within a pass is read again; what a pass read is released after it, also when it fails.
+- `test_number_cache_issue3` no longer asserts that the cache is bounded: there is no budget any more (the bound was
+  what re-parsed the busy window).
+
 ## 3.7.0 — 2026-10-28
 
 ### Fixed
