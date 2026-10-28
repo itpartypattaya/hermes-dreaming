@@ -3,6 +3,11 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.6.1 — 2026-10-28
+
+### Fixed
+- Reuse number parsing within a nightly pass to avoid repeatedly processing the same messages for each fact. The cache is bounded, memory-only, and cleared after the pass.
+
 ## 3.6.0 — 2026-10-27
 
 ### Added

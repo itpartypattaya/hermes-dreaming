@@ -25,6 +25,7 @@ timezone, diary heading, …) lives in a JSON config — see `load_config()` and
 from __future__ import annotations
 import argparse
 import contextlib
+import contextvars
 import copy
 import functools
 import hashlib
@@ -2607,11 +2608,44 @@ def _number_kinds(text):
 # «1200 рублей в месяц», «тихий режим с 00:30» under «между 23:30 и 06:30». It corroborated the old number (0 of 14 such
 # pairs; Laya experiment, 2026-10-22). Changed: for some kind, the person's own words hold a number the fact lacks
 # and lack one it holds — a number restated beside an extra one ("в 19:00, взяли 2 сетки") is no change.
+_NUMBER_CACHE = contextvars.ContextVar("dream_number_cache", default=None)
+_NUMBER_CACHE_ENTRIES = 4096
+_NUMBER_CACHE_CHARS = 4 * 1024 * 1024
+
+
+def _number_cache_pass(fn):
+    """Keep bounded parsed numbers only for the current pass, including nested scoring."""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        if _NUMBER_CACHE.get() is not None:
+            return fn(*args, **kwargs)
+        token = _NUMBER_CACHE.set({"entries": {}, "chars": 0})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _NUMBER_CACHE.reset(token)
+    return wrapped
+
+
+def _cached_number_kinds(text, message=False):
+    cache = _NUMBER_CACHE.get()
+    key = (message, text)
+    if cache is not None and key in cache["entries"]:
+        return cache["entries"][key]
+    source = re.sub(r"\[[^\]]*\]", " ", _own_words(text)) if message else text
+    result = {kind: frozenset(nums) for kind, nums in _number_kinds(source).items()}
+    if (cache is not None and len(cache["entries"]) < _NUMBER_CACHE_ENTRIES
+            and cache["chars"] + len(text or "") <= _NUMBER_CACHE_CHARS):
+        cache["entries"][key] = result
+        cache["chars"] += len(text or "")
+    return result
+
+
 def numbers_changed(content, text):
     """True when *text* (a message; its reply quote and [bracketed] metadata left out, as for the tokens) changes a
     number of the fact *content*."""
-    own = re.sub(r"\[[^\]]*\]", " ", _own_words(text))
-    fact, own = _number_kinds(content), _number_kinds(own)
+    own = _cached_number_kinds(text, message=True)
+    fact = _cached_number_kinds(content)
     return any(own.get(kind) and (own[kind] - nums) and (nums - own[kind]) for kind, nums in fact.items())
 
 
@@ -4335,6 +4369,7 @@ def memory_usage(mem_md):
 # Main pass
 # ---------------------------------------------------------------------------
 
+@_number_cache_pass
 def _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text, now=None, rules=None, veto=None,
                  counted=None):
     """Every fact with its score and what the sections decide on: quarantine class, already in memory or staged
@@ -5362,6 +5397,7 @@ def judge_score(labels_path):
     return 0
 
 
+@_number_cache_pass
 def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         rejected_state_path=None, seen_state_path=None, snapshot_state_path=None, judge=None,
         proposals_state_path=None):

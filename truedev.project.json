@@ -1,0 +1,18 @@
+{
+  "adopted_at": "2026-10-28T06:13:48+00:00",
+  "adopted_from": null,
+  "commands": {
+    "build": null,
+    "e2e": null,
+    "lint": "python -m ruff check --select E,F,BLE --ignore E501 skills tests",
+    "test": "python -m unittest discover -s tests"
+  },
+  "e2e_setup": null,
+  "integration_test": null,
+  "plan_dir": "plans",
+  "second_opinion": {
+    "review": null,
+    "scope": null
+  },
+  "test_setup": null
+}
