@@ -58,6 +58,7 @@ import importlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 HOME = Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"))
@@ -473,8 +474,13 @@ def inventory(listed, expected):
                              f"{role}: duplicate jobs {', '.join(j['id'] for j in group)} ({active} active)"))
         for job in group:
             state = job_state(job)
-            findings.append(("info" if state == "active" else "problem" if state == "unknown" else "warning",
-                             f"{role}: {state}, job {job['id']}"))
+            if state == "unknown":
+                findings.append(("problem", (
+                    f"job {job['id']} ({role}): unrecognised state {job.get('state')!r}, enabled "
+                    f"{job.get('enabled')!r} — the installer changes nothing while it cannot classify a job. Inspect "
+                    f"it with `hermes cron list --all`, then pause, resume or remove it with Hermes and run again")))
+            else:
+                findings.append(("info" if state == "active" else "warning", f"{role}: {state}, job {job['id']}"))
             if state == "paused":
                 findings.append(("info", f"job {job['id']}: paused; existing executions are not cancelled"))
             mode = job.get("no_agent", False)
@@ -495,6 +501,25 @@ def gate_plan(scripts):
         if not dst.is_file() or not filecmp.cmp(src, dst, shallow=False):
             result.append({"action": "copy-gate", "script": script, "source": str(src), "destination": str(dst)})
     return result
+
+
+def copy_gate(source, destination):
+    """Put the gate in place whole or not at all. Hermes runs whatever file sits in scripts/ (the sweep every 15
+    minutes): a copy cut off half-way used to leave a truncated script there. The new copy is written beside the
+    target, flushed to disk and renamed over it; on failure the previous gate stays and no temporary file remains."""
+    destination = Path(destination)
+    fd, tmp = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as out, open(source, "rb") as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, destination)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _preflight(sweep=True):
@@ -565,8 +590,8 @@ def _build(args, supplied, listed, expected, skill):
             raise ValueError(f"--{key.replace('_', '-')}: use a five-field cron expression")
     mode_errors = [m for level, m in findings if level == "problem" and "duplicate jobs" not in m]
     if mode_errors:
-        raise ValueError("; ".join(mode_errors))
-    result = []
+        raise ValueError("nothing was written; " + "; ".join(mode_errors))
+    result, refused = [], []
     labels = {"night": "nightly memory consolidation", "extract": "extract candidate facts",
               "sweep": "clean copies of forgotten facts"}
     for role, script in ROLES.items():
@@ -595,7 +620,11 @@ def _build(args, supplied, listed, expected, skill):
                 if item["updates"]:
                     item["action"] = "update"
                 if job_state(job) == "terminal" and item["updates"]:
-                    raise ValueError(f"job {job['id']}: terminal — manage lifecycle explicitly with Hermes")
+                    refused.append(
+                        f"job {job['id']} ({role}): state {job.get('state')!r} — Hermes holds it as finished or "
+                        f"failed, so it is not changed (it needs: {', '.join(sorted(item['updates']))}). Resume it "
+                        f"(`hermes cron resume {job['id']}`) or remove it (`hermes cron remove {job['id']}`) and run "
+                        f"again; to update the other jobs first, name them with --job-id")
                 result.append(item)
         elif not ids:
             payload = dict(plan, deliver=args.deliver, attach_to_session=args.deliver != "local")
@@ -606,6 +635,9 @@ def _build(args, supplied, listed, expected, skill):
                                provider=args.provider)
             result.append(dict(action="create", script=script, payload=payload, skill=payload.get("skill"),
                                additional=len(group), validation="schedule/delivery validation by Hermes API at apply"))
+    if refused:
+        # The whole request is checked before the first write (3.5.0): one job refused leaves every job and gate as is.
+        raise ValueError("nothing was written; " + "; ".join(refused))
     return result, findings
 
 
@@ -677,8 +709,7 @@ def _run_jobs(args, supplied, expected, jobs):
     for gate in gates:
         dst = Path(gate["destination"])
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(gate["source"], dst)
-        os.chmod(dst, 0o755)
+        copy_gate(gate["source"], dst)
         print(f"OK: copied gate {gate['script']}")
     failed = False
     known_ids = {j["id"] for j in listed}
