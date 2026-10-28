@@ -26,29 +26,30 @@ class NumberCacheTests(unittest.TestCase):
             ("No numbers", "No numbers"),
         ]
         direct = [dream.numbers_changed(fact, text) for fact, text in cases]
-        @dream._number_cache_pass
+        @dream._message_pass
         def cached():
             return [[dream.numbers_changed(fact, text) for fact, text in cases] for _ in range(2)]
         self.assertEqual(cached(), [direct, direct])
-        self.assertIsNone(dream._NUMBER_CACHE.get())
+        self.assertIsNone(dream._PASS_DATA.get())
 
-    def test_changed_text_is_not_stale_and_cache_is_bounded(self):
-        @dream._number_cache_pass
+    def test_changed_text_is_not_stale(self):
+        # 3.7.1: the pass keeps what it read from each message with no budget (a budget that stopped taking new
+        # messages re-parsed the rest once per fact, issue #3), so "the cache is bounded" is no longer asserted here;
+        # a message given another text within a pass: test_message_pass_371.
+        @dream._message_pass
         def check():
-            with mock.patch.object(dream, "_NUMBER_CACHE_ENTRIES", 2):
-                self.assertFalse(dream.numbers_changed("тренировка 1200", "тренировка 1200"))
-                self.assertTrue(dream.numbers_changed("тренировка 1200", "тренировка 1300"))
-                for n in range(10):
-                    dream.numbers_changed("тренировка 1200", f"тренировка {n}")
-                self.assertLessEqual(len(dream._NUMBER_CACHE.get()["entries"]), 2)
+            self.assertFalse(dream.numbers_changed("тренировка 1200", "тренировка 1200"))
+            self.assertTrue(dream.numbers_changed("тренировка 1200", "тренировка 1300"))
+            for n in range(10):
+                dream.numbers_changed("тренировка 1200", f"тренировка {n}")
         check()
-        self.assertIsNone(dream._NUMBER_CACHE.get())
+        self.assertIsNone(dream._PASS_DATA.get())
 
     def test_cache_is_released_when_scoring_raises(self):
-        @dream._number_cache_pass
+        @dream._message_pass
         def broken():
             dream.numbers_changed("цена 1200", "цена 1300")
             raise RuntimeError("interrupted")
         with self.assertRaisesRegex(RuntimeError, "interrupted"):
             broken()
-        self.assertIsNone(dream._NUMBER_CACHE.get())
+        self.assertIsNone(dream._PASS_DATA.get())
