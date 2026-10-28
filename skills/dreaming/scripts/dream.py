@@ -2816,7 +2816,7 @@ class _MessageData:
             sizes.append(len(stems))
             index.extend(self._pooled(s)[1] << 32 | i for s in stems)
         index.sort()
-        self._spans = array("q", (p for span in pieces for p in span))
+        self._spans = array("I", (p for span in pieces for p in span))
         self._sizes, self._index = sizes, array("Q", index)
 
     def like_sentences(self, item):
