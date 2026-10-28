@@ -5,3 +5,5 @@ CLAUDE.md
 HANDOFF.md
 plans/
 .truedev-workflow/
+# Local config of an external workflow tool
+truedev.project.json

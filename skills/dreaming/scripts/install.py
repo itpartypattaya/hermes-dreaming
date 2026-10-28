@@ -66,9 +66,12 @@ def check_gates(home, check_only, r):
     scripts = home / "scripts"
     if not check_only:
         scripts.mkdir(parents=True, exist_ok=True)
+        copy_gate = _load_install_cron(home).copy_gate  # whole or not at all: the previous gate survives a failure
         for g in GATES:
-            shutil.copyfile(SKILL_DIR / "scripts" / g, scripts / g)
-            os.chmod(scripts / g, 0o755)
+            try:
+                copy_gate(SKILL_DIR / "scripts" / g, scripts / g)
+            except OSError as exc:
+                r.bad(f"cannot copy {g} into {scripts}: {exc} — the previous copy, if any, is kept; re-run install.py")
     for g in GATES:
         dst = scripts / g
         if not dst.is_file():
