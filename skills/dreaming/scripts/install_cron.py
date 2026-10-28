@@ -59,6 +59,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HOME = Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"))
@@ -503,23 +504,36 @@ def gate_plan(scripts):
     return result
 
 
+_LEFTOVER_AGE_S = 600
+
+
 def copy_gate(source, destination):
     """Put the gate in place whole or not at all. Hermes runs whatever file sits in scripts/ (the sweep every 15
     minutes): a copy cut off half-way used to leave a truncated script there. The new copy is written beside the
     target, flushed to disk and renamed over it; on failure the previous gate stays and no temporary file remains."""
     destination = Path(destination)
+    for leftover in destination.parent.glob(f".{destination.name}.*.tmp"):  # a run killed before its cleanup
+        with contextlib.suppress(OSError):
+            if time.time() - leftover.stat().st_mtime > _LEFTOVER_AGE_S:  # younger: an installer still writing
+                leftover.unlink()
     fd, tmp = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     try:
         with os.fdopen(fd, "wb") as out, open(source, "rb") as src:
             shutil.copyfileobj(src, out)
             out.flush()
+            os.chmod(tmp, 0o755)  # before the sync, so the mode is on disk with the contents
             os.fsync(out.fileno())
-        os.chmod(tmp, 0o755)
         os.replace(tmp, destination)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+    if os.name == "posix":  # the rename itself survives a power cut only once the directory is synced
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def _preflight(sweep=True):

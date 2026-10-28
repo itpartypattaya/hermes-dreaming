@@ -103,6 +103,25 @@ class GateCopyTests(unittest.TestCase):
         self.assertIn(f"cannot copy {ic.SWEEP_SCRIPT}", out.getvalue())
         self.assert_previous_gate_kept(ic.SWEEP_SCRIPT)
 
+    def test_a_temporary_copy_left_by_a_killed_installer_is_removed_by_the_next_run(self):
+        """SIGKILL or a closed console between writing the copy and renaming it skips every cleanup in the process;
+        the next run removes such a leftover. A fresh one may belong to an installer still running and stays
+        (Codex review of #11)."""
+        scripts = self.home / "scripts"
+        (scripts / ic.SWEEP_SCRIPT).write_text(PREVIOUS, encoding="utf-8")
+        stale = scripts / f".{ic.SWEEP_SCRIPT}.k1ll3d.tmp"
+        fresh = scripts / f".{ic.SWEEP_SCRIPT}.runn1ng.tmp"
+        for leftover in (stale, fresh):
+            leftover.write_text(PREVIOUS[:20], encoding="utf-8")
+        hour_ago = stale.stat().st_mtime - 3600
+        os.utime(stale, (hour_ago, hour_ago))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = support.install.main(["--hermes-home", str(self.home)])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertFalse(stale.exists(), "the leftover of a killed run is gone")
+        self.assertTrue(fresh.exists(), "a copy another installer may still be writing is left alone")
+
     @unittest.skipUnless(os.name == "posix", "file modes are POSIX")
     def test_a_copied_gate_is_executable(self):
         self.ready()

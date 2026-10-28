@@ -6,7 +6,7 @@ is the one in `plugin.json`.
 ## 3.6.2 — 2026-10-28
 
 ### Fixed
-- Gates are copied whole or not at all. `install_cron.py --upgrade` and `install.py` write the new gate beside the old one, flush it and rename it over; a copy interrupted half-way used to leave a truncated script that the 15-minute sweep then ran. On failure the previous gate stays, no temporary file remains, and `install.py` reports the failure as a problem instead of a traceback.
+- Gates are copied whole or not at all. `install_cron.py --upgrade` and `install.py` write the new gate beside the old one, flush it and rename it over; a copy interrupted half-way used to leave a truncated script that the 15-minute sweep then ran. The mode is set before the flush and, on POSIX, the directory is synced after the rename, so the new gate survives a power cut. On failure the previous gate stays and no temporary file remains; a leftover of a killed installer (older than 10 minutes) is removed by the next run; and `install.py` reports the failure as a problem instead of a traceback.
 - A job the cron installer refuses to change is named with its role, its state and the fix: a finished or failed job that needs a stock prompt update (`hermes cron resume` / `hermes cron remove`, or `--job-id` for the other jobs), a record whose state the installer cannot classify (inspect it with `hermes cron list --all`). As in 3.5.0 the whole run still stops before the first write and exits 1.
 - `--memory-explain` treats an attempt row of an unknown shape as `unavailable` (exit 1), like a damaged outcome row; `--memory-format text` no longer ends in a traceback on it. Only the stage name, fact/version ids and the truncation flag leave the journal.
 
