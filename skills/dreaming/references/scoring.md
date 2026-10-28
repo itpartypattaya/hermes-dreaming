@@ -524,11 +524,35 @@ pairs; the measure of the shipped pipeline on that copy is still to be run.
 pairs that share at least max(2, ⌈0.7·|S|⌉) stems with the shorter side S. Since stopwords are kept, "share two
 stems" alone matches almost every pair; a prefix filter makes it cheap without changing the result: S's |S| − that
 + 1 rarest stems must hold one of the shared ones, so only the facts under those stems are looked at. Short facts
-come through their own path (the same numbers / @-handles; the same text). The pair checks of a night are capped by
-`duplicates.max_pair_checks` (200 000); past it the night skips the search, says `stats.duplicate_pairs_skipped:
-budget` and raises the `duplicates_budget` alert once per cooldown. 5000 synthetic facts drawn from a small
-vocabulary (the worst case for the index) take about 6 s and 7 400 checks on a laptop (i5-1135G7); most of the time
-goes to reading weekdays and months in each text.
+come through their own path (the same numbers / @-handles; the same text), and since 3.7.0 meet only the facts of
+that group that hold their rarest word. The pair checks of a night are capped by `duplicates.max_pair_checks`
+(200 000); past it the night skips the search, says `stats.duplicate_pairs_skipped: budget` and raises the
+`duplicates_budget` alert once per cooldown.
+
+Stems alone are not enough for facts that look alike: dated reminders that differ only by date and time, one
+sentence said of many people. Nothing in their stems is rare, every such fact was a candidate of every other, and
+the checks grew with the square of the store. Since 3.7.0 the search also blocks by what the rule demands of
+numbers and names — those of one side a subset of the other's. Two sides with numbers then share the rarest number
+of the side with fewer: the other is listed under it, or that side is listed under its own rarest number, which
+the other holds. Names alike. For each kind of other side (with numbers or not, with names or not) the search reads
+the smallest list that may hold it, and shows the rule a pair only when it shares enough stems and its numbers and
+names are subsets one way. Each of these is a condition the rule itself sets, so the pairs found are those of
+comparing every pair (`tests/test_duplicate_scale_370.py` checks it against all pairs of seeded stores).
+
+A seeded synthetic store (made-up words, 60 % Russian / 40 % English, 22 templates with names, places, numbers
+and dates, about 5 % retellings and 5 % hard negatives), one core of an i5-1135G7 laptop, default settings. The
+laptop was busy with other work, so the seconds (CPU time) are rough; checks and memory
+(tracemalloc peak) are exact:
+
+| facts | 3.6.2: CPU, peak memory, checks | 3.7.0: CPU, peak memory, checks |
+|---|---|---|
+| 1 000 | 0.8 s, 5 MB, 3 614 | 0.3 s, 5 MB, 172 |
+| 5 000 | 5.0 s, 31 MB, 89 729 | 1.6 s, 21 MB, 1 111 |
+| 20 000 | 17.2 s to give up, 100 MB, skipped: past 200 000 (1 442 437 needed) | 19.0 s, 71 MB, 4 654 |
+| 50 000 | 103.6 s to give up, 220 MB, skipped: past 200 000 | 32.6 s, 169 MB, 13 594 |
+
+The rest of the time is reading words, numbers, months and weekdays of each fact once; weekdays are looked up
+since 3.7.0 instead of tried cell by cell, which was most of it.
 
 **Who takes part.** Facts of the main store only (chat stores never: a session in a chat writes to its own
 database). Not: quarantined, rejected, longer than `duplicates.max_chars` (2000), merged copies, facts in tonight's

@@ -30,7 +30,7 @@ wakeup or network call is added, no correction text is copied into a lesson cach
 trust, ranking or MEMORY.md. Revisions count as one active outcome per attempt; these remain agent reports.
 
 The default is the configured profile store. A scoped store requires an explicit `--memory-store` already allowed by
-`chat_stores.promote_from`; reports never join stores. Old providers report `unsupported` and continue normal dreaming.
+`chat_stores.promote_from`; reports never join stores, and since 3.7.0 the JSON summary names its store (`"store"`). Old providers report `unsupported` and continue normal dreaming.
 See [docs/experience.md](docs/experience.md) for retention, erase boundaries, JSON output and limitations.
 
 ## How it works

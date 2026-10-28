@@ -3,6 +3,36 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.7.0 — 2026-10-28
+
+### Fixed
+- **The duplicate search keeps working on large stores.** Its candidates came from the stems alone, and a store of
+  facts that look alike — dated reminders, one sentence said of many people — made every such fact a candidate of
+  every other: the checks grew with the square of the store, and from about 7 500 facts of a synthetic store on the
+  night ran out of `duplicates.max_pair_checks` and skipped the section for good (50 000 facts: 104 s of CPU to
+  find that out; now 33 s, 169 MB and 13 594 checks for the whole search). The search now also narrows by what the
+  rule demands of numbers and names (those of one side are a subset of the other's, so two sides with numbers share
+  the rarest number of the side with fewer): for each kind of other side it reads the smallest list that may hold
+  it. The rule still decides every pair, and the pairs found are those of comparing every pair; nothing is merged
+  without the human's "yes" to the number, with the versions shown. Short facts meet only the facts that hold
+  their rarest word. Profile in `references/scoring.md`.
+- Reading weekdays in a text looks the words up instead of trying the ~100 weekday cells one by one, and stems and
+  Latin folding are memoized (bounded, per process): most of a large store's time went there, in the nightly
+  scoring too. The day a word names is the same as before.
+
+### Added
+- The task-outcome summary (`--memory-outcomes`, `"task_outcomes": true`) names its store — `"store": "profile"`,
+  or the key of the one `--memory-store` asked for — so repeated problems read by store and reason; one report
+  never counts two stores together. Counts, reason and outcome codes only, as before.
+
+### Tests
+- `test_duplicate_scale_370`: a 1 600-fact store of look-alike facts stays within the default budget (3.6.2 ran
+  out of it); on seeded Russian / English stores with retellings, short facts and hard negatives the pairs are
+  exactly those of the rule over every pair; hard negatives (another number or date, a negation, another person,
+  one word swapped) are not paired, retellings are.
+- `test_repeated_problems_370`: the summary names its store and two promoted stores are reported apart; revisions
+  that change the reason are one attempt under the final reason; single, repeated and mixed stay agent reports.
+
 ## 3.6.2 — 2026-10-28
 
 ### Fixed
