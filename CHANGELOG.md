@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.0 — 2026-10-30
 
 ### Fixed
 - **MEMORY.md is offered only what a person stands behind.** A fact could be promoted by use alone (≥3 recalls and
@@ -14,7 +14,11 @@ is the one in `plugin.json`.
   confirmed it, the store reports it as `confirmed` and it is promoted by the usual rule. What the person said or
   confirmed is promoted as before. A store that keeps no origins (holographic before 0.15.0, a fact stored before
   it, the sqlite / jsonl sources) is promoted by the corroboration gate alone, as before: nothing stops being
-  promoted there. `--explain` reports the gate with the origin. Tests: `tests/test_promote_confirmed.py`.
+  promoted there. `--explain` prints the origin and why it stops a promotion (Codex review: it printed only `promotion_ready False`, as for weak corroboration). Tests: `tests/test_promote_confirmed.py`.
+- **`--memory-explain` keeps how many candidates changed before the record.** holographic 0.21.0 writes `changed` on a stage when another writer changed or forgot a candidate between retrieval and the journal record; the reader copied only `stage`, `facts` and `truncated`, so such a stage read like an empty one. The count now crosses (a non-negative integer; another shape is left out, as an optional diagnostic) and the text report says "(N changed before the record)" (Codex review, 2026-10-30). Test: `tests/test_dream_experience.py`.
+
+### Changed
+- With holographic 0.23.0, feedback no longer moves a fact's `updated_at`, so the recency and consolidation signals no longer count a fact voted on lately as recent: scores of such facts drift down to their real age.
 
 ## 3.7.4 — 2026-10-29
 

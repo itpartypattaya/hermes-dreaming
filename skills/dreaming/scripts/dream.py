@@ -7264,6 +7264,11 @@ def explain(fact_id, mem_md, corr_days):
     for e in meta.get("evidence") or []:
         print(f"    {e['day']}: {e['text']}")
     scored = {"meta": meta, "helpful_count": f.get("helpful_count"), "origin": f.get("origin")}
+    if f.get("origin") == "inferred":
+        print("origin inferred: an agent's conclusion nobody confirmed is not promoted; people repeating it "
+              "offer it to `confirm`")
+    else:
+        print(f"origin {f.get('origin') or 'not recorded'}: corroboration decides")
     print(f"promotion_ready {promotion_ready(scored)}; in_memory {already_in_memory(f['content'], memory_text)}; "
           f"unsafe {classify_unsafe(f['content'])}; ephemeral {is_ephemeral_fact(f['content'])}; "
           f"expired {is_expired_event(f['content'])}")

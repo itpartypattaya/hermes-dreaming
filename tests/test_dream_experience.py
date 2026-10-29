@@ -92,6 +92,18 @@ class ExperienceReports(unittest.TestCase):
         self.assertEqual(report["outcomes"][0]["event_id"], "e1")
         self.assertNotIn("private correction", json.dumps(report))
 
+    def test_a_stage_keeps_how_many_candidates_changed_before_the_record(self):
+        """holographic 0.21+ writes `changed` on a stage when another writer changed or forgot a candidate between
+        retrieval and the record: an empty stage and one whose candidates all changed must not read alike."""
+        stages = [{"stage": "lexical_candidates", "facts": [], "truncated": False, "changed": 1},
+                  {"stage": "rerank", "facts": [], "truncated": False},
+                  {"stage": "bad", "facts": [], "changed": "2"}, {"stage": "worse", "facts": [], "changed": True}]
+        self.conn.execute("UPDATE memory_attempts SET stages=? WHERE attempt_id='a1'", (json.dumps(stages),))
+        self.conn.commit()
+        report = self.module.read_report(self.db, "a1")
+        self.assertEqual([s.get("changed") for s in report["stages"]], [1, None, None, None])
+        self.assertIn("lexical_candidates: (1 changed before the record)", self.module.render(report))
+
     def test_actual_cli_reads_only_the_configured_store(self):
         self.add_outcome("e1")
         config = self.db.parent / "dreaming.json"

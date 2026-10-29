@@ -106,6 +106,11 @@ class ExplainSaysWhy(_Holographic):
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 dream.explain(fact_id, str(self.mem_md), 60)
             self.assertIn(f"promotion_ready {ready};", out.getvalue())
+            if fact_id == 1:  # why: the origin, not missing corroboration (Codex review)
+                self.assertIn("origin inferred: an agent's conclusion nobody confirmed is not promoted",
+                              out.getvalue())
+            else:
+                self.assertIn("origin said", out.getvalue())
 
 
 if __name__ == "__main__":
