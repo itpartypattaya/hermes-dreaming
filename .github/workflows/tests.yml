@@ -99,3 +99,28 @@ jobs:
       # with no effect on behaviour (review of 2.9.8).
       - name: ruff
         run: ruff check --select E,F,BLE --ignore E501 skills tests
+
+  # The install-time scanner and admission checks the Hermes plugin catalog and `hermes plugins install` run (3.7.3:
+  # 3.7.2 passed every test here and was still refused by the installer's scanner).
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install hermes-agent (through uv with core's overrides)
+        run: |
+          python -m pip install "uv==0.13.3"
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('hermes-agent/pyproject.toml', 'rb')).get('tool', {}).get('uv', {}).get('override-dependencies', [])))" > hermes-overrides.txt
+          python -m uv pip install --system --overrides hermes-overrides.txt -e ./hermes-agent
+      - name: hermes plugins validate
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+        run: hermes plugins validate --install-deps "$GITHUB_WORKSPACE/plugin" </dev/null

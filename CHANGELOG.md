@@ -3,6 +3,20 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.7.3 — 2026-10-29
+
+### Fixed
+- **3.7.2 could not be installed: Hermes' install-time scanner blocked it.** The list of words an instruction can
+  start with, added in 3.7.2 for the fast quarantine, spelled one start as the literal phrase the scanner reads as a
+  DAN jailbreak (`jailbreak_dan`, critical), so `hermes plugins install` refused the plugin with a "dangerous"
+  verdict that `--force` does not override. The start is now the shorter `"dan "`: the prefilter only has to find
+  where a match can begin, so the decisions are the same (the exact pattern still decides; the structural test
+  still checks every start is covered) and a few more places are tried.
+
+### Tests
+- CI runs `hermes plugins validate` (the scanner the installer and the plugin catalog run) on the package, as the
+  holographic plugin's CI does, so a release the installer would refuse fails before it is tagged.
+
 ## 3.7.2 — 2026-10-29
 
 ### Fixed
