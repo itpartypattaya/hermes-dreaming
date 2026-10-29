@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.22.1 (`be7702a`), `screen.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.22.1 (`e385934`), `screen.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -12,7 +12,7 @@ import re
 import unicodedata
 
 SOURCE_VERSION = "0.22.1"
-SOURCE_COMMIT = "be7702a"
+SOURCE_COMMIT = "e385934"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -509,14 +509,36 @@ def _starts_pattern(starts) -> re.Pattern:
     return re.compile(_trie(starts, blank=r"\s+"))
 
 
-def _starts(rx: re.Pattern, folded: str) -> list:
-    """Every position where *rx* matches *folded*, overlapping ones too."""
-    found = []
+def _starts(rx: re.Pattern, folded: str):
+    """Every position where *rx* matches *folded*, overlapping ones too, ascending, one at a time: a screen that has
+    its answer at the first one reads no further (Codex review of PR #53: a list of them all made a key at the start
+    of 900 KB of "sk-" take 0.16 s and 11 MB, where a scan stopped at once)."""
     m = rx.search(folded)
     while m:
-        found.append(m.start())
+        yield m.start()
         m = rx.search(folded, m.start() + 1)
-    return found
+
+
+def _merged(first, second):
+    """Two ascending runs of positions as one, without repeats, one at a time."""
+    a, b = next(first, None), next(second, None)
+    while a is not None or b is not None:
+        if b is None or (a is not None and a < b):
+            yield a
+            a = next(first, None)
+        elif a is None or b < a:
+            yield b
+            b = next(second, None)
+        else:
+            yield a
+            a, b = next(first, None), next(second, None)
+
+
+def _kept(starts, seen: list):
+    """*starts*, one at a time, each also kept in *seen* for the patterns that read them after."""
+    for start in starts:
+        seen.append(start)
+        yield start
 
 
 def _matches(rx: re.Pattern, text: str, starts):
@@ -672,8 +694,8 @@ def _secret_shapes(text: str, folded: str | None = None):
     folded = _folded(text) if folded is None else folded
     if folded is None:
         return _RE_SECRET_SHAPE.finditer(text)
-    starts = {m.start() for m in _RE_SECRET_NAME_START.finditer(text)} | set(_starts(_RE_AUTH_SCHEME_START, folded))
-    return _matches(_RE_SECRET_SHAPE, text, sorted(starts))
+    starts = _merged((m.start() for m in _RE_SECRET_NAME_START.finditer(text)), _starts(_RE_AUTH_SCHEME_START, folded))
+    return _matches(_RE_SECRET_SHAPE, text, starts)
 
 
 def _injection_matches(text: str, folded: str | None = None):
@@ -689,7 +711,7 @@ def _asks_to_send(text: str, folded: str | None = None) -> bool:
     folded = _folded(text) if folded is None else folded
     if folded is None:
         return bool(_RE_EXFILTRATION.search(text))
-    starts = sorted(set(_starts(_RE_EXFILTRATION_START, folded)) | {m.start() for m in _RE_ENV_START.finditer(text)})
+    starts = _merged(_starts(_RE_EXFILTRATION_START, folded), (m.start() for m in _RE_ENV_START.finditer(text)))
     return next(_matches(_RE_EXFILTRATION, text, starts), None) is not None
 
 
@@ -701,9 +723,11 @@ def _credential_matches(text: str, folded: str | None = None):
         for rx in _RE_CREDENTIALS:
             yield from rx.finditer(text)
         return
-    starts = sorted(set(_starts(_RE_CREDENTIAL_START, folded)) | {m.start() for m in _RE_ENV_START.finditer(text)})
-    for rx in _RE_CREDENTIALS:
-        yield from _matches(rx, text, starts)
+    seen: list = []
+    yield from _matches(_RE_CREDENTIALS[0], text, _kept(_merged(_starts(_RE_CREDENTIAL_START, folded), (
+        m.start() for m in _RE_ENV_START.finditer(text))), seen))
+    for rx in _RE_CREDENTIALS[1:]:
+        yield from _matches(rx, text, seen)  # the first pattern read them all
 
 
 def _has_credential(text: str, folded: str | None = None) -> bool:
@@ -717,6 +741,11 @@ def _credential_word(text: str, folded: str | None = None) -> str | None:
     credential (RFC #20). *folded*: _folded(text), when the caller has it."""
     if _token_shape_in(text):
         return ""
+    return _word_with_value(text, folded)
+
+
+def _word_with_value(text: str, folded: str | None = None) -> str | None:
+    """_credential_word without the token shapes."""
     for m in _credential_matches(text, folded):
         if _holds_a_secret(m):
             return (m.groupdict().get("word") or "").strip()
@@ -934,16 +963,23 @@ _ALLOWED_CONTROLS = frozenset("\n\t\r")
 def _hidden_char(text: str) -> bool:
     """A character that renders as nothing but a model reads: format (Cf: zero-width, bidi, Unicode tag characters
     that smuggle invisible ASCII), control and private use; the fixed _INVISIBLE list missed most (review 2026-10-14).
-    A text printable once the whitespace of _RE_VISIBLE_SPACE is out holds none (0.22.1: str.isprintable refuses
-    every format, control and private-use character), and is not read character by character."""
-    if _RE_VISIBLE_SPACE.sub("", text).isprintable():
-        return False
-    return any(c in _INVISIBLE or (unicodedata.category(c) in ("Cf", "Cc", "Co") and c not in _ALLOWED_CONTROLS)
-               for c in text)
+    A piece printable once the whitespace of _RE_VISIBLE_SPACE is out holds none (0.22.1: str.isprintable refuses
+    every format, control and private-use character), and is not read character by character; the text is read a
+    piece at a time, so a hidden character at its start is found without reading the rest."""
+    for at in range(0, len(text), _HIDDEN_PIECE):
+        piece = text[at:at + _HIDDEN_PIECE]
+        if not _RE_VISIBLE_SPACE.sub("", piece).isprintable() and any(
+                c in _INVISIBLE or (unicodedata.category(c) in ("Cf", "Cc", "Co") and c not in _ALLOWED_CONTROLS)
+                for c in piece):
+            return True
+    return False
 
 
 # Line breaks, tabs and the spaces other than " " (no-break, en, em, thin, ideographic…, line and paragraph
 # separators): not printable to str.isprintable, never hidden text.
+_HIDDEN_PIECE = 8192
+
+
 _RE_VISIBLE_SPACE = re.compile(r"[\t\n\r\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
 
 
@@ -985,9 +1021,11 @@ _RE_SECRET_SHAPE = re.compile(
 
 def _secret_in(text: str) -> bool:
     """Does *text* look like it holds a secret? A credential, a secret's shape, or an encoded blob."""
+    if _token_shape_in(text):
+        return True  # before folding the text: _has_credential looks for these first
     folded = _folded(text)
-    return _has_credential(text, folded) or any(not _placeholder_assignment(m) for m in _secret_shapes(text, folded)) \
-        or bool(_RE_BLOB.search(text))
+    return _word_with_value(text, folded) is not None \
+        or any(not _placeholder_assignment(m) for m in _secret_shapes(text, folded)) or bool(_RE_BLOB.search(text))
 
 
 def _placeholder_assignment(match: re.Match) -> bool:

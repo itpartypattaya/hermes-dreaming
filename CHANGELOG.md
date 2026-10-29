@@ -11,13 +11,13 @@ is the one in `plugin.json`.
   case-blind patterns gave the regex engine no character to skip to, so it tried every alternative at every
   position: 0.84 MB of Russian prose took 17 s, and on issue #3's busy desktop (17.6 MiB in the window, mostly
   Russian) the screen alone could take minutes. holographic 0.22.1 tries a pattern only where one of its words can
-  begin, with 0.22.0's decisions; the copy is now that release's (`holo_screen.py`, `be7702a`), `_screened_text`
+  begin, with 0.22.0's decisions; the copy is now that release's (`holo_screen.py`, `e385934`), `_screened_text`
   reads the credential matches through it, and the dream's own `PASSWORD_MARKER_RE` and `INJECTION_RE` are tried the
   same way. Every pattern is 3.7.1's to the character. Measured on the corpora of the report (Python 3.12):
   Russian prose 0.84 MB 17.2 s → 0.40 s, 0.22 MB 4.5 s → 0.11 s; 1 MB of log lines 3.0 s → 0.47 s; 1 MB of hex ids
   6.3 s → 0.72 s; texts up to 1000 characters, median 4.6 ms → 0.4 ms.
 - The new copy changes nothing else: holographic's `screen.py` is the same in 0.18.2 (the previous copy) and in
-  0.22.0, and 0.22.1 changes only where its patterns are tried. CI checks out `be7702a`.
+  0.22.0, and 0.22.1 changes only where its patterns are tried. CI checks out `e385934`.
 
 ### Tests
 - `tests/test_screen_speed_372.py`: a megabyte of Russian prose against 3.7.1 on a twentieth of it (fails on 3.7.1);
