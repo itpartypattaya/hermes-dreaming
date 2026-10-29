@@ -3982,7 +3982,7 @@ INJECTION_RE = re.compile(
 _PASSWORD_MARKER_STARTS = ("парол", "pass", "seed", "секретн", "api", "private ", "2fa", "пин", "pin", "код от",
                            "密码", "密碼", "口令", "密钥", "密鑰", "私钥", "私鑰")
 _INJECTION_STARTS = ("игнорир", "ignore ", "disregard ", "do not tell", "system prompt", "forget ", "забуд",
-                     "запомни", "системн", "developer mode", "god mode", "dan mode", "режим разработчика",
+                     "запомни", "системн", "developer mode", "god mode", "dan ", "режим разработчика",
                      "new instruction", "новые инструкции", "покажи", "раскрой", "выведи", "отправь", "перешли",
                      "скинь", "запиши в", "сохрани в", "добавь в", "save to", "save in", "store to", "store in",
                      "add to", "add in", "write to", "write in", "jailbreak")
