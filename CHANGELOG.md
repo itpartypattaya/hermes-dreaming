@@ -3,6 +3,19 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Fixed
+- **MEMORY.md is offered only what a person stands behind.** A fact could be promoted by use alone (≥3 recalls and
+  ≥1 helpful mark) or by its words coming up in chat, so an agent's conclusion nobody confirmed — holographic
+  origin `inferred` — reached durable memory the more the agent leaned on it (holographic F1 research,
+  2026-10-29). Such a fact is no longer a promotion, nor a dated one-off event, by any of the three corroboration
+  routes. When people said it again on two days, the night offers it to `confirm` instead, as before; once a person
+  confirmed it, the store reports it as `confirmed` and it is promoted by the usual rule. What the person said or
+  confirmed is promoted as before. A store that keeps no origins (holographic before 0.15.0, a fact stored before
+  it, the sqlite / jsonl sources) is promoted by the corroboration gate alone, as before: nothing stops being
+  promoted there. `--explain` reports the gate with the origin. Tests: `tests/test_promote_confirmed.py`.
+
 ## 3.7.4 — 2026-10-29
 
 No change in what the dream does: the quarantine runs the same holographic 0.22.1 screen. The copy of that

@@ -4143,7 +4143,13 @@ def classify_unsafe(content):
 # ---------------------------------------------------------------------------
 
 def promotion_ready(item):
-    """Require corroboration, not only a high internal provider score."""
+    """Require corroboration, not only a high internal provider score — and a person behind the fact. An agent's
+    conclusion nobody confirmed (origin `inferred`) is not promoted however often it is recalled, marked helpful or
+    its words come up in chat: people saying it again offers it to `confirm`, and a confirmed one reads as
+    `confirmed` (holographic F1 research, 2026-10-29). Without a known origin (a provider before 0.15.0, a fact
+    stored before it, another fact source) the corroboration rule alone decides, as before."""
+    if item.get("origin") == "inferred":
+        return False
     meta = item["meta"]
     helpful = item.get("helpful_count") or 0
     return (
@@ -7257,7 +7263,7 @@ def explain(fact_id, mem_md, corr_days):
           f"days_old {meta['days_old']}")
     for e in meta.get("evidence") or []:
         print(f"    {e['day']}: {e['text']}")
-    scored = {"meta": meta, "helpful_count": f.get("helpful_count")}
+    scored = {"meta": meta, "helpful_count": f.get("helpful_count"), "origin": f.get("origin")}
     print(f"promotion_ready {promotion_ready(scored)}; in_memory {already_in_memory(f['content'], memory_text)}; "
           f"unsafe {classify_unsafe(f['content'])}; ephemeral {is_ephemeral_fact(f['content'])}; "
           f"expired {is_expired_event(f['content'])}")
