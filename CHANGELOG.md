@@ -3,7 +3,10 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.7.4 — 2026-10-29
+
+No change in what the dream does: the quarantine runs the same holographic 0.22.1 screen. The copy of that
+screen is now made whole and checked harder before it is written.
 
 ### Internal
 - **`tools/vendor_screen.py` copies the provider's `screen.py` whole**, between a header comment and
