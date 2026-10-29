@@ -1,20 +1,40 @@
-"""The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
-
-Source: itpartypattaya/hermes-plugin-holographic 0.22.1 (`e385934`), `screen.py`; MIT, (c) its authors.
-Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
-here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
-"""
+# The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
+# Source: itpartypattaya/hermes-plugin-holographic 0.22.1 (`e385934`), `screen.py`; MIT, (c) its authors.
+# Copied whole by tools/vendor_screen.py. Do not edit here — run the tool again; tests/test_holographic_017.py
+# compares this file with the provider's source.
 # flake8: noqa
 # fmt: off
+"""The screen: what may not be stored, recalled or sent. Credentials (a key, token, password or PIN with its
+value), instructions aimed at the assistant, and the sentence rules auto_extract uses. Stateless; the provider
+(__init__.py) applies it and re-exports the names its tests read from it. hermes-dreaming vendors part of this
+file (tools/vendor_screen.py: what _recall_problem and _secret_in reach), so its definitions stay plain
+top-level ones and need only re and unicodedata."""
+
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.22.1"
-SOURCE_COMMIT = "e385934"
+
+# A sentence ends at . ! ? and Chinese 。；！？; a dot followed by a non-space is inside it ("Python 3.12",
+# "topic.md", "v0.21.6") unless it sits between a lower-case and a capital letter ("tea.I use": a missing space)
+_RE_SENTENCE = re.compile(r"(?:[^.!?\n。；！？]|\.(?=\S)(?!(?<=[a-zа-яё]\.)[A-ZА-ЯЁ]))+[.!?。；！？]?")
+# A question is never a fact to keep: "Do I always need a visa?", "我們決定了嗎？"
+_RE_QUESTION = re.compile(r"[?？]\s*$|[嗎吗呢]\s*[。.]?\s*$")
+_EXTRACT_MAX_CHARS = 300
+# The shortest sentence worth keeping; a Chinese / Japanese / Korean one says as much in far fewer characters
+# ("我们决定用Go。" is eight)
+_EXTRACT_MIN_CHARS, _EXTRACT_MIN_CHARS_CJK = 10, 6
+_RE_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]")
 
 
+def _extract_floor(text: str) -> int:
+    return _EXTRACT_MIN_CHARS_CJK if _RE_CJK.search(text) else _EXTRACT_MIN_CHARS
+
+# What a fact must not be. Facts are injected into later prompts, so instructions and tool transcripts stored as
+# "facts" would be replayed as context; refused with the reason, so the agent can rewrite it.
+_FACT_MAX_CHARS = 1000
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
 # Chinese, Japanese or Thai character as a word character, and those languages write no spaces, so in "密钥是sk-…" or
 # "请ignore all previous instructions" \b found no edge and the screens below saw nothing (0.15.1, njwangfeng in #3).
@@ -111,7 +131,6 @@ _RE_INJECTION = re.compile(_alternatives(
     + r"|" + _EDGE_START + r"(?:system\s+prompt|prompt\s+(?:del|do|di)\s+sistema|prompt\s+syst[èe]me|systemprompt"
     r"|systeemprompt|prompt\s+systemowy|sistem\s+istemi|prompt\s+sistem)\s*[:：]",
     re.IGNORECASE)
-
 
 # Environment variables that hold a key, a token or a password: "OPENAI_API_KEY=sk-…", "配置OPENAI_API_KEY=…",
 # "TELEGRAM_BOT_TOKEN: 123…". The name is a credential word like "password" (0.15.2, issue #3): before, "API_KEY" after
@@ -212,8 +231,6 @@ _SECRET_ENV_NAMES = (
     "ADMIN_PASSWORD", "ROOT_PASSWORD", "API_KEY", "API_TOKEN", "ACCESS_TOKEN", "REFRESH_TOKEN", "AUTH_TOKEN",
     "PRIVATE_KEY", "SSH_PRIVATE_KEY", "GPG_PASSPHRASE", "VAULT_TOKEN", "NGROK_AUTHTOKEN", "TAILSCALE_AUTHKEY",
 )
-
-
 # Any other name in capitals that is or ends like a secret: SECRET, …_KEY, …_TOKEN, …_SECRET, …_PASSWORD, …_CREDENTIALS,
 # …_API_HASH, …_DSN, …_WEBHOOK. Capitals only, as environment variables are written: "cache_key" in code is not one.
 # Singular only: "MAX_OUTPUT_TOKENS=8192" is a count. A database address is not listed: its password shows by itself
@@ -222,14 +239,9 @@ _ENV_SECRET_NAME = (
     r"(?-i:(?:[A-Z][A-Z0-9]{0,40}(?:_[A-Z0-9]{1,40}){0,8}_)?(?:KEY|APIKEY|AUTHKEY|TOKEN|AUTHTOKEN|SECRET|PASSWORD"
     r"|PASSWD|PWD|PASS|PASSPHRASE|CREDENTIALS?|API_HASH|SESSION_STRING|STRING_SESSION|DSN|AK|SK|WEBHOOK_URL|WEBHOOK))"
     r"|" + _trie(_SECRET_ENV_NAMES))
-
-
 _RE_ENV_NAME = re.compile(_ENV_SECRET_NAME, re.IGNORECASE)
-
-
 # Names whose value is a link that is itself the secret (a webhook, a Sentry DSN): there a link is not a pointer.
 _RE_SECRET_LINK_NAME = re.compile(r"(?:WEBHOOK|WEBHOOK_URL|DSN)$", re.IGNORECASE)
-
 
 # What a credential is called, per language. Latin-script words are held to the edges; "pin" alone is English, and a
 # "PIN code" in other words ("código PIN", "PIN-Code") is listed with them. Hindi "पिन कोड" is left out: in India it is
@@ -260,8 +272,6 @@ _CREDENTIAL_LATIN = (
     r"|kata\s+sandi|sandi|kunci\s+(?:rahasia|api)|kode\s+(?:pin|verifikasi|otp|akses)"
     # environment variables, in the text of any language
     r"|" + _ENV_SECRET_NAME)
-
-
 _CREDENTIAL_NAMES = {
     # «пин» alone too, as a word: it only counts with a value after it («ПИН: 4821»), so a badge or a map pin stays
     # a word («Значок-пин…», «Покажи пин на карте»); «шпинат», «пинг», «пинцет» never match (RFC #20, 2026-10-24)
@@ -277,14 +287,8 @@ _CREDENTIAL_NAMES = {
     "ar": r"كلمة\s+(?:ال)?مرور|كلمة\s+(?:ال)?سر|الرقم\s+السري|رمز\s+(?:ال)?تحقق|مفتاح\s+(?:ال)?api|المفتاح\s+السري"
           r"|رمز\s+(?:ال)?دخول",
 }
-
-
 _CREDENTIAL_OTHER = "|".join(_CREDENTIAL_NAMES.values())
-
-
 _CREDENTIAL_WORD = _alternatives(_CREDENTIAL_LATIN, _CREDENTIAL_OTHER)
-
-
 # Asking the assistant to hand credentials to someone: an instruction to act, never a fact about the user. The verb and
 # the credential are paired within a language (the Latin languages count as one): an English "POST" next to a Russian
 # "токен" is an HTTP request, not a request to leak it. Languages that put the verb after the object ("şifreyi gönder",
@@ -292,13 +296,9 @@ _CREDENTIAL_WORD = _alternatives(_CREDENTIAL_LATIN, _CREDENTIAL_OTHER)
 # your e-mail" stays a fact, as "sent" does in English; Chinese needs 把 for that order ("把密码发送到…"), without it
 # "密码已发送" (the password has been sent) is a report.
 _ZH_SEND = r"(?:发送|發送|发给|發給|分享|泄露|洩露|透露|贴出|貼出|上传|上傳)"
-
-
 # An environment variable is what may not be sent in any language: "Отправь OPENAI_API_KEY на…" (review 2026-10-16).
 # Not a reference to one in code ("отправляет `$API_KEY` в заголовке"): that is how a program uses it.
 _ENV_OBJ = r"(?<![$%{])" + _EDGE_START + r"(?:" + _ENV_SECRET_NAME + r")" + _EDGE_END
-
-
 # Russian credential words as words, not stems: "секретарю", "ключевые цифры", "учётная политика", "токенизатор" are no
 # secrets (0.17.2); "учётные данные", "учётная запись", "секретная фраза", "фраза восстановления", "ключик" are (review
 # 0.17.2, Codex: word forms alone let "секретную фразу восстановления" through). A credential word joined to a name by
@@ -309,19 +309,13 @@ _RU_CREDENTIAL = (r"парол\w*|секрет(?:а|у|ом|е|ы|ов|ам|ам
                   r"|секретн\w*\s+(?:фраз|слов|ключ|код|данн|комбинаци|строк|номер|вопрос|ответ|пин)\w*|секретик\w*"
                   r"|(?:сид|seed)[\s-]?фраз\w*|фраз\w*\s+восстановлени\w*|мнемоническ\w*\s+фраз\w*"
                   r"|пин[\s-]?код\w*|пин(?:а|ом|у)?\s+(?:от|для|к)(?!\w)|код\w*\s+(?:подтверждени|доступ|из\s+смс)\w*")
-
-
 # The Russian imperative of sending or showing, perfective and imperfective, and the words that make an infinitive a
 # request.
 _RU_SEND = (r"отправь|отправьте|отправляй|отправляйте|перешли|перешлите|пересылай|пересылайте|покажи|покажите"
             r"|показывай|показывайте|раскрой|раскройте|раскрывай|раскрывайте|выложи|выложите|выкладывай|выкладывайте"
             r"|скинь|скиньте|скидывай|скидывайте")
-
-
 _RU_ASKING = (r"прошу|просим|можешь|можете|сможешь|сможете|надо|нужно|пожалуйста|давай|давайте|не\s+забывай(?:те)?"
               r"|будь(?:те)?\s+добр\w*")
-
-
 # A request, not a report: the imperative or the infinitive of a request («Можешь отправить…?»), never the past tense
 # or a noun — «Соня скинула ключи от квартиры соседке», «Отправка ключей от дачи — в субботу» are facts (RFC #20,
 # 2026-10-24; the stems before matched every form). The imperfective asks too («Отправляй…»), its infinitive only
@@ -331,8 +325,6 @@ _RU_ASKING = (r"прошу|просим|можешь|можете|сможешь
 _RU_REQUEST = (r"(?<!\w)(?:" + _RU_SEND + r"|отправить|переслать|показать|раскрыть|выложить|скинуть|(?:" + _RU_ASKING
                + r")\s+(?:[^\W\d_]+\s+){0,2}?(?:отправлять|пересылать|показывать|раскрывать|выкладывать|скидывать))"
                r"(?!\w)")
-
-
 _RE_EXFILTRATION = re.compile("|".join((
     _alternatives(r"send|share|reveal|post|upload|forward|email|leak|paste"
                   r"|env[íi]a(?:r|le|lo)?|env[íi]e|comparte|compartir|compartilhe|compartilha|partilhe|revela|revele"
@@ -365,8 +357,6 @@ _RE_EXFILTRATION = re.compile("|".join((
     r"(?:" + _CREDENTIAL_NAMES["bn"] + r"|" + _ENV_OBJ + r").{0,40}(?:পাঠাও|পাঠান|(?:শেয়ার|ফাঁস)\s*কর(?:ো|ুন))",
     r"(?:أرسل|ارسل|شارك|انشر|اكشف).{0,40}(?:" + _CREDENTIAL_NAMES["ar"] + r"|المفتاح|مفتاح|" + _ENV_OBJ + r")",
 )), re.IGNORECASE)
-
-
 # A credential with its value ("password hunter2", "пароль от wifi: Qwerty!23", "API key sk-…", "密码是hunter2",
 # "パスワードはabc123"): never a fact, whoever says it and however it is quoted. The word alone is not enough ("I use a
 # password manager", "the token expires"): the value must look like one — a digit or a symbol in it, or twelve
@@ -380,17 +370,11 @@ _RE_EXFILTRATION = re.compile("|".join((
 _IS = _alternatives(
     r"is|was|are|es|era|est|[ée]tait|é|è|ist|lautet|war|jest|to|adalah|yaitu|ialah",
     r"это|是|为|為|は|が|는|은|이|가|คือ|है|हैं|হল|হলো|هو|هي")
-
-
 _OPEN_QUOTE, _CLOSE_QUOTE = r"[\"'«“„‚`「『]", r"[\"'»”`」』]"
-
-
 _ABOUT_PASSWORDS = (r"managers?|rotation|polic(?:y|ies)|length|reset|changes?|changed|expir\w*|strength|hints?|fields?"
                     r"|requirements?|rules?|format|generators?|vault|recovery|history|limits?|count|usage|budget|types?"
                     r"|minimum|maximum|min|max|rate|period|time|timeout|ttl|lifetime|age|size|scope|scopes"
                     r"|updated?|менеджер\w*|политик\w*|длин\w*|сброс\w*|требовани\w*|правил\w*|генератор\w*")
-
-
 _RE_CREDENTIALS = tuple(re.compile(
     r"(?P<word>" + _CREDENTIAL_WORD + r")"
     + (r"\s+(?:for|to|of|on|для|от|к|на|de|del|para|pour|du|da|do|di|della|per|f[üu]r|von|vom|zum|voor|van|dla|od"
@@ -411,11 +395,7 @@ _RE_CREDENTIALS = tuple(re.compile(
         + _alternatives(r"is|es|est|ist|é|è|adalah|yaitu", r"คือ|هو|هي") + r"|[:：＝]|=(?!=))\s*" + _OPEN_QUOTE
         + r"?(?!//)(?P<value>\S{4,})",
         re.IGNORECASE),)
-
-
 _VALUE_EDGE = ".,;:!?\"'«»“”„`)"
-
-
 # A value ends where text in a script passwords are not typed in resumes — Chinese, Japanese, Korean, Thai, Hindi,
 # Bengali, Arabic and their punctuation; their digits stay part of it. "密码是hunter2test，记得保存" holds
 # "hunter2test", and "令牌是一次性的" (the token is single-use) holds no value at all. Without this a Devanagari vowel
@@ -424,28 +404,18 @@ _RE_TEXT_STOP = re.compile(
     "[؀-ٟ٪-ۯۺ-ۿऀ-॥॰-ॿঀ-৥ৰ-৿"
     "฀-๏๚-๿ᄀ-ᇿ　-〿぀-ヿ㄰-㆏㐀-䶿一-鿿"
     "가-힯豈-﫿＀-／：-￯]")
-
-
 _RE_DECIMAL = re.compile(r"[$€£¥₽฿]?\d+[.,]\d+[$€£¥₽฿%]?")
-
-
 # A date is when, not which: "password changed: 2026-10-15", "пароль сменили: 15.10.2026" (0.15.1).
 _RE_DATE = re.compile(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}")
-
-
 # A link or a file path says where, not what: "API key docs: https://platform.openai.com/docs", "токены лежат:
 # ~/.hermes/.env" (0.15.1, measured on a live store). A link with a login ("https://user:pass@host") or a query
 # ("?key=…") is still a value, and a token inside a link is caught by its own shape (_RE_TOKEN_SHAPE). A path has
 # two parts or starts at "~" or ".": "/Sunshine123" may be the password itself (review 2026-10-16).
 _RE_POINTER = re.compile(r"https?://[^\s@?]+|(?:~|\.{1,2})/[^\s@?:]*|/[^\s/@?:]+/[^\s@?:]*"
                          r"|[A-Za-z]:[\\/][^\s@?:]*")
-
-
 # Assigned ("KEY=/…"), a path counts only from home or here, or ending in a file name: "/aB3/xY9+" may be base64.
 _RE_FILE_POINTER = re.compile(r"https?://[^\s@?]+|(?:~|\.{1,2})/[^\s@?:]*|/[^\s@?:]*/[\w.-]*\.[A-Za-z0-9]{1,8}"
                               r"|[A-Za-z]:[\\/][^\s@?:]*[\\/][\w.-]*\.[A-Za-z0-9]{1,8}")
-
-
 # After "token" a whole number is a count ("max tokens for this model is 8192"), not a secret; a PIN or a password of
 # digits stays one (0.14.6).
 _RE_COUNTED = re.compile(r"(?:[a-z]+[\s_-]?)?tokens?|токен\w*|令牌|トークン|토큰|โทเค็น|टोकन|টোকেন", re.IGNORECASE)
@@ -471,8 +441,6 @@ _RE_TOKEN_SHAPE = re.compile(
 # digits it is: one hyphen between groups at most ("4821-7730").
 _RE_PIN_NAME = re.compile(r"(?<![^\W\d_])(?:pins?|pincodes?|пин(?:а|у|ом|е|ы)?)(?![^\W\d_])|pin(?=コード)"
                           r"|пин(?=[\s-]?код)|พิน|পিন", re.IGNORECASE)
-
-
 _RE_PIN_VALUE = re.compile(r"\d+(?:-\d+)*")
 
 
@@ -565,11 +533,7 @@ def _run_start(first: str, anchors) -> re.Pattern:
 # is looked for in the text itself: where such a run begins with a capital and holds one of what such a name ends with
 # (each ending of _ENV_SECRET_NAME contains one of these).
 _ENV_ANCHORS = ("KEY", "TOKEN", "SECRET", "PASS", "PWD", "CREDENTIAL", "HASH", "SESSION", "DSN", "AK", "SK", "WEBHOOK")
-
-
 _RE_ENV_START = _run_start(r"[A-Z]", _ENV_ANCHORS)
-
-
 # What a credential word (_CREDENTIAL_WORD) can start with, folded; the names of _SECRET_ENV_NAMES by their first five
 # letters (a generator, not a set comprehension: Python 3.12 inlines that into the module, and hermes-dreaming's check
 # of its copy reads the loop variable as a name the copy must define).
@@ -597,11 +561,7 @@ _CREDENTIAL_STARTS = (
     "รหัส", "โทเค็น", "คีย์", "पासवर्ड", "ओटीपी", "टोकन", "एपीआई", "गुप्त", "कूटशब्द",
     "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন", "كلمة", "الرقم", "رمز", "مفتاح", "المفتاح",
 ) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
-
-
 _RE_CREDENTIAL_START = _starts_pattern(_CREDENTIAL_STARTS)
-
-
 # What a request to send a credential (_RE_EXFILTRATION) can start with, folded: the verb, or the credential where the
 # language puts it first.
 _EXFILTRATION_STARTS = (
@@ -628,11 +588,7 @@ _EXFILTRATION_STARTS = (
     "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন",
     "أرسل", "ارسل", "شارك", "انشر", "اكشف",
 ) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
-
-
 _RE_EXFILTRATION_START = _starts_pattern(_EXFILTRATION_STARTS)
-
-
 # What an instruction to drop the rules (_RE_INJECTION) can start with, folded.
 _INJECTION_STARTS = (
     # en, es, pt, fr, it, de, nl, pl, id
@@ -655,8 +611,6 @@ _INJECTION_STARTS = (
     "تجاهل", "انس ", "إنس ",
     "আগের", "পূর্ববর্তী", "সব ", "সকল ", "তোমার", "আপনার", "তোর ",
 )
-
-
 _RE_INJECTION_START = _starts_pattern(_INJECTION_STARTS)
 
 
@@ -665,16 +619,10 @@ _RE_INJECTION_START = _starts_pattern(_INJECTION_STARTS)
 # most 21 characters before it.
 _RE_TOKEN_START = re.compile(r"sk-|gh[pousr]_|github_pat_|xox[abprs]-|A[KS]IA|AIza|glpat-|eyJ|-----BEGIN |"
                              r"\d\d{5,11}:|://")
-
-
 # Where a secret's shape in configuration (_RE_SECRET_SHAPE) can begin: a run of capitals, digits and "_" at an edge
 # holding what such a name holds, or "bearer" / "basic" (any case, so in the folded text).
 _SECRET_NAME_ANCHORS = ("KEY", "TOKEN", "SECRET", "PASS", "PWD")
-
-
 _RE_SECRET_NAME_START = _run_start(r"[A-Z0-9_]", _SECRET_NAME_ANCHORS)
-
-
 _RE_AUTH_SCHEME_START = _starts_pattern(("bearer ", "basic "))
 
 
@@ -817,7 +765,6 @@ def _value(token: str) -> str:
 # more are a passphrase ("correct-horse-battery") (0.15.1).
 _RE_HYPHENATED = re.compile(r"[^\W\d_]+-[^\W\d_]+")
 
-
 # What names a thing rather than holds a secret, when a credential word is only the start of one name joined to the
 # rest by a hyphen (issue #6 by vlat0101: "token-saver-stats.jsonl" was the token "saver-stats.jsonl", and nine facts
 # about a plugin called token-saver were never recalled; 0.17.2): a file name with a known extension, a path too
@@ -836,26 +783,16 @@ _FILE_EXTENSIONS = (
     "|less|md|mdx|rst|txt|log|csv|tsv|pdf|docx?|xlsx?|pptx?|odt|ods|png|jpe?g|gif|svg|webp|ico|mp3|mp4|wav|ogg|webm"
     "|mov|zip|tar|gz|tgz|bz2|xz|7z|rar|db|sqlite3?|lock|service|timer|plist|gradle|tf|hcl|proto|graphql|gql"
     "|bak|tmp|patch|diff")
-
-
 _RE_FILE_NAME = re.compile(r"[\w.~/\\@+-]*\.(?i:" + _FILE_EXTENSIONS + r")")
-
-
 # A variable named for a file ("SSL_KEY_FILE=server.key") may name a key's own file too.
 _RE_KEY_FILE_NAME = re.compile(r"[\w.~/\\@+-]*\.(?i:key|pem|crt|cer|csr|pub|p12|pfx|jks|gpg|asc|env)")
-
-
 # Three labels and more ("reset.example.com"): "letmein.co", "love.it" may be passwords (review 0.17.2, Antigravity).
 _RE_HOST_NAME = re.compile(
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2,}(?:com|net|org|io|dev|app|ai|co|me|info|biz|xyz|cloud|tech|site"
     r"|online|local|internal|lan|home|test|example|ru|su|de|uk|us|eu|fr|es|it|nl|pl|tr|id|in|br|pt|jp|kr|cn|tw|hk|th"
     r"|vn|ua|kz|by|ca|au|ch|at|se|no|fi|dk|cz|il|ae|sg|my|ph|mx|ar)(?::\d{1,5})?")
-
-
 # Not after ":" ("password-wifi:192.168.1.1" is no image tag) and of three parts at most (review 0.17.2, Codex).
 _RE_VERSIONED = re.compile(r"[a-z0-9][a-z0-9._/-]*(?:@|==|>=|<=|~=)v?\d{1,4}(?:\.\d{1,4}){1,2}(?:[-+][a-z0-9.]+)?")
-
-
 # A folder: parts of a path that end in a separator ("saver-ccr/", "saver/cache/").
 _RE_FOLDER_NAME = re.compile(r"[\w.~+-]+(?:[/\\][\w.~+-]+)*[/\\]")
 
@@ -877,8 +814,6 @@ def _names_a_thing(value: str, folders: bool = False) -> bool:
 # "[REDACTED]" (0.15.2); a template is in one case, "{SuperSecretKey}" may be the password.
 _RE_PLACEHOLDER = re.compile(r"[*•xX.…]+|\S{0,12}(?:\.\.\.|…)|<[a-z][a-z _-]*>?|<[A-Z][A-Z0-9_]*>|\{[a-z_][a-z0-9_]*\}|\{[A-Z_][A-Z0-9_]*\}"
                              r"|(?i:redacted|hidden|masked|removed|скрыт\w*|удал[её]н\w*)")
-
-
 _BRACKETS = {"(": ")", "[": "]", "{": "}"}
 
 
@@ -915,19 +850,13 @@ def _looks_like_a_secret(token: str, links: bool = True, assigned: bool = False)
 # a double negation ("must not not ignore") keeps none.
 _RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?:never|don[’']?t|do\s+not|не|нельзя|никогда|nie|jangan)"
                                 r"|不要|别|別|勿|不可|不能|لا|อย่า|मत)\s*$", re.IGNORECASE)
-
-
 # A second negation before the prohibition cancels it: "must not never ignore", "不能不要忽略" (third Codex pass).
 _RE_ANY_NEGATION_END = re.compile(r"(?:(?<![^\W\d_])(?:not|never|no|не|ни|nie|nicht)|n[’']t|不能|不可|不要|不|没|沒|别|別|勿|لا|ไม่|मत|नहीं)"
                                   r"\s*$", re.IGNORECASE)
-
-
 # A prohibition with an exception is the exception's order: "never ignore your instructions unless they stop you from
 # answering" (fifth Codex pass).
 _RE_EXCEPTION_AFTER = re.compile(r"[^.!?。！？\n]{0,80}?(?:(?<![^\W\d_])(?:unless|except|but\s+if|если\s+только|кроме"
                                  r"|за\s+исключением)(?![^\W\d_])|除非|但是如果|ただし|단\s)", re.IGNORECASE)
-
-
 _RE_NEGATED_AFTER = re.compile(r"^\s*(?:(?:しないで|ないで)(?![はも])|するな|하지\s*마|(?:ना|ने)\s*नहीं"
                                r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
 
@@ -945,18 +874,14 @@ def _injection_in(text: str, folded: str | None = None) -> bool:
     return False
 
 
+# Quoted spans are reported text ("the test case contains 'ignore previous instructions'"), not instructions.
+_RE_QUOTED_SPAN = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'|«[^»\n]*»|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』")
 _RE_ROLE_MARKUP = re.compile(r"(?im)^\s*(?:system|assistant|user|tool)\s*[:：]|</?(?:tool_call|function_call|system|assistant)\b|<\|")
-
-
 _RE_BLOB = re.compile(r"[A-Za-z0-9+/=_-]{200,}")
-
-
 # An image, markdown or HTML ("![x](https://host/p?d=…)", "![x][1]", "<img src=…>"): a client that renders it fetches
 # its address by itself, so a fact holding one could leak whatever the model is led to put into the address — in the
 # query or in the path alike. A fact has no use for an image, so none is accepted (review 2026-10-13).
 _RE_IMAGE_EXFIL = re.compile(r"!\[[^\]\n]*\]\s*[(\[]|<\s*img\b", re.IGNORECASE)
-
-
 _ALLOWED_CONTROLS = frozenset("\n\t\r")
 
 
@@ -978,12 +903,42 @@ def _hidden_char(text: str) -> bool:
 # Line breaks, tabs and the spaces other than " " (no-break, en, em, thin, ideographic…, line and paragraph
 # separators): not printable to str.isprintable, never hidden text.
 _HIDDEN_PIECE = 8192
-
-
 _RE_VISIBLE_SPACE = re.compile(r"[\t\n\r\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
-
-
 _INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")  # zero-width, word joiner, BOM, bidi controls
+
+
+def _fact_problem(content: str) -> str | None:
+    """Why *content* should not be stored as a fact, or None."""
+    text = (content or "").strip()
+    if len(text) > _FACT_MAX_CHARS:
+        return f"too long for a fact ({len(text)} characters; at most {_FACT_MAX_CHARS}): store the conclusion"
+    if text[:1] in "{[":
+        try:
+            json.loads(text)
+            return "looks like JSON or tool output: store what it means as a sentence"
+        except ValueError:
+            pass
+    if _RE_ROLE_MARKUP.search(text):
+        return "contains chat-role or tool-call markup"
+    unquoted = _RE_QUOTED_SPAN.sub(" ", text)
+    folded = _folded(unquoted)
+    if _injection_in(unquoted, folded):
+        return "reads like an instruction to the assistant, not a fact"
+    if _asks_to_send(unquoted, folded):
+        return "asks to send credentials somewhere: an instruction, not a fact"
+    word = _credential_word(text)
+    if word is not None:
+        # the word, never the value: a writer who meant a version pin or a token count can see what was read (RFC #20)
+        what = f'"{word}" with a value after it' if word else "a key, token or password known by its shape"
+        return (f"contains what looks like a credential ({what}; a password, key, token or PIN with its value): never "
+                "store those")
+    if _hidden_char(text):
+        return "contains invisible formatting characters"
+    if _RE_IMAGE_EXFIL.search(text):
+        return "contains an image (markdown or HTML): a client that renders it fetches its address"
+    if _RE_BLOB.search(text):
+        return "contains a long encoded blob"
+    return None
 
 
 def _recall_problem(content: str) -> str | None:
@@ -1041,3 +996,12 @@ def _placeholder_assignment(match: re.Match) -> bool:
     return bool(_RE_PLACEHOLDER.fullmatch(assigned) or _RE_PLACEHOLDER.fullmatch(value) or _is_reference(value)
                 or value.replace(",", "").replace("_", "").isdigit() or _RE_FILE_POINTER.fullmatch(value)
                 or (names_a_file and (_RE_FILE_NAME.fullmatch(value) or _RE_KEY_FILE_NAME.fullmatch(value))))
+
+
+def _sendable(content: str) -> bool:
+    """May a stored fact go to the embeddings endpoint? Not what recall refuses to inject, nor what looks secret."""
+    return _recall_problem(content) is None and not _secret_in(content)
+
+
+SOURCE_VERSION = "0.22.1"
+SOURCE_COMMIT = "e385934"

@@ -68,6 +68,21 @@ def _provider_source():
     return None
 
 
+def _free_names(text):
+    """The global names a module's code reads that its top level does not bind for sure (vendor._defined: definitions,
+    plain assignments, imports), builtins aside."""
+    free = set()
+
+    def walk(table):
+        for sym in table.get_symbols():
+            if sym.is_referenced() and (sym.is_global() or table.get_type() == "module"):
+                free.add(sym.get_name())
+        for child in table.get_children():
+            walk(child)
+    walk(symtable.symtable(text, "holo_screen.py", "exec"))
+    return free - set(dir(builtins)) - vendor._defined(ast.parse(text))
+
+
 class VendoredScreenTests(unittest.TestCase):
     def test_the_copy_matches_the_provider(self):
         """The copy is what the tool would take from the source now. A difference means the provider changed its
@@ -76,19 +91,95 @@ class VendoredScreenTests(unittest.TestCase):
         if found is None:
             self.skipTest("no holographic source at hand")
         src, source = found
-        body = "\n\n\n".join(text for _, text in vendor.definitions(source))
-        self.assertTrue(COPY.read_text(encoding="utf-8").endswith("\n\n" + body + "\n"),
-                        f"holographic's screen in {src} differs from scripts/holo_screen.py — "
-                        "run tools/vendor_screen.py")
+        copy = dream.HOLO_SCREEN
+        self.assertEqual(COPY.read_text(encoding="utf-8"),
+                         vendor.copy(source, copy.SOURCE_VERSION, copy.SOURCE_COMMIT),
+                         f"holographic's screen in {src} differs from scripts/holo_screen.py — "
+                         "run tools/vendor_screen.py")
 
-    def test_the_tool_refuses_what_it_cannot_copy(self):
-        """Code review of 2.9.0: "_RE_CREDENTIALS += (…)" changes the screen without changing any definition."""
-        src = ("import re\n_A = re.compile('a')\ndef _recall_problem(t):\n    return _A.search(t)\n"
-               "def _secret_in(t):\n    return False\n")
-        self.assertEqual([n for n, _ in vendor.definitions(src)], [["_A"], ["_recall_problem"], ["_secret_in"]])
-        for tail in ("_A += 1\n", "if True:\n    _A = None\n", "_A.flags = 0\n"):
-            with self.assertRaises(ValueError, msg=tail):
-                vendor.definitions(src + tail)
+    # The names dream.py reads from the copy, in the smallest screen that has them.
+    SCREEN = ("import re\n_RE_CREDENTIALS = (re.compile('a'),)\n_A = re.compile('a')\n"
+              "def _credential_matches(t):\n    return []\ndef _recall_problem(t):\n    return _A.search(t)\n"
+              "def _secret_in(t):\n    return False\n")
+
+    def test_every_statement_of_the_source_is_in_the_copy_and_acts_there(self):
+        """Code review of 2.9.0: "_RE_CREDENTIALS += (…)" changes the screen without changing any definition, and a
+        copy of selected definitions missed it. The copy is the whole file now: such a statement is in it and acts."""
+        for tail in ("_A = re.compile('b')\n", "if True:\n    _A = re.compile('b')\n",
+                     "_RE_CREDENTIALS += (re.compile('c'),)\n"):
+            with self.subTest(tail):
+                text = vendor.copy(self.SCREEN + tail, "9.9.9", "abc1234")
+                self.assertIn(self.SCREEN + tail, text)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "holo_screen.py"
+                    path.write_text(text, encoding="utf-8")
+                    screen = dream._load_holo_screen(str(path))  # as the dream loads its copy
+                self.assertIsNotNone(screen)
+                if "_A" in tail:
+                    self.assertTrue(screen._recall_problem("b"), "the statement after the definitions acts in the copy")
+                else:
+                    self.assertEqual(len(screen._RE_CREDENTIALS), 2)
+                self.assertEqual((screen.SOURCE_VERSION, screen.SOURCE_COMMIT), ("9.9.9", "abc1234"))
+
+    def test_an_import_a_cron_script_cannot_load_is_refused(self):
+        """The copy is loaded by cron scripts that have neither the provider's package nor Hermes: a relative import
+        or a module outside the standard library ones the tool allows works only inside the provider, and the dream
+        would run without the screen. Refused, naming the module; the screen's own imports pass."""
+        for line, module in (("from .text import analyze\n", ".text"), ("import yaml\n", "yaml"),
+                             ("from hermes_cli import config\n", "hermes_cli"),
+                             ("def _later():\n    import agent.redact\n", "agent.redact"),
+                             # Codex review: loaded by name, past the import check
+                             ("_RULES = __import__('hermes_cli')\n", "__import__"),
+                             ("def _later(code):\n    return eval(code)\n", "eval"),
+                             # Codex review of the fixes: the same through the module's globals or the builtins
+                             ("def _later(t):\n    return globals()['__builtins__']['__import__']('hermes_cli')\n",
+                              "globals"),
+                             ("from re import __builtins__ as _b\n", "__builtins__"),
+                             ("_KINDS = ().__class__.__base__.__subclasses__()\n", "__subclasses__")):
+            with self.subTest(line):
+                with self.assertRaises(ValueError) as caught:
+                    vendor.copy(self.SCREEN + line, "9.9.9", "abc1234")
+                self.assertIn(module, str(caught.exception))
+        own = "from __future__ import annotations\n\nimport json\nimport re\nimport unicodedata\n"
+        self.assertIn(own, vendor.copy(own + self.SCREEN, "9.9.9", "abc1234"))
+
+    def test_a_copy_that_does_not_load_alone_is_refused(self):
+        """Module-level code that works only inside the provider (a name its package sets on the module) passes the
+        import checks and would fail when the dream loads the copy. The tool loads it in a Python with the standard
+        library only, as a cron script, and refuses it with the reason."""
+        with self.assertRaises(ValueError) as caught:
+            vendor.copy(self.SCREEN + "_LIMIT = _PACKAGE_LIMIT\n", "9.9.9", "abc1234")
+        self.assertIn("_PACKAGE_LIMIT", str(caught.exception))
+        self.assertIn("does not load", str(caught.exception))
+        # Codex review of the fixes: the reason in Russian came out as question marks on a Russian Windows.
+        with self.assertRaises(ValueError) as caught:
+            vendor.copy(self.SCREEN + "raise ImportError('нет пакета провайдера')\n", "9.9.9", "abc1234")
+        self.assertIn("нет пакета провайдера", str(caught.exception))
+
+    def test_a_copy_that_stops_or_hangs_while_loading_is_refused(self):
+        """Codex review of the fixes: `raise SystemExit(0)` ends the trial load with exit code 0 before the screen is
+        defined, and a cron script loading such a copy exits with it; a loop at the top level never returns, and the
+        tool waited for it forever. Both are refused."""
+        with self.assertRaises(ValueError) as caught:
+            vendor.copy("raise SystemExit(0)\n" + self.SCREEN, "9.9.9", "abc1234")
+        self.assertIn("does not load", str(caught.exception))
+        with mock.patch.object(vendor, "LOAD_TIMEOUT", 3), self.assertRaises(ValueError) as caught:
+            vendor.copy(self.SCREEN + "while True:\n    pass\n", "9.9.9", "abc1234")
+        self.assertIn("still running after 3 s", str(caught.exception))
+
+    def test_a_root_only_indexed_or_assigned_on_a_branch_is_missing(self):
+        """Codex review: `_RE_CREDENTIALS[0] = …` reads the name, it does not define it; neither does an assignment
+        under `if`; and a `del` after the definition removes it (review of the fixes). A source with only these lacks
+        the root and is refused as such."""
+        defined = "_RE_CREDENTIALS = (re.compile('a'),)\n"
+        self.assertIn(defined, self.SCREEN)
+        for source in (self.SCREEN.replace(defined, "_RE_CREDENTIALS[0] = re.compile('a')\n"),
+                       self.SCREEN.replace(defined, "if True:\n    _RE_CREDENTIALS = ()\n"),
+                       self.SCREEN + "del _RE_CREDENTIALS\n"):
+            with self.subTest(source):
+                with self.assertRaises(ValueError) as caught:
+                    vendor.copy(source, "9.9.9", "abc1234")
+                self.assertIn("_RE_CREDENTIALS not in the source", str(caught.exception))
 
     def test_a_mistyped_source_is_an_error_not_a_skip(self):
         """Codex review of the 3.3.3 plan: CI names the source in HOLOGRAPHIC_SRC; a wrong path there fell through to
@@ -135,24 +226,20 @@ class VendoredScreenTests(unittest.TestCase):
         self.assertEqual(found[1], screen)
 
     def test_the_copy_needs_no_name_it_does_not_define(self):
-        """The tool copies definitions, not imports, and the copy's header imports only re and unicodedata. A name
-        the screen takes from elsewhere would load fine and fail only when a function that uses it runs — at night,
-        in classify_unsafe. Every global name the copy reads must be defined in it."""
-        text = COPY.read_text(encoding="utf-8")
-        tree = ast.parse(text)
-        defined = {"re", "unicodedata", "annotations"} | set(dir(builtins))
-        for node in tree.body:
-            defined |= set(vendor._names(node))
-        free = set()
+        """A name the screen takes from elsewhere (one the provider's package would set on the module, say) loads fine
+        and fails only when a function that uses it runs — at night, in classify_unsafe. Every global name the copy
+        reads must be imported or defined in it, for sure: at the top level, not on a branch."""
+        self.assertEqual(_free_names(COPY.read_text(encoding="utf-8")), set())
 
-        def walk(table):
-            for sym in table.get_symbols():
-                if sym.is_referenced() and (sym.is_global() or table.get_type() == "module"):
-                    free.add(sym.get_name())
-            for child in table.get_children():
-                walk(child)
-        walk(symtable.symtable(text, str(COPY), "exec"))
-        self.assertEqual(free - defined, set())
+    def test_a_name_bound_only_on_a_branch_is_free(self):
+        """Codex review: counting every name the module assigns somewhere let `if False: _provider_secret = None`
+        stand for a definition, and the copy failed with NameError where the provider had the name set."""
+        uses = "def _later(t):\n    return _provider_secret(t)\n"
+        for bound in ("if False:\n    _provider_secret = None\n",
+                      "_provider_secret = None\ndel _provider_secret\n"):  # review of the fixes
+            with self.subTest(bound):
+                self.assertEqual(_free_names(VendoredScreenTests.SCREEN + bound + uses), {"_provider_secret"})
+        self.assertEqual(_free_names(VendoredScreenTests.SCREEN), set())
 
     def test_the_copy_keeps_what_the_dream_reads(self):
         """The dream calls _recall_problem and _secret_in and reads _RE_CREDENTIALS itself (_screened_text): a match
