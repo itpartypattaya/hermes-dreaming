@@ -3,6 +3,30 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Internal
+- **`tools/vendor_screen.py` copies the provider's `screen.py` whole**, between a header comment and
+  `SOURCE_VERSION` / `SOURCE_COMMIT`, instead of picking by its syntax tree the definitions `_recall_problem` and
+  `_secret_in` reach. The selection was needed while the screen lived in the provider's `__init__.py`, which imports
+  Hermes; `screen.py` (holographic 0.18.0 on) imports only `json`, `re` and `unicodedata`. A statement outside a
+  definition (`_RE_CREDENTIALS += (…)`, an assignment under `if`) is now copied and acts, where the selection had to
+  refuse it. The tool refuses a source that imports a module other than these (a relative import, Hermes, a
+  package; also inside a function) or loads or reaches code by name (`__import__`, `eval`, `exec`, `getattr`,
+  `globals`, `__builtins__` and the like, a dunder attribute), which a cron script could not load; one that lacks a
+  name the dream reads (`_recall_problem`, `_secret_in`, `_RE_CREDENTIALS`, `_credential_matches`, as
+  `_load_holo_screen` checks) — bound at the top level for sure, not under `if`, not as `x[0] = …` and not removed
+  by `del`; and a copy that does not load to its end in a Python without site-packages within 60 s, which it tries
+  before writing (the reason comes out in UTF-8). These checks catch a mistake in the provider's own screen; they are
+  no sandbox. The tool runs on Python 3.9 too (`Path.write_text(newline=)` is 3.10+). Codex review, two rounds:
+  seven findings (a name loaded by `__import__`, then through `globals()` or an imported `__builtins__`; the
+  free-name test counted a name assigned only under `if`, then one removed by `del`; `x[0] = …` counted as defining
+  `x`; `raise SystemExit(0)` passed the trial load; a loop at the top level hung it), each fixed with a test that
+  fails without the fix. The
+  copy gains the provider's other screen functions (`_fact_problem`, `_sendable`, the auto_extract rules), which
+  the dream does not call; the screen it runs is the same 0.22.1 one (`e385934`), so the CI pin stays. Checked: the
+  whole file loads on Python 3.9 and 3.14.
+
 ## 3.7.3 — 2026-10-29
 
 ### Fixed

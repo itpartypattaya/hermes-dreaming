@@ -271,7 +271,7 @@ class ScreenCopierNeedsEveryRoot(unittest.TestCase):
     def test_a_source_without_a_root_is_refused(self):
         src = "import re\n\n\ndef _recall_problem(text):\n    return None\n"
         with self.assertRaises(ValueError) as caught:
-            vendor.definitions(src)
+            vendor.copy(src, "9.9.9", "abc1234")
         self.assertIn("_secret_in", str(caught.exception))
 
 
