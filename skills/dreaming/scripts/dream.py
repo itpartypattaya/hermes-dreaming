@@ -3937,7 +3937,7 @@ _ZH_VALUE_RE = re.compile(r"[0-9A-Za-z!@#$%^&*_+=~|\\/<>{}\[\]]")
 def _password_marker_unsafe(text):
     if any(_ZH_VALUE_RE.search(m.group("value")) for m in _ZH_PASSWORD_IS_RE.finditer(text)):
         return True
-    for marker in PASSWORD_MARKER_RE.finditer(text):
+    for marker in _found(PASSWORD_MARKER_RE, _PASSWORD_MARKER_START, text):
         if marker.group("sep").strip() in (":", "=", "："):
             return True
         ends = [m.end() for m in _SENTENCE_END_RE.finditer(text, 0, marker.start())]
@@ -3972,6 +3972,63 @@ INJECTION_RE = re.compile(
     re.IGNORECASE)
 
 
+# Long texts (3.7.2). PASSWORD_MARKER_RE and INJECTION_RE are case-blind alternations the regex engine cannot skip
+# through, so it tried each alternative at every position: on a megabyte of Russian prose half a second, next to the
+# 16 s of the provider's screen, which holographic 0.22.1 cut the same way. Each is now tried only where one of its
+# words can begin: those places are found by one case-sensitive pattern of the words' starts in a lower-case copy of
+# the text (_folded, as the provider's screen folds it), and the pattern itself decides there on the text as it is —
+# the matches a scan of the whole text finds, in the same order. A space in a start stands for any run of whitespace.
+# tests/test_screen_speed_372.py derives from each pattern what its matches can begin with and checks these lists.
+_PASSWORD_MARKER_STARTS = ("парол", "pass", "seed", "секретн", "api", "private ", "2fa", "пин", "pin", "код от",
+                           "密码", "密碼", "口令", "密钥", "密鑰", "私钥", "私鑰")
+_INJECTION_STARTS = ("игнорир", "ignore ", "disregard ", "do not tell", "system prompt", "forget ", "забуд",
+                     "запомни", "системн", "developer mode", "god mode", "dan mode", "режим разработчика",
+                     "new instruction", "новые инструкции", "покажи", "раскрой", "выведи", "отправь", "перешли",
+                     "скинь", "запиши в", "сохрани в", "добавь в", "save to", "save in", "store to", "store in",
+                     "add to", "add in", "write to", "write in", "jailbreak")
+# A letter the engine takes for another one regardless of case, written as that one ("İ" is replaced before lowering).
+_FOLD_SAME = ("ıi", "ſs", "ςσ", "ᲀв", "ᲁд", "ᲂо", "ᲃс", "ᲄт", "ᲅт", "ᲆъ", "ᲇѣ")
+
+
+def _folded(text):
+    """*text* in lower case, one character for one, the letters of _FOLD_SAME written as one; None when lower case is
+    not one character for one (the patterns then read the whole text)."""
+    folded = (text.replace("İ", "i") if "İ" in text else text).lower()
+    if len(folded) != len(text):
+        return None
+    if not folded.isascii():
+        for same, letter in _FOLD_SAME:
+            if same in folded:
+                folded = folded.replace(same, letter)
+    return folded
+
+
+def _starts_pattern(starts):
+    return re.compile("|".join("".join(r"\s+" if c == " " else re.escape(c) for c in s)
+                               for s in sorted(starts, key=len, reverse=True)))
+
+
+_PASSWORD_MARKER_START = _starts_pattern(_PASSWORD_MARKER_STARTS)
+_INJECTION_START = _starts_pattern(_INJECTION_STARTS)
+
+
+def _found(rx, start_rx, text):
+    """What rx.finditer(text) yields, *rx* tried only where *start_rx* finds a start in the folded text, overlapping
+    starts too, and not inside the match before (neither pattern matches an empty string)."""
+    folded = _folded(text)
+    if folded is None:
+        yield from rx.finditer(text)
+        return
+    end, m = 0, start_rx.search(folded)
+    while m:
+        if m.start() >= end:
+            found = rx.match(text, m.start())
+            if found:
+                yield found
+                end = found.end()
+        m = start_rx.search(folded, m.start() + 1)
+
+
 # The holographic provider's own screen (scripts/holo_screen.py, a verbatim copy made by tools/vendor_screen.py):
 # credentials in its 18 languages, token shapes (a bot token inside a Bot API address, A[KS]IA…, an address with a
 # password), environment assignments, encoded blobs, instructions and requests to send secrets in every language,
@@ -3995,7 +4052,8 @@ def _load_holo_screen(path=None):
         spec = importlib.util.spec_from_file_location("_dream_holo_screen", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        missing = [n for n in ("_recall_problem", "_secret_in", "_RE_CREDENTIALS") if not hasattr(mod, n)]
+        missing = [n for n in ("_recall_problem", "_secret_in", "_RE_CREDENTIALS", "_credential_matches")
+                   if not hasattr(mod, n)]
         if missing:
             raise ImportError(f"no {', '.join(missing)}")
         return mod
@@ -4054,8 +4112,8 @@ def _screened_text(text):
     """The text the provider's screen judges: emoji joiners, flag tags and word separators out, and the value of a
     told change (_told_change) blanked."""
     text = _strip_word_separators(_FLAG_TAGS_RE.sub("", _EMOJI_JOINER_RE.sub("", text)))
-    told = sorted({m.span("value") for rx in HOLO_SCREEN._RE_CREDENTIALS for m in rx.finditer(text)
-                   if _told_change(text, m)}, reverse=True)
+    told = sorted({m.span("value") for m in HOLO_SCREEN._credential_matches(text) if _told_change(text, m)},
+                  reverse=True)
     for start, end in told:
         text = text[:start] + "…" + text[end:]
     return text
@@ -4073,7 +4131,7 @@ def classify_unsafe(content):
     screened = _screened_text(text) if HOLO_SCREEN is not None else None
     if screened is not None and HOLO_SCREEN._secret_in(screened):
         return "secret"
-    if INJECTION_RE.search(_DOOR_KEY_RE.sub("вещь", text)):
+    if next(_found(INJECTION_RE, _INJECTION_START, _DOOR_KEY_RE.sub("вещь", text)), None) is not None:
         return "injection"
     if screened is not None and HOLO_SCREEN._recall_problem(_DOOR_KEY_RE.sub("вещь", screened)):
         return "injection"  # not a credential: _secret_in covers those

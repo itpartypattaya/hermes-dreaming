@@ -1,6 +1,6 @@
 """The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
 
-Source: itpartypattaya/hermes-plugin-holographic 0.18.2 (`3b794bc`), `screen.py`; MIT, (c) its authors.
+Source: itpartypattaya/hermes-plugin-holographic 0.22.1 (`be7702a`), `screen.py`; MIT, (c) its authors.
 Copied by tools/vendor_screen.py: every definition `_recall_problem` and `_secret_in` need, unchanged. Do not edit
 here — run the tool again; tests/test_holographic_017.py compares this file with the provider's source.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-SOURCE_VERSION = "0.18.2"
-SOURCE_COMMIT = "3b794bc"
+SOURCE_VERSION = "0.22.1"
+SOURCE_COMMIT = "be7702a"
 
 
 # Where a Latin word or a token starts and ends: no Latin letter, digit or "_" next to it. Not \b: Python counts a
@@ -119,9 +119,9 @@ _RE_INJECTION = re.compile(_alternatives(
 # so a key in one was stored and recalled. Any name that ends like a secret counts; the popular names of model and
 # service providers are listed by name too, so one that does not end like that ("TG_API_HASH", "QIANFAN_AK") counts.
 # What the value must be is unchanged, plus what a setting names instead of a secret (_env_value_is_plain).
-def _trie(words) -> str:
+def _trie(words, blank: str | None = None) -> str:
     """One alternation of *words* as a tree of shared prefixes: a flat list of 300 names made every screen four times
-    slower, since the engine tries each name at every position."""
+    slower, since the engine tries each name at every position. *blank*: what a space in a word stands for."""
     root: dict = {}
     for word in words:
         node = root
@@ -130,7 +130,8 @@ def _trie(words) -> str:
         node[""] = {}
 
     def emit(node: dict) -> str:
-        alts = [re.escape(ch) + emit(child) for ch, child in sorted(node.items()) if ch]
+        alts = [(blank if blank and ch == " " else re.escape(ch)) + emit(child) for ch, child in sorted(node.items())
+                if ch]
         if not alts:
             return ""
         body = alts[0] if len(alts) == 1 else "(?:" + "|".join(alts) + ")"
@@ -475,21 +476,250 @@ _RE_PIN_NAME = re.compile(r"(?<![^\W\d_])(?:pins?|pincodes?|пин(?:а|у|ом|
 _RE_PIN_VALUE = re.compile(r"\d+(?:-\d+)*")
 
 
-def _has_credential(text: str) -> bool:
+# Long texts (0.22.1). The case-blind patterns above (_RE_CREDENTIALS, _RE_EXFILTRATION, _RE_INJECTION) give the regex
+# engine no character to skip to — each starts with a lookbehind or a word whose case is not known — so it tried every
+# alternative at every position: a megabyte of Russian prose took 17 s in hermes-dreaming, which screens each message
+# of its window every night. Now a pattern is tried only where one of its words can start. Those places are found in a
+# lower-case copy of the text (_folded) by one case-sensitive pattern of the words' starts (_CREDENTIAL_STARTS,
+# _EXFILTRATION_STARTS, _INJECTION_STARTS), which the engine does skip to; there the pattern itself decides, on the
+# text as it is, so the matches are the ones a scan of the whole text finds, in the same order. A space in a start
+# stands for any run of whitespace. tests/test_holographic_screen_speed.py derives from each pattern what its matches
+# can begin with and fails when a start is missing, so a word added to a pattern without one is caught there.
+# A letter the engine takes for another one regardless of case, written as that one in the copy: "ı" (dotless) as
+# "i" ("İ" is replaced before lowering), the long "ſ" as "s", Cyrillic tall forms as their letters, final "ς" as "σ".
+_FOLD_SAME = ("ıi", "ſs", "ςσ", "ᲀв", "ᲁд", "ᲂо", "ᲃс", "ᲄт", "ᲅт", "ᲆъ", "ᲇѣ")
+
+
+def _folded(text: str) -> str | None:
+    """*text* in lower case, one character for one, so a position in it is the same position in *text*, with the
+    letters of _FOLD_SAME written as one: a word of a case-blind pattern is found in it as its lower-case self. None
+    when lower case is not one character for one; the patterns then read the whole text."""
+    folded = (text.replace("İ", "i") if "İ" in text else text).lower()
+    if len(folded) != len(text):
+        return None
+    if not folded.isascii():
+        for same, letter in _FOLD_SAME:
+            if same in folded:
+                folded = folded.replace(same, letter)
+    return folded
+
+
+def _starts_pattern(starts) -> re.Pattern:
+    """Where one of *starts* begins in a folded text; a space in one stands for any run of whitespace."""
+    return re.compile(_trie(starts, blank=r"\s+"))
+
+
+def _starts(rx: re.Pattern, folded: str) -> list:
+    """Every position where *rx* matches *folded*, overlapping ones too."""
+    found = []
+    m = rx.search(folded)
+    while m:
+        found.append(m.start())
+        m = rx.search(folded, m.start() + 1)
+    return found
+
+
+def _matches(rx: re.Pattern, text: str, starts):
+    """What rx.finditer(text) yields, with *rx* tried only at *starts* (ascending): the same matches, when every
+    position where *rx* can match is among them. None of these patterns matches an empty string."""
+    end = 0
+    for start in starts:
+        if start >= end:
+            m = rx.match(text, start)
+            if m:
+                yield m
+                end = m.end()
+
+
+def _run_start(first: str, anchors) -> re.Pattern:
+    """Where a run of capitals, digits and "_" begins at an edge (_EDGE_START) with a character of *first* and holds
+    one of *anchors*: from that character on, or after it."""
+    return re.compile(first + r"(?<![0-9A-Za-z_À-ɏ]" + first + r")(?:"
+                      + "|".join(r"(?<=" + a[0] + r")" + a[1:] for a in anchors)
+                      + r"|[A-Z0-9_]*?(?:" + "|".join(anchors) + r"))")
+
+
+# A capital variable's name ("OPENAI_API_KEY", "MY_APP_TOKEN") is matched case-sensitively (_ENV_SECRET_NAME), so it
+# is looked for in the text itself: where such a run begins with a capital and holds one of what such a name ends with
+# (each ending of _ENV_SECRET_NAME contains one of these).
+_ENV_ANCHORS = ("KEY", "TOKEN", "SECRET", "PASS", "PWD", "CREDENTIAL", "HASH", "SESSION", "DSN", "AK", "SK", "WEBHOOK")
+
+
+_RE_ENV_START = _run_start(r"[A-Z]", _ENV_ANCHORS)
+
+
+# What a credential word (_CREDENTIAL_WORD) can start with, folded; the names of _SECRET_ENV_NAMES by their first five
+# letters (a generator, not a set comprehension: Python 3.12 inlines that into the module, and hermes-dreaming's check
+# of its copy reads the loop variable as a name the copy must define).
+_CREDENTIAL_STARTS = (
+    # en
+    "pass", "pwd", "pin", "api", "access", "auth", "bearer", "refresh", "secret", "token", "otp", "2fa ",
+    # es, pt
+    "contrase", "senha", "clave", "chave", "codigo ", "código ",
+    # fr
+    "mot de", "mots de", "cle api", "cles api", "clé api", "clés api", "cle d'", "cles d'", "clé d'", "clés d'",
+    "cle d’", "cles d’", "clé d’", "clés d’", "cle secr", "clé secr", "code pin", "code de v", "code d'", "code d’",
+    # it
+    "chiav", "codice ", "parola",
+    # de, nl
+    "kennw", "geheim", "zugangsc", "bestätig", "bestatig", "wachtw", "verificatiec", "toegangsc",
+    # pl, tr, id
+    "hasł", "hasl", "haśl", "klucz", "kod ", "kodu ", "şifre", "sifre", "gizli ", "doğrulama", "dogrulama",
+    "kata sandi", "sandi", "kunci ", "kode ",
+    # ru, zh, ja, ko
+    "парол", "пин", "токен", "ключ", "секретн", "код",
+    "密码", "密碼", "口令", "密钥", "密鑰", "金钥", "金鑰", "私钥", "私鑰", "令牌", "验证码", "驗證碼",
+    "パスワード", "暗証番号", "ａｐｉ", "秘密鍵", "トークン", "認証コード", "確認コード",
+    "비밀", "패스워드", "암호", "토큰", "인증",
+    # th, hi, bn, ar
+    "รหัส", "โทเค็น", "คีย์", "पासवर्ड", "ओटीपी", "टोकन", "एपीआई", "गुप्त", "कूटशब्द",
+    "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন", "كلمة", "الرقم", "رمز", "مفتاح", "المفتاح",
+) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
+
+
+_RE_CREDENTIAL_START = _starts_pattern(_CREDENTIAL_STARTS)
+
+
+# What a request to send a credential (_RE_EXFILTRATION) can start with, folded: the verb, or the credential where the
+# language puts it first.
+_EXFILTRATION_STARTS = (
+    # en, es, pt, fr, it
+    "send", "share", "reveal", "post", "upload", "forward", "email", "leak", "paste", "envi", "enví", "envo",
+    "compart", "partilh", "partag", "revel", "revèl", "rével", "révèl", "publica", "publique", "publie", "reenv",
+    "transf", "invia", "manda", "condivi", "rivela", "pubblica", "inoltra",
+    # de, nl, pl, id
+    "schick", "verrat", "veröff", "veroff", "leite", "stuur", "verstuur", "onthul", "publiceer", "wyśl", "wysl",
+    "prześl", "przesl", "udostępn", "udostepn", "ujawn", "opublik", "kirim", "bagikan", "ungkapkan", "unggah",
+    "teruskan",
+    # de, tr: the credential first
+    "passw", "kennw", "api", "zugangsdaten", "token", "şifre", "sifre", "parola", "anahtar",
+    # ru: the imperative, the infinitive, or the words that make an infinitive a request
+    "отправ", "перешл", "пересл", "пересы", "покаж", "показ", "раскр", "вылож", "выклад", "скин", "скид",
+    "прошу", "просим", "можешь", "можете", "сможешь", "сможете", "надо ", "нужно ", "пожалуйста", "давай",
+    "не забыва", "будь добр", "будьте добр",
+    # zh, ja, ko, th, hi, bn, ar
+    "发送", "發送", "发给", "發給", "分享", "泄露", "洩露", "透露", "贴出", "貼出", "上传", "上傳", "把", "将", "將",
+    "パスワード", "暗証番号", "ａｐｉ", "秘密鍵", "トークン", "認証コード", "確認コード", "pin",
+    "비밀", "패스워드", "암호", "토큰", "인증",
+    "ส่ง", "แชร์", "เปิดเผย", "โพสต์",
+    "पासवर्ड", "ओटीपी", "टोकन", "एपीआई", "गुप्त", "कूटशब्द", "कुंजी",
+    "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন",
+    "أرسل", "ارسل", "شارك", "انشر", "اكشف",
+) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
+
+
+_RE_EXFILTRATION_START = _starts_pattern(_EXFILTRATION_STARTS)
+
+
+# What an instruction to drop the rules (_RE_INJECTION) can start with, folded.
+_INJECTION_STARTS = (
+    # en, es, pt, fr, it, de, nl, pl, id
+    "ignor", "disregard", "forget", "override", "your new ", "your instructions", "you are now", "olvida", "omite",
+    "esque", "oublie", "dimentica", "vergiss", "vergessen", "negeer", "vergeet", "zignor", "zapomnij", "abaikan",
+    "lupakan",
+    # tr
+    "önceki", "onceki", "tüm t", "tüm k", "tum t", "tum k", "bütün", "bütun", "butün", "butun", "senin", "sizin",
+    # "system prompt:" in the Latin languages
+    "system prompt", "systemprompt", "systeemprompt", "prompt del", "prompt do", "prompt di", "prompt syst",
+    "prompt sist", "sistem istemi",
+    # ru, zh, ja, ko
+    "игнорируй", "забудь", "отмени", "системный",
+    "忽略", "无视", "無視", "忘记", "忘記", "系统提示", "系統提示",
+    "以前の", "前の", "これまでの", "上記の", "あなたの", "君の", "きみの", "お前の", "すべての", "全ての", "システムプロンプト",
+    "이전", "너", "당신", "네", "모든", "시스템",
+    # th, hi, ar, bn
+    "เพิกเฉย", "ละเว้น", "ไม่ต้องสนใจ", "ลืม", "พรอมต์ระบบ",
+    "पिछल", "सभी ", "सारे ", "अपने ", "तुम्हारे ", "आपके ", "सिस्टम",
+    "تجاهل", "انس ", "إنس ",
+    "আগের", "পূর্ববর্তী", "সব ", "সকল ", "তোমার", "আপনার", "তোর ",
+)
+
+
+_RE_INJECTION_START = _starts_pattern(_INJECTION_STARTS)
+
+
+# Where a token's shape (_RE_TOKEN_SHAPE) can begin, in the text itself, the pattern being case-sensitive: a key's
+# prefix, the digits of a bot token before their colon; an address's scheme (any case) ends at "://", and begins at
+# most 21 characters before it.
+_RE_TOKEN_START = re.compile(r"sk-|gh[pousr]_|github_pat_|xox[abprs]-|A[KS]IA|AIza|glpat-|eyJ|-----BEGIN |"
+                             r"\d\d{5,11}:|://")
+
+
+# Where a secret's shape in configuration (_RE_SECRET_SHAPE) can begin: a run of capitals, digits and "_" at an edge
+# holding what such a name holds, or "bearer" / "basic" (any case, so in the folded text).
+_SECRET_NAME_ANCHORS = ("KEY", "TOKEN", "SECRET", "PASS", "PWD")
+
+
+_RE_SECRET_NAME_START = _run_start(r"[A-Z0-9_]", _SECRET_NAME_ANCHORS)
+
+
+_RE_AUTH_SCHEME_START = _starts_pattern(("bearer ", "basic "))
+
+
+def _token_shape_in(text: str) -> bool:
+    """Whether _RE_TOKEN_SHAPE finds a token in *text*, tried only where one can begin."""
+    for start in _starts(_RE_TOKEN_START, text):
+        if text.startswith("://", start):
+            if any(_RE_TOKEN_SHAPE.match(text, p) for p in range(max(0, start - 21), start - 1)):
+                return True
+        elif _RE_TOKEN_SHAPE.match(text, start):
+            return True
+    return False
+
+
+def _secret_shapes(text: str, folded: str | None = None):
+    """_RE_SECRET_SHAPE.finditer(text), tried only where a secret's shape can begin."""
+    folded = _folded(text) if folded is None else folded
+    if folded is None:
+        return _RE_SECRET_SHAPE.finditer(text)
+    starts = {m.start() for m in _RE_SECRET_NAME_START.finditer(text)} | set(_starts(_RE_AUTH_SCHEME_START, folded))
+    return _matches(_RE_SECRET_SHAPE, text, sorted(starts))
+
+
+def _injection_matches(text: str, folded: str | None = None):
+    """_RE_INJECTION.finditer(text), tried only where an instruction can start."""
+    folded = _folded(text) if folded is None else folded
+    if folded is None:
+        return _RE_INJECTION.finditer(text)
+    return _matches(_RE_INJECTION, text, _starts(_RE_INJECTION_START, folded))
+
+
+def _asks_to_send(text: str, folded: str | None = None) -> bool:
+    """Whether _RE_EXFILTRATION finds a request to send a credential in *text*, tried only where one can start."""
+    folded = _folded(text) if folded is None else folded
+    if folded is None:
+        return bool(_RE_EXFILTRATION.search(text))
+    starts = sorted(set(_starts(_RE_EXFILTRATION_START, folded)) | {m.start() for m in _RE_ENV_START.finditer(text)})
+    return next(_matches(_RE_EXFILTRATION, text, starts), None) is not None
+
+
+def _credential_matches(text: str, folded: str | None = None):
+    """Every match of _RE_CREDENTIALS in *text*, pattern by pattern, as their finditer gives them; tried only where a
+    credential word can start."""
+    folded = _folded(text) if folded is None else folded
+    if folded is None:
+        for rx in _RE_CREDENTIALS:
+            yield from rx.finditer(text)
+        return
+    starts = sorted(set(_starts(_RE_CREDENTIAL_START, folded)) | {m.start() for m in _RE_ENV_START.finditer(text)})
+    for rx in _RE_CREDENTIALS:
+        yield from _matches(rx, text, starts)
+
+
+def _has_credential(text: str, folded: str | None = None) -> bool:
     """A credential word with its value, or a token whose shape alone says it is one (_RE_TOKEN_SHAPE)."""
-    return _credential_word(text) is not None
+    return _credential_word(text, folded) is not None
 
 
-def _credential_word(text: str) -> str | None:
+def _credential_word(text: str, folded: str | None = None) -> str | None:
     """The credential word that comes with its value in *text* ("PIN", "пароль", "OPENAI_API_KEY"), "" for a token
     known by its shape alone, None when there is none. A refusal names it, so a writer can tell what was read as a
-    credential (RFC #20)."""
-    if _RE_TOKEN_SHAPE.search(text):
+    credential (RFC #20). *folded*: _folded(text), when the caller has it."""
+    if _token_shape_in(text):
         return ""
-    for rx in _RE_CREDENTIALS:
-        for m in rx.finditer(text):
-            if _holds_a_secret(m):
-                return (m.groupdict().get("word") or "").strip()
+    for m in _credential_matches(text, folded):
+        if _holds_a_secret(m):
+            return (m.groupdict().get("word") or "").strip()
     return None
 
 
@@ -673,10 +903,10 @@ _RE_NEGATED_AFTER = re.compile(r"^\s*(?:(?:しないで|ないで)(?![はも])|�
                                r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
 
 
-def _injection_in(text: str) -> bool:
+def _injection_in(text: str, folded: str | None = None) -> bool:
     """Whether *text* holds an instruction to drop the assistant's rules (_RE_INJECTION) that no negation turns
-    into a reminder to keep them."""
-    for m in _RE_INJECTION.finditer(text):
+    into a reminder to keep them. *folded*: _folded(text), when the caller has it."""
+    for m in _injection_matches(text, folded):
         before = _RE_NEGATED_BEFORE.search(text, max(0, m.start() - 24), m.start())
         if before and (_RE_ANY_NEGATION_END.search(text, max(0, before.start() - 24), before.start())
                        or _RE_EXCEPTION_AFTER.match(text, m.end())):
@@ -703,9 +933,18 @@ _ALLOWED_CONTROLS = frozenset("\n\t\r")
 
 def _hidden_char(text: str) -> bool:
     """A character that renders as nothing but a model reads: format (Cf: zero-width, bidi, Unicode tag characters
-    that smuggle invisible ASCII), control and private use; the fixed _INVISIBLE list missed most (review 2026-10-14)."""
+    that smuggle invisible ASCII), control and private use; the fixed _INVISIBLE list missed most (review 2026-10-14).
+    A text printable once the whitespace of _RE_VISIBLE_SPACE is out holds none (0.22.1: str.isprintable refuses
+    every format, control and private-use character), and is not read character by character."""
+    if _RE_VISIBLE_SPACE.sub("", text).isprintable():
+        return False
     return any(c in _INVISIBLE or (unicodedata.category(c) in ("Cf", "Cc", "Co") and c not in _ALLOWED_CONTROLS)
                for c in text)
+
+
+# Line breaks, tabs and the spaces other than " " (no-break, en, em, thin, ideographic…, line and paragraph
+# separators): not printable to str.isprintable, never hidden text.
+_RE_VISIBLE_SPACE = re.compile(r"[\t\n\r\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
 
 
 _INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")  # zero-width, word joiner, BOM, bidi controls
@@ -722,9 +961,10 @@ def _recall_problem(content: str) -> str | None:
     text = (content or "").strip()
     if _RE_ROLE_MARKUP.search(text):
         return "chat-role or tool-call markup"
-    if _injection_in(text) or _RE_EXFILTRATION.search(text):
+    folded = _folded(text)
+    if _injection_in(text, folded) or _asks_to_send(text, folded):
         return "an instruction to the assistant (quoted or not)"
-    if _has_credential(text):
+    if _has_credential(text, folded):
         return "a credential with its value"
     if _hidden_char(text):
         return "invisible formatting characters"
@@ -745,7 +985,9 @@ _RE_SECRET_SHAPE = re.compile(
 
 def _secret_in(text: str) -> bool:
     """Does *text* look like it holds a secret? A credential, a secret's shape, or an encoded blob."""
-    return _has_credential(text) or any(not _placeholder_assignment(m) for m in _RE_SECRET_SHAPE.finditer(text))         or bool(_RE_BLOB.search(text))
+    folded = _folded(text)
+    return _has_credential(text, folded) or any(not _placeholder_assignment(m) for m in _secret_shapes(text, folded)) \
+        or bool(_RE_BLOB.search(text))
 
 
 def _placeholder_assignment(match: re.Match) -> bool:
