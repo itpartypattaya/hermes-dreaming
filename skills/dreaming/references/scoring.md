@@ -34,6 +34,12 @@ That is by design: the dream promotes what real conversations confirm.
   independent sign: ≥2 distinct days of mention, ≥min_mentions messages, or ≥3
   retrievals + ≥1 helpful. A single fresh fact with high trust is not a
   candidate for durable memory by itself.
+- **A person behind the fact** — an agent's conclusion nobody confirmed
+  (holographic origin `inferred`) is never a promotion, however often it is
+  recalled, marked helpful or mentioned: people saying it again on ≥2 days
+  offer it to `confirm`, and once confirmed it reads as `confirmed` and passes.
+  A fact without a known origin (a provider before 0.15.0, a fact stored before
+  it, another fact source) is promoted by the corroboration gate alone.
 
 ## Corroboration from conversations
 

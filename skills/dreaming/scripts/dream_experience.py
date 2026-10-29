@@ -92,8 +92,15 @@ def _stages(value):
     if not isinstance(value, list) or any(not isinstance(s, dict) or not isinstance(s.get("stage"), str)
                                           for s in value):
         raise ValueError("Invalid experience attempt")
-    return [{"stage": s["stage"], "facts": _refs(s.get("facts")), "truncated": s.get("truncated") is True}
-            for s in value]
+    out = []
+    for s in value:
+        stage = {"stage": s["stage"], "facts": _refs(s.get("facts")), "truncated": s.get("truncated") is True}
+        # candidates another writer changed or forgot between retrieval and the record (holographic 0.21.0); an
+        # optional diagnostic, so a value of another shape is left out rather than failing the report
+        if type(s.get("changed")) is int and s["changed"] >= 0:
+            stage["changed"] = s["changed"]
+        out.append(stage)
+    return out
 
 
 def render(report):
@@ -104,7 +111,9 @@ def render(report):
         lines.append("trace " + report["trace_status"])
         for stage in report.get("stages", []):
             lines.append(stage["stage"] + ": " + ", ".join(
-                f"#{r['fact_id']}@{r['version_id']}" for r in stage["facts"]))
+                f"#{r['fact_id']}@{r['version_id']}" for r in stage["facts"])
+                + (f"{' ' if stage['facts'] else ''}({stage['changed']} changed before the record)"
+                   if stage.get("changed") else ""))
         lines.append("emitted: " + ", ".join(f"#{r['fact_id']}@{r['version_id']}" for r in report["emitted"]))
         for e in report["outcomes"]:
             lines.append(f"{e['outcome']}: {e['reason']} (agent report; active={e['active']})")
