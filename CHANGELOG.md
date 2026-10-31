@@ -3,6 +3,18 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.3 — 2026-10-31
+
+No change in what the dream does: its quarantine asks the screen the same two questions (`_secret_in`,
+`_recall_problem`), and holographic 0.25.3 did not change either of them.
+
+### Internal
+- **`scripts/holo_screen.py` is holographic 0.25.3's screen** (`820b777`, was 0.22.1's `e385934`), copied whole by
+  `tools/vendor_screen.py`; CI checks the copy against that commit. 0.25.3 adds `_not_a_fact` — a prompt to an
+  assistant stored as a fact, an agent's report of its own steps — which only the provider's writes ask; the dream
+  does not call it. The copy matches the released provider again, so the local check against a provider clone holds.
+  Whole suite against the 0.25.3 provider: 933 OK.
+
 ## 3.8.2 — 2026-10-31
 
 ### Fixed
