@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects, and the human's answers to its questions."
-version: 3.8.0
+version: 3.8.1
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.22.5)
@@ -79,7 +79,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `duplicates` on an item | near-identical facts of the store hidden behind it; same decision covers them |
 | `duplicate_pairs` | ask "merge?" by its number (`D-17`), both texts whole, one line each beyond the 6; no `fact_store` call at night; on the human's "yes" to that number — `merge` with `expect` (step 7e) |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
-| `origin` on an item | who stands behind the fact (holographic ≥ 0.15.0): `said`, `confirmed`, `inferred` (an agent's conclusion nobody confirmed — write it only when its evidence is the person's own words, else ask); no field = unknown |
+| `origin` on an item | who stands behind the fact (holographic ≥ 0.15.0): `said`, `confirmed`, `inferred` (an agent's conclusion nobody confirmed — `promotions` and `new_facts` never carry one; anywhere else write it only when its evidence is the person's own words, else ask); no field = unknown |
 | `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never replace |
 | `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |

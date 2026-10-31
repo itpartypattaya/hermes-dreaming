@@ -366,7 +366,9 @@ the dream.
 ## Output sections
 
 - **new_facts** — created/updated within `windows.themes_days`, no score gate,
-  minus `in_memory`, minus quarantine, minus shown within the cooldown; cap
+  minus `in_memory`, minus quarantine, minus shown within the cooldown, minus an
+  agent's conclusion nobody confirmed (origin `inferred`, 3.8.1 — the same rule as
+  promotions: it reaches `confirm` when people say it again); cap
   `gates.new_facts_cap` (default 30, freshest first).
 - **promotions** — score ≥ min_score, corroboration gate, not in memory,
   not ephemeral. Each carries `why`, `evidence`, `nearest_entry`.
