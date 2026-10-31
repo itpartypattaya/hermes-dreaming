@@ -603,6 +603,10 @@ def _build(args, supplied, listed, expected, skill):
         if key in supplied and supplied[key] and _cron_expr(supplied[key]) is None:
             raise ValueError(f"--{key.replace('_', '-')}: use a five-field cron expression")
     mode_errors = [m for level, m in findings if level == "problem" and "duplicate jobs" not in m]
+    if ids:
+        # --job-id limits the whole operation to the named jobs: another job's state or mode is reported (emitted
+        # with the findings), and blocks only when it is one of them (Codex review of 3.3.2..3.8.0).
+        mode_errors = [m for m in mode_errors if any(m.startswith(f"job {i} (") for i in ids)]
     if mode_errors:
         raise ValueError("nothing was written; " + "; ".join(mode_errors))
     result, refused = [], []

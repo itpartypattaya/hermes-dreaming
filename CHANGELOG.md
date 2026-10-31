@@ -3,6 +3,15 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.2 — 2026-10-31
+
+### Fixed
+- **`install_cron.py --job-id` is no longer blocked by another job.** `--job-id` limits the whole operation to the
+  named jobs, and a refused job's message tells you to name the other jobs with it; yet a job of another role the
+  installer could not classify, or that ran in the wrong mode, stopped the run before the named job was touched. Such
+  a job is now reported and leaves the named one alone; a named job in that shape, or a run without `--job-id`, still
+  stops before the first write (Codex review of 3.3.2..3.8.0). Tests: `tests/test_cron_upgrade.py`.
+
 ## 3.8.1 — 2026-10-31
 
 ### Fixed

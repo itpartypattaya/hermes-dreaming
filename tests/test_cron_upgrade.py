@@ -89,6 +89,30 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(jobs.created, [])
         self.assertEqual(jobs.updated, [("night", {"model": "cheap"})])
 
+    def test_a_broken_other_job_does_not_block_a_named_one(self):
+        """3.8.2 (Codex review of 3.3.2..3.8.0): `--job-id` limits the whole operation to the named jobs (README), and
+        a refused job's message says to name the other jobs with it. A job of another role the installer cannot
+        classify, or that runs in the wrong mode, blocked the named job all the same."""
+        self.ready()
+        others = {"unknown state": self.job("sweep", state="weird"),
+                  "wrong mode": self.job("extract", no_agent=True)}
+        for what, other in others.items():
+            with self.subTest(what):
+                jobs = prompts.StoredJobs([self.job(), other])
+                rc, out = self._run_main(jobs, "--job-id", "night", "--update-existing", "--model", "cheap")
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(jobs.updated, [("night", {"model": "cheap"})])
+                self.assertIn(f"job {other['id']}", out, "the other job's problem is still reported")
+
+    def test_a_broken_named_job_still_blocks_and_so_does_an_untargeted_run(self):
+        self.ready()
+        for args in (("--job-id", "night"), ()):
+            with self.subTest(args=args):
+                jobs = prompts.StoredJobs([self.job(state="weird"), self.job("sweep")])
+                rc, out = self._run_main(jobs, *args, "--update-existing", "--model", "cheap")
+                self.assertEqual(rc, 1, out)
+                self.assertEqual((jobs.created, jobs.updated), ([], []))
+
     def test_empty_schedules_explain_existing_jobs_continue_running(self):
         self.ready()
         jobs = prompts.StoredJobs([self.job(), self.job("extract"), self.job("sweep")])
