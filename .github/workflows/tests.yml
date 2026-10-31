@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: itpartypattaya/hermes-plugin-holographic
-          ref: e385934f9932c5efd4db6e6c8a16e9b566e64988
+          ref: 820b777f48b234577f1c8d74a148e5071e8ab92c
           path: _holographic
           sparse-checkout: screen.py
           sparse-checkout-cone-mode: false
