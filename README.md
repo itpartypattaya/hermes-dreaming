@@ -204,8 +204,9 @@ with explicit model/provider values. Schedule changes support cron expressions t
 Hermes may recalculate the next run and clear pending/quota scheduling state. No job is resumed.
 
 `--job-id <exact-id>` limits the entire operation to that job, including prompt/rebind/settings
-changes; missing jobs of other roles are not created, and another job the installer cannot classify or
-that runs in the wrong mode is reported without blocking the named one. Repeat it to select several jobs. Duplicates
+changes; missing jobs of other roles are not created, and a job of another role the installer cannot
+classify or that runs in the wrong mode is reported without blocking the named one (a job of the same role
+still blocks: both run the same gate script). Repeat it to select several jobs. Duplicates
 are reported with their IDs and active count. Untargeted updates of duplicate roles are refused;
 use explicit IDs to choose which jobs to maintain. Nothing is deleted automatically.
 
