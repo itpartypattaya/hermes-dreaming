@@ -586,6 +586,17 @@ def _parser():
     return ap
 
 
+def _names_job(message, job_id):
+    """Whether a finding is about job *job_id* ("job <id> (<role>): …" or "job <id>: …")."""
+    return message.startswith((f"job {job_id} (", f"job {job_id}:"))
+
+
+def _in_scope(groups, ids):
+    """IDs a --job-id run touches: the named jobs and every job running the same gate script as one of them."""
+    roles = {role for role, group in groups.items() if any(j["id"] in ids for j in group)}
+    return {j["id"] for role in roles for j in groups[role]}
+
+
 def _build(args, supplied, listed, expected, skill):
     groups, findings = inventory(listed, expected)
     ids = set(args.job_id)
@@ -603,6 +614,11 @@ def _build(args, supplied, listed, expected, skill):
         if key in supplied and supplied[key] and _cron_expr(supplied[key]) is None:
             raise ValueError(f"--{key.replace('_', '-')}: use a five-field cron expression")
     mode_errors = [m for level, m in findings if level == "problem" and "duplicate jobs" not in m]
+    if ids:
+        # --job-id limits the whole operation to the named jobs: another job's state or mode is reported (emitted
+        # with the findings) and blocks only when that job is named, or runs the gate script of a named one — an
+        # --upgrade may replace that shared gate (Codex reviews of 3.3.2..3.8.0 and of this change).
+        mode_errors = [m for m in mode_errors if any(_names_job(m, i) for i in _in_scope(groups, ids))]
     if mode_errors:
         raise ValueError("nothing was written; " + "; ".join(mode_errors))
     result, refused = [], []
@@ -660,7 +676,9 @@ def _emit(findings):
         print(f"{level.upper()}: {message}")
 
 
-def _verify(jobs, expected, skill, scripts):
+def _verify(jobs, expected, skill, scripts, ids=frozenset()):
+    """The independent final check. After a --job-id run a job outside its scope (`_in_scope`) is reported as a
+    warning: the run did not touch it, so it does not fail the run (Codex review of the 3.8.2 change)."""
     listed = _list_jobs(jobs)
     groups, findings = inventory(listed, expected)
     for role, group in groups.items():
@@ -675,6 +693,11 @@ def _verify(jobs, expected, skill, scripts):
                 findings.append(("warning", f"job {job['id']}: custom/unknown prompt preserved"))
     for plan in gate_plan(scripts):
         findings.append(("problem", f"gate {plan['script']} still differs"))
+    if ids:
+        outside = [j["id"] for group in groups.values() for j in group if j["id"] not in _in_scope(groups, ids)]
+        findings = [("warning", f"{m} (not named by --job-id, left as is)")
+                    if level == "problem" and any(_names_job(m, i) for i in outside) else (level, m)
+                    for level, m in findings]
     print("Running final cron upgrade check:")
     _emit(findings)
     return 1 if any(level == "problem" for level, _ in findings) else 0
@@ -777,7 +800,7 @@ def _run_jobs(args, supplied, expected, jobs):
             return 1
         print(f"OK: job {jid} updated" + ("; stock prompt updated" if "prompt" in updates else ""))
     if args.upgrade:
-        return max(int(failed), _verify(jobs, expected, skill, scripts))
+        return max(int(failed), _verify(jobs, expected, skill, scripts, set(args.job_id)))
     return int(failed)
 
 
