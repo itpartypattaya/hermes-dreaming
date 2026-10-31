@@ -5077,9 +5077,12 @@ def _decide(inputs, vetoes=frozenset()):
     # matters before it accumulates retrievals), minus what is already in
     # durable memory, minus what was shown within the cooldown (before the cap,
     # so suppressed candidates do not take slots from unseen ones).
+    # An agent's conclusion nobody confirmed (origin `inferred`) is not offered here either: this list goes to USER.md,
+    # and keeping it out of `promotions` alone (3.8.0) left it this door (Codex review of 3.3.2..3.8.0). People saying
+    # it again offer it to `confirm`; once confirmed it comes back by the usual rules.
     new_facts_window = [s for s in safe if s["meta"]["days_old"] <= window_days]
     new_facts_pending = [s for s in new_facts_window
-                         if not s["in_memory"] and not s["staged"]]
+                         if not s["in_memory"] and not s["staged"] and s.get("origin") != "inferred"]
     new_facts = unseen(new_facts_pending, seen_new_facts, now)
     new_facts_suppressed = len(new_facts_pending) - len(new_facts)
     new_facts.sort(key=lambda s: (s["meta"]["days_old"], -s["score"]))
@@ -7265,8 +7268,8 @@ def explain(fact_id, mem_md, corr_days):
         print(f"    {e['day']}: {e['text']}")
     scored = {"meta": meta, "helpful_count": f.get("helpful_count"), "origin": f.get("origin")}
     if f.get("origin") == "inferred":
-        print("origin inferred: an agent's conclusion nobody confirmed is not promoted; people repeating it "
-              "offer it to `confirm`")
+        print("origin inferred: an agent's conclusion nobody confirmed is not promoted, nor offered in new_facts; "
+              "people repeating it offer it to `confirm`")
     else:
         print(f"origin {f.get('origin') or 'not recorded'}: corroboration decides")
     print(f"promotion_ready {promotion_ready(scored)}; in_memory {already_in_memory(f['content'], memory_text)}; "

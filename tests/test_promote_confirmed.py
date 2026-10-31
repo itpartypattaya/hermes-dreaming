@@ -98,6 +98,37 @@ class WithoutOriginsNothingChanges(_Holographic):
         self.assertEqual(self.promoted(self.run_dream()), {1, 2})
 
 
+class InferenceIsNotANewFactForTheProfile(_Holographic):
+    """3.8.1 (Codex review of 3.3.2..3.8.0): `new_facts` is the list the agent reviews for USER.md ("a stable trait of a
+    person → memory target=user"). An inference nobody confirmed left `promotions` in 3.8.0 but still arrived there,
+    so it could reach durable memory through the other door. Same rule as promotions: not offered until a person
+    confirmed it; what was said, confirmed or stored without an origin is offered as before."""
+
+    def fresh(self):
+        self.add_fact(USED, trust=0.5, days_old=1)
+        self.add_fact(OTHER, trust=0.5, days_old=1)
+
+    def offered(self, result):
+        return {f["fact_id"] for f in result["new_facts"]} | {p["fact_id"] for p in result["promotions"]}
+
+    def test_a_fresh_inference_is_not_offered_what_was_said_is(self):
+        self.fresh()
+        self.history({1: "inferred", 2: "said"})
+        result = self.run_dream()
+        self.assertEqual(self.offered(result), {2})
+        self.assertEqual(result["stats"]["new_facts_reviewed"], 1)
+
+    def test_a_confirmed_inference_is_offered(self):
+        self.fresh()
+        self.history({1: "inferred", 2: "inferred"}, confirmed=(1,))
+        self.assertEqual(self.offered(self.run_dream()), {1})
+
+    def test_facts_without_an_origin_are_offered_as_before(self):
+        self.fresh()
+        self.history({1: None, 2: None}, with_origin=False)
+        self.assertEqual(self.offered(self.run_dream()), {1, 2})
+
+
 class ExplainSaysWhy(_Holographic):
     def test_explain_reports_an_inference_as_not_ready_and_a_said_fact_as_ready(self):
         self.used_often()

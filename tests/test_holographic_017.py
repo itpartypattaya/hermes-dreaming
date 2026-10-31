@@ -483,14 +483,15 @@ class OriginTests(_Holographic):
         self.add_fact("Марина предпочитает утренние тренировки по вторникам", trust=0.9, rc=2, helpful=2)
         for d in (1, 3, 5):
             self.add_message(f"Марина снова ходила на утренние тренировки по вторникам, день {d}", days_ago=d)
-        self.history({1: "inferred"})
+        # `said`, not `inferred`: since 3.8.1 neither promotions nor new_facts carry an unconfirmed inference.
+        self.history({1: "said"})
         result = self.run_dream()
         items = result["promotions"] + result["new_facts"]
         self.assertTrue(items)
-        self.assertTrue(all(i["origin"] == "inferred" for i in items))
+        self.assertTrue(all(i["origin"] == "said" for i in items))
         compact = precheck.compact_payload(result)
         shown = compact.get("promotions", []) + compact.get("new_facts", [])
-        self.assertTrue(shown and all(i.get("origin") == "inferred" for i in shown), "the gate keeps the field")
+        self.assertTrue(shown and all(i.get("origin") == "said" for i in shown), "the gate keeps the field")
 
 
 class LeakTests(_Holographic):

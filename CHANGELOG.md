@@ -3,6 +3,16 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.1 — 2026-10-31
+
+### Fixed
+- **USER.md is offered only what a person stands behind, too.** 3.8.0 kept an agent's conclusion nobody confirmed
+  (holographic origin `inferred`) out of `promotions`, but a fresh one still arrived in `new_facts` — the list the
+  agent reviews for USER.md ("a stable trait of a person → `memory` with `target=user`"), held back only by a line of
+  the prompt. It is left out of `new_facts` by the same rule now: when people say it again it reaches `confirm`, and
+  once confirmed it is offered as before. What was said, confirmed or stored without an origin is offered as before;
+  `--explain` says it (Codex review of 3.3.2..3.8.0). Tests: `tests/test_promote_confirmed.py`.
+
 ## 3.8.0 — 2026-10-30
 
 ### Fixed
