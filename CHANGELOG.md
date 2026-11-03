@@ -8,9 +8,10 @@ is the one in `plugin.json`.
 ### Fixed
 - **The nightly job changes entries with `patch`: Hermes 0.22 has no `replace`.** Since core v0.22.0 the memory tool
   offers `add`, `patch` and `remove`, and `replace` answers "'replace' is not available; use 'patch' … Nothing was
-  written" — single or inside `operations[]`. The nightly prompt still taught `memory replace`, so on 0.22 every
-  update of an existing entry, every merge at the char limit and every conflict resolved in place was refused
-  (found by the core contract job, #25). The prompt now teaches `patch` the way core applies it: `old_text` is the
+  written" — single or inside `operations[]`. The nightly prompt still taught `memory replace`, so on 0.22 the first
+  try of every update of an existing entry, merge at the char limit or conflict resolved in place was refused, and
+  the night got its edit through only when the model followed the error's hint to `patch` (found by the core
+  contract job, #25; on a live install 17 such refusals in all, the model recovered each time). The prompt now teaches `patch` the way core applies it: `old_text` is the
   exact text to change, copied from `nearest_entry.full_entry`, `content` its new text, the rest of the entry is kept,
   and the whole `full_entry` as `old_text` rewrites the entry; `replace` stays only as the fallback for a tool without
   `patch` (Hermes 0.21). The anchor `old_text`, which only locates an entry, is not handed to `patch`: with a whole
