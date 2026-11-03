@@ -6,6 +6,22 @@ is the one in `plugin.json`.
 ## Unreleased
 
 ### Fixed
+- **The nightly job changes entries with `patch`: Hermes 0.22 has no `replace`.** Since core v0.22.0 the memory tool
+  offers `add`, `patch` and `remove`, and `replace` answers "'replace' is not available; use 'patch' … Nothing was
+  written" — single or inside `operations[]`. The nightly prompt still taught `memory replace`, so on 0.22 the first
+  try of every update of an existing entry, merge at the char limit or conflict resolved in place was refused, and
+  the night got its edit through only when the model followed the error's hint to `patch` (found by the core
+  contract job, #25; on a live install 17 such refusals in all, the model recovered each time). The prompt now teaches `patch` the way core applies it: `old_text` is the
+  exact text to change, copied from `nearest_entry.full_entry`, `content` its new text, the rest of the entry is kept,
+  and the whole `full_entry` as `old_text` rewrites the entry; `replace` stays only as the fallback for a tool without
+  `patch` (Hermes 0.21). The anchor `old_text`, which only locates an entry, is not handed to `patch`: with a whole
+  new entry the entry would be spliced into itself. `install_cron.py --upgrade` (or a re-run) moves installed jobs to
+  the new prompt; a job whose prompt was edited by hand is reported, not touched. `nearest_entry` notes, `SKILL.md`,
+  `references/scoring.md` and the README say the same.
+- **A write core staged for approval as a `patch` counts as waiting.** The pass read only `add` / `replace` /
+  `remove` from the `/memory pending` queue, so with `memory.write_approval` on, a staged patch was invisible: its
+  candidate was offered again the next night and the entry it changes could be asked about. The entry after the patch
+  (core's pinned `matched_entry` with the span swapped) now counts as staged text, and the pinned entry as going away.
 - **The loss guard compares a lost entry only with what the night wrote** (review of 3.8.4). It looked a lost entry
   up in every entry of memory, the untouched ones too, so a deleted entry that shared most of its words with a sibling
   still standing ("Masha goes to ballet on Mondays…" next to "…to swimming on Thursdays…") counted as rewritten — and
@@ -27,6 +43,11 @@ is the one in `plugin.json`.
 - **Against a snapshot of an older version the alert no longer says the text is nowhere in memory** — that version
   kept nothing to look it up by. It says the rewrite could not be told from a loss, and `unchecked` counts such
   entries. The first night after this update reads 3.8.4's signatures with its own reading of numbers.
+
+### Internal
+- **The core contract job checks the memory edits**: every `memory <action>` the nightly prompt names is in core's
+  memory tool schema, a `patch` built from `nearest_entry.full_entry` changes one span or the whole entry in a file
+  core wrote, and a patch staged under `write_approval` is read by the pass as waiting.
 
 ## 3.8.4 — 2026-11-03
 

@@ -80,7 +80,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `duplicate_pairs` | ask "merge?" by its number (`D-17`), both texts whole, one line each beyond the 6; no `fact_store` call at night; on the human's "yes" to that number — `merge` with `expect` (step 7e) |
 | `new_facts` | review every one; a stable trait of a person → `memory` with `target=user` |
 | `origin` on an item | who stands behind the fact (holographic ≥ 0.15.0): `said`, `confirmed`, `inferred` (an agent's conclusion nobody confirmed — `promotions` and `new_facts` never carry one; anywhere else write it only when its evidence is the person's own words, else ask); no field = unknown |
-| `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `replace` if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never replace |
+| `conflicts` | same subject, different numbers — or `fact_negations` ≠ `memory_negations` (one of them says "not"): `patch` the entry if the newer one is trustworthy, else ask; with `replace_unsafe` the entry holds a secret or an instruction and nothing of it is shown — ask, never edit it |
 | `md_decays`, `fact_decays` | ask "still relevant?"; never delete on your own; the answer → step 7 |
 | `ephemeral_events` | never promote — context only |
 | `memory_pressure` | consolidate the file it names before adding anything |
@@ -109,27 +109,29 @@ in each of them (`references/scoring.md`, "Every language").
 3. **Write budget.** Per night at most **6 memory changes**, at most **3 new entries**. A night with
    zero writes is a success. Absolute dates only (2026-08-15), never "yesterday". Never write
    schedules, one-off events, secrets, raw medical data or unverified guesses.
-4. **`add` is the default; `replace` only with an anchor — and it rewrites the WHOLE entry.**
-   `old_text` only *locates* the entry; the core then replaces that entire §-entry with your
-   `new_content` (an entry is everything between `§` delimiters, including its heading and every
-   paragraph). So `nearest_entry` hands over, besides `target` (`memory` or `user`) and `entry`
-   (a truncated preview — never use the preview as `old_text`):
-   - `old_text` — a verbatim anchor, copy it exactly, whitespace included;
-   - `full_entry` — the entry as it is on disk right now. **This is what you are about to
-     overwrite**: carry over everything worth keeping into `new_content`;
-   - `multi_section: true` and a `note` when the entry has more than one line — then `new_content`
-     must contain the merged entry, not just your new sentence;
+4. **`add` is the default; an existing entry is changed with `patch`, and only from `full_entry`.**
+   Hermes ≥ 0.22 offers `add`, `patch` and `remove` (`replace` is gone: "'replace' is not available;
+   use 'patch' … Nothing was written"). `patch` changes ONE span: `old_text` is the exact text to
+   change, `content` its new text, and the rest of the entry is kept. To rewrite a whole entry,
+   `old_text` is the whole entry. The span must occur once in the entry. So `nearest_entry` hands
+   over, besides `target` (`memory` or `user`) and `entry` (a truncated preview — never use the
+   preview as `old_text`):
+   - `full_entry` — the entry as it is on disk right now. Copy the span to change from it verbatim,
+     whitespace included (or all of it, to rewrite the entry);
+   - `multi_section: true` and a `note` when the entry has more than one line — patch the line that
+     changes, not the whole entry with your new sentence;
    - `replace_unsafe: true` when the entry is too long to show in full, holds a secret or an
      instruction (then `entry` is a placeholder), or carried a fact that was since forgotten — do not
-     replace it blind: `add` a separate entry or raise the question instead.
+     edit it blind: `add` a separate entry or raise the question instead;
+   - `old_text` — a verbatim anchor for **Hermes 0.21**, whose tool has `replace` and no `patch`:
+     there `old_text` only *locates* the entry and the core replaces that entire §-entry with your
+     content (an entry is everything between `§` delimiters, including its heading and every
+     paragraph), so carry over everything worth keeping from `full_entry`. Never pass this anchor
+     to `patch` together with the whole new entry: the entry would be spliced into itself.
 
-   Pass `full_entry` as **`matched_entry`** whenever the tool accepts it: the core then pins the
-   edit to that exact entry (and, with an approval gate, applies it to that entry only, however
-   long the review takes) instead of re-matching the anchor against a file that may have moved on.
-
-   Use `replace` only when `nearest_entry` is the same subject and carries `old_text`. If a
-   single `replace` fails, copy an exact substring from the error's `current_entries`, retry
-   **once**, then stop and report. A failed **batch** is different: it answers without
+   Change an entry only when `nearest_entry` is the same subject and carries `full_entry`. If a
+   single change fails, copy an exact span from the error's `current_entries` (or
+   `closest_entries`), retry **once**, then stop and report. A failed **batch** is different: it answers without
    `current_entries` on purpose (the inventory it would echo is what the consolidation was
    called to shrink), with at most a few `closest_entries` on newer cores — so recover by
    re-issuing the ops one at a time, not by guessing a new anchor.
@@ -150,7 +152,7 @@ in each of them (`references/scoring.md`, "Every language").
    decay sections — no rejection needed: each is shown at most once per 14 days (a reworded or
    re-extracted fact is new work and will come again, on purpose).
 6. **Conflicts.** Usually an update (a thread moved, a price changed). Never overwrite silently:
-   `replace` when the newer statement is trustworthy, otherwise ask, and write or reject by the
+   `patch` the entry when the newer statement is trustworthy, otherwise ask, and write or reject by the
    answer. With `stats.fact_history: true`, when the older statement is also a fact of the store,
    `fact_store change {fact_id: <older>, content: <newer>}` keeps its history instead of a second fact.
    Give `change` the newer statement's `origin` (holographic ≥ 0.15.0) — the candidate's own `origin`
@@ -169,7 +171,7 @@ in each of them (`references/scoring.md`, "Every language").
      memory entry that carries it (`memory` remove). Only on the human's words, never on your own.
 
    Without `fact_history` an outdated **fact** → `dream-reject.py`, as before. An outdated **memory
-   entry** → `memory` remove or replace (the reject list does not filter memory entries). "Still
+   entry** → `memory` remove or patch (the reject list does not filter memory entries). "Still
    relevant" needs nothing: an entry kept past 14 days, or rewritten in place (for example with a
    fresh "as of" date), counts as confirmed and is not asked about for 90 days. Entries with a pin
    marker (📌 by default) are never asked about.
@@ -193,7 +195,7 @@ in each of them (`references/scoring.md`, "Every language").
    "changed now" when it got keywords; since then an `update` carrying only `keywords` keeps the
    fact's age), at most `keywords.cap` facts a night (10).
 
-   Check the returned keywords (holographic >= 0.18.1): keywords_dropped means some were not kept; shorten or replace rejected entries, keep at most 12 distinct keywords of at most 40 characters each. keywords_not_set means an existing fact kept its keywords: use action=update with that returned fact_id if enrichment is needed; do not repeat add. Preserve unrelated existing keywords. Make at most one keyword-only retry with the combined, deduplicated list; if it still fails, leave the fact and report the incomplete enrichment briefly. Never claim rejected keywords were saved. Older providers without these response fields keep the existing best-effort behavior.
+   Check the returned keywords (holographic >= 0.18.1): keywords_dropped means some were not kept; shorten or reword rejected keywords, keep at most 12 distinct keywords of at most 40 characters each. keywords_not_set means an existing fact kept its keywords: use action=update with that returned fact_id if enrichment is needed; do not repeat add. Preserve unrelated existing keywords. Make at most one keyword-only retry with the combined, deduplicated list; if it still fails, leave the fact and report the incomplete enrichment briefly. Never claim rejected keywords were saved. Older providers without these response fields keep the existing best-effort behavior.
 
    Keywords and **search by meaning** (holographic ≥ 0.14, optional and online) do different jobs:
    meaning reaches a paraphrase that shares no words, but only while the embeddings endpoint
@@ -263,7 +265,8 @@ in each of them (`references/scoring.md`, "Every language").
      is a past claim (`past_version`); after correct, ordinary add may accept it again. Never re-add the copy
      merely to undo a merge or resurrect an old claim; extraction skips the merged copy text even after correct.
 8. **Memory pressure.** The char limit gates writes silently. Tidy the named file: merge close
-   entries with one `replace` (anchor copied verbatim from `current_entries`), drop entries that
+   entries in one `operations[]` call (`patch` one, span copied verbatim from `current_entries`,
+   `remove` the others), drop entries that
    only restate the system prompt (routing tables, persona rules, skill triggers). Keep what exists
    nowhere else — ids, agreements, standing permissions; in doubt, merge rather than delete. Report
    the numbers: `🧹 memory 92% → 64%, merged 12 entries`. After a manual cleanup put the dropped
@@ -312,9 +315,9 @@ in each of them (`references/scoring.md`, "Every language").
   with a non-empty assistant message; a night that failed before you answered re-shows the same
   items. When something breaks, still finish with a one-line report.
 - **Report failures precisely.** Only the exact core error `Memory is not available` becomes
-  `⚠️ Nightly dream not applied: memory temporarily unavailable; facts not saved`. A zero-match
-  `replace`, a char-limit refusal or the per-turn guard means memory works and the writes did not
-  land: say so, e.g. `⚠️ 3 facts not saved: replace found no matching entry; will retry tonight`.
+  `⚠️ Nightly dream not applied: memory temporarily unavailable; facts not saved`. A `patch` that
+  found no entry, a char-limit refusal or the per-turn guard means memory works and the writes did not
+  land: say so, e.g. `⚠️ 3 facts not saved: no matching entry for the update; will retry tonight`.
 - **A rejection is indefinite and invisible.** Every few months, or when asked "what is muted",
   show `dream-reject.py --list` — a half-year-old "outdated" may be true again. Deleting a fact
   from the store is a separate action, only on an explicit request.

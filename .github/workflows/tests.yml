@@ -142,3 +142,45 @@ jobs:
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
         run: hermes plugins validate --install-deps "$GITHUB_WORKSPACE/plugin" </dev/null
+
+  # The files core writes and the dream reads (cron/jobs.json, config.yaml, memories/*.md, state.db), made by the
+  # latest core release's own code: the unit tests use hand-written copies, which cannot notice core changing them.
+  core-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - name: Pick the core ref
+        id: core
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(gh release view --repo NousResearch/hermes-agent --json tagName --jq .tagName)
+          echo "core ref: $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+          ref: ${{ steps.core.outputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install hermes-agent (through uv with core's overrides)
+        run: |
+          python -m pip install "uv==0.13.3"
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('hermes-agent/pyproject.toml', 'rb')).get('tool', {}).get('uv', {}).get('override-dependencies', [])))" > hermes-overrides.txt
+          python -m uv pip install --system --overrides hermes-overrides.txt -e ./hermes-agent
+      # Installs the plugin from this checkout with `hermes plugins install file://…`: the committed tree, as a user gets it.
+      - name: Core contract
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+          HERMES_AGENT_REPO: ${{ github.workspace }}/hermes-agent
+          PLUGIN_REPO: ${{ github.workspace }}/plugin
+          # Stay on the interpreter installed above: otherwise the first `hermes` call adopts the checkout as a
+          # self-updating install, builds its own runtime in HERMES_HOME, and core's bootstrap later re-execs
+          # this script onto that runtime (which starts the contract over from an empty home).
+          HERMES_DISABLE_LAZY_INSTALLS: "1"
+        run: python plugin/tests/contract/core_contract.py </dev/null
