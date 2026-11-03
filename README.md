@@ -47,7 +47,8 @@ and the forget sweep beside it](docs/overview.png)
 - **Matching against memory.** Exact, declarative alias rules and stemmed containment in three
   directions; a candidate that repeats an entry with *different numbers* is a possible update
   (`conflicts`), not a duplicate. Every candidate carries the nearest entry, which file it lives in
-  and a verbatim `old_text` anchor for `memory replace`.
+  and its full text, the source of the verbatim span `memory patch` changes (Hermes ≥ 0.22), plus an
+  `old_text` anchor for the `memory replace` of Hermes 0.21.
 - **Screening.** Secrets and prompt-injection are quarantined — by the dream's own rules and by the holographic
   provider's screen (credentials in its 18 languages, token shapes, environment assignments, instructions in any
   language), which the provider applies only to what it stores and recalls next — dated events expire (dates
@@ -648,8 +649,8 @@ behaviour against `SKILL.md` with skill-creator; CI does not run them. Issues an
   in the cron session) is closed by cooldowns on the script side, not by agent discipline.
 - **Text, not ids.** SQLite reuses ids; state is keyed by a text fingerprint, so a re-extracted fact
   is recognised.
-- **Zero writes is a success.** A night is capped at 6 memory changes, and `replace` is used only
-  with a verbatim anchor the script hands over.
+- **Zero writes is a success.** A night is capped at 6 memory changes, and an entry is changed only
+  with text the script hands over verbatim.
 - Borrowed ideas: OpenClaw (phases, weights, gates, loss fraction, explain), mem0 (nearest entry →
   update instead of append), Graphiti (supersession as a flag), Generative Agents (evidence
   citations), MemoryBank (decay by strength).
