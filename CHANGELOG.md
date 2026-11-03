@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.5 — 2026-11-03
 
 ### Fixed
 - **The nightly job changes entries with `patch`: Hermes 0.22 has no `replace`.** Since core v0.22.0 the memory tool
