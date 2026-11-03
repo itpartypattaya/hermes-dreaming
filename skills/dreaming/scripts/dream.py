@@ -4359,58 +4359,140 @@ def _entry_head_key(entry):
 # 4 entries, merged 1" read as "5 entries are gone" three nights running, and
 # the agent asked the human about a deletion nobody made (#21). So the snapshot
 # also keeps what each entry SAYS: an entry whose key is gone counts as lost only
-# when no current entry holds most of its word stems and every one of its numbers
-# ("door code 4417" and "door code 9032" share every word).
+# when the entries the night wrote hold most of its word stems and every one of
+# its numbers ("door code 4417" and "door code 9032" share every word).
+#
+# Review of 3.8.4: only entries the night wrote or changed are compared — a
+# deleted entry looked "rewritten" into a sibling nobody touched, and that
+# pulled the share of losses under the threshold; one entry split in two is
+# still said by both halves together; numbers are compared as numbers (a list
+# number is not one, "9,000" is 9000, "3 November 2026" holds the month); an
+# entry of short words is judged by those words.
 REWRITE_COVERAGE = 0.6
 ENTRY_PREVIEW_CHARS = 60
+# 2: numbers as numbers, `wide` / `grams` for entries of short words. Format 1 (3.8.4) hashed every run of digits.
+SIG_FORMAT = 2
 _NUMBER_RE = re.compile(r"\d+")
+_LIST_NUMBER_RE = re.compile(r"(?m)^[ \t>#]*\d{1,3}[.)](?=[ \t])")
+# 9,000 / 9 000 / 9'000 (and the no-break spaces of a typeset "18 000"); not a dot, which is also a decimal point
+_THOUSANDS_RE = re.compile(r"(?<!\d)\d{1,3}(?:[,'   ]\d{3})+(?!\d)")
+_MONTHS = ("jan|january|январ[а-я]*", "feb|february|феврал[а-я]*", "mar|march|март[а-я]*", "apr|april|апрел[а-я]*",
+           "may|ма[йяюе]", "jun|june|июн[а-я]*", "jul|july|июл[а-я]*", "aug|august|август[а-я]*",
+           "sep|sept|september|сентябр[а-я]*", "oct|october|октябр[а-я]*", "nov|november|ноябр[а-я]*",
+           "dec|december|декабр[а-я]*")
+_MONTH_RES = [re.compile(rf"(?:{m})") for m in _MONTHS]
+_MONTH_WORD_RE = re.compile(r"\b(?:" + "|".join(_MONTHS) + r")\b")
+_DAY_BEFORE_RE = re.compile(r"\d(?:-?[^\W\d_]{1,3})?[ \t,.]*$")    # 3 / 3rd / 15-го right before the month
+_NUMBER_AFTER_RE = re.compile(r"[ \t,.]*\d")                       # November 3 / May 2026
+_GRAM_TEXT_RE = re.compile(r"[\W\d_]+")
 
 
 def _short_hash(s):
     return hashlib.md5(s.encode("utf-8")).hexdigest()[:8]
 
 
+def _month_numbers(low):
+    """A month's name next to a number, as its number: "3 november 2026" says what "2026-11-03" does. Alone ("may",
+    "march") it is a word."""
+    def number(m):
+        if not (_DAY_BEFORE_RE.search(low, 0, m.start()) or _NUMBER_AFTER_RE.match(low, m.end())):
+            return m.group(0)
+        return next(f" {i} " for i, rx in enumerate(_MONTH_RES, 1) if rx.fullmatch(m.group(0)))
+    return _MONTH_WORD_RE.sub(number, low)
+
+
+def _entry_numbers(entry):
+    """The numbers an entry says, hashed: no list numbers, thousands joined, a month named next to a number."""
+    low = _LIST_NUMBER_RE.sub(" ", _fold(entry).lower())
+    low = _THOUSANDS_RE.sub(lambda m: re.sub(r"\D", "", m.group(0)), low)
+    return {_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_month_numbers(low))}
+
+
+def _entry_grams(entry):
+    """Character trigrams of an entry's letters, hashed: what is left to compare an entry of no words by."""
+    text = " ".join(_GRAM_TEXT_RE.sub(" ", _fold(entry).lower()).split())
+    return {_short_hash(text[i:i + 3]) for i in range(len(text) - 2)}
+
+
+def _entry_features(entry):
+    """What an entry the night wrote or changed says, hashed, in every form the guard compares: word stems, stems of
+    the wide tokenizer (words of three letters), character trigrams, numbers, and numbers the way format 1 read them."""
+    return {"stems": {_short_hash(s) for s in _stems(sig_tokens(entry))},
+            "wide": {_short_hash(s) for s in _stems(sig_tokens(entry, wide=True))},
+            "grams": _entry_grams(entry),
+            "nums": _entry_numbers(entry),
+            "nums_v1": {_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_fold(entry))}}
+
+
 def _entry_sig(entry):
     """What an entry says, for telling a rewrite from a loss: its stems and numbers, hashed — the snapshot holds no
-    memory text beyond a short preview to name a lost entry by, and none at all of an entry with a secret."""
-    sig = {"stems": sorted({_short_hash(s) for s in _stems(sig_tokens(entry))}),
-           "nums": sorted({_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_fold(entry))})}
-    if not classify_unsafe(entry):
+    memory text beyond a short preview to name a lost entry by, and none at all of an entry with a secret.
+
+    An entry of fewer than two stems ("Cat is Dan. Pet is dog.") keeps the stems of its short words too (`wide`),
+    one of none even then its character trigrams (`grams`) — but not an entry with a secret: three characters are
+    easy to guess back from a hash, and together they spell the secret."""
+    stems = {_short_hash(s) for s in _stems(sig_tokens(entry))}
+    unsafe = classify_unsafe(entry)
+    sig = {"stems": sorted(stems), "nums": sorted(_entry_numbers(entry))}
+    if len(stems) < 2:
+        wide = {_short_hash(s) for s in _stems(sig_tokens(entry, wide=True))}
+        grams = set() if wide or unsafe else _entry_grams(entry)
+        if wide:
+            sig["wide"] = sorted(wide)
+        elif grams:
+            sig["grams"] = sorted(grams)
+    if not unsafe:
         sig["preview"] = re.sub(r"\s+", " ", entry).strip()[:ENTRY_PREVIEW_CHARS]
     return sig
 
 
-def _entry_sizes_of(path):
+def _entry_sizes_of(path, entries=None):
     """Snapshot of one file: sizes by entry key and by entry head, signatures by entry key.
 
     Sizes make the guard notice that one BIG entry vanished among small ones;
     head keys make it notice an entry that kept its beginning and lost its
     body — the exact shape of a replace that swallowed a multi-section entry;
     signatures tell an entry the pass rewrote from one that is gone."""
-    entries = parse_md_entries(path)
+    entries = parse_md_entries(path) if entries is None else entries
     return {"entries": {_entry_key(e): len(e) for e in entries},
             "heads": {_entry_head_key(e): len(e) for e in entries},
-            "sigs": {_entry_key(e): _entry_sig(e) for e in entries}}
+            "sigs": {_entry_key(e): _entry_sig(e) for e in entries},
+            "sig_format": SIG_FORMAT}
 
 
 def _snapshot_sigs(value):
-    """{entry_key: (stems, nums, preview)} of a previous snapshot; empty for the formats before signatures."""
+    """{entry_key: (kind, features, nums, nums_kind, preview)} of a previous snapshot; empty for the formats before
+    signatures. `kind` is the feature the entry is compared by, `nums_kind` how its numbers were read."""
     sigs = value.get("sigs") if isinstance(value, dict) else None
+    nums_kind = "nums" if isinstance(value, dict) and value.get("sig_format") == SIG_FORMAT else "nums_v1"
     out = {}
     for key, sig in (sigs.items() if isinstance(sigs, dict) else ()):
         if isinstance(sig, dict) and isinstance(sig.get("stems"), list) and isinstance(sig.get("nums"), list):
+            kind = next((k for k in ("wide", "grams") if isinstance(sig.get(k), list)), "stems")
             preview = sig.get("preview")
-            out[str(key)] = (set(map(str, sig["stems"])), set(map(str, sig["nums"])),
+            out[str(key)] = (kind, set(map(str, sig[kind])), set(map(str, sig["nums"])), nums_kind,
                              preview if isinstance(preview, str) else None)
     return out
 
 
-def _still_said(sig, current):
-    """Whether a lost entry's text still stands in one current entry (of any durable file): most of its stems and
-    all of its numbers. An entry of no stems cannot be judged this way and counts as lost."""
-    stems, nums, _ = sig
-    return bool(stems) and any(nums <= cur_nums and len(stems & cur_stems) >= REWRITE_COVERAGE * len(stems)
-                               for cur_stems, cur_nums in current)
+def _still_said(sig, changed):
+    """Whether a lost entry's text still stands in the entries the night wrote or changed (of any durable file):
+    most of its stems and all of its numbers, in one of them (a rewrite, a merge) or across the pieces cut out of it
+    (a split: entries made mostly of its words). An entry with nothing to compare by counts as lost."""
+    kind, feats, nums, nums_kind, _ = sig
+    if not feats:
+        return False
+    pieces, piece_nums = set(), set()
+    for cur in changed:
+        shared = feats & cur[kind]
+        if not shared:
+            continue
+        if len(shared) >= REWRITE_COVERAGE * len(feats) and nums <= cur[nums_kind]:
+            return True
+        if len(shared) >= 2 and len(shared) >= REWRITE_COVERAGE * len(cur[kind]):
+            pieces |= shared
+            piece_nums |= cur[nums_kind]
+    return len(pieces) >= REWRITE_COVERAGE * len(feats) and nums <= piece_nums
 
 
 def _ints(value):
@@ -4481,12 +4563,19 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
         probe_alerts, probes_missing = check_probes(memory_text, previous.get("_probes_missing"))
         alerts.extend(probe_alerts)
     paths = _memory_candidate_paths(mem_md)
+    entries_now = {}
     for p in paths:
         if os.path.exists(p):
-            current[_rel_home(p)] = _entry_sizes_of(p)
-    # every entry of every durable file: the pass may move an entry from MEMORY.md to USER.md
-    said_now = [(set(sig["stems"]), set(sig["nums"]))
-                for snap in current.values() for sig in snap["sigs"].values()]
+            entries = parse_md_entries(p)
+            current[_rel_home(p)] = _entry_sizes_of(p, entries)
+            entries_now.update((_entry_key(e), e) for e in entries)
+    # Every durable file: the pass may move an entry from MEMORY.md to USER.md. Only what the night wrote or changed
+    # can hold a rewrite — an entry nobody touched says what it said yesterday, whatever words it shares with a lost one.
+    was_sizes = {}
+    for name, value in previous.items():
+        if not name.startswith("_"):
+            was_sizes.update(_snapshot_sizes(value)[0])
+    changed = [_entry_features(e) for k, e in entries_now.items() if was_sizes.get(k) != len(e)]
     for p in paths:
         name = _rel_home(p)
         prev_sizes, prev_heads = _snapshot_sizes(previous.get(name))
@@ -4513,7 +4602,9 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             prev_sigs = _snapshot_sigs(previous.get(name))
             moved = prev - keys
             # a snapshot from before signatures cannot tell a rewrite: such an entry counts as lost, as it did
-            lost = {k for k in moved if k not in prev_sigs or not _still_said(prev_sigs[k], said_now)}
+            lost = {k for k in moved if k not in entries_now
+                    and (k not in prev_sigs or not _still_said(prev_sigs[k], changed))}
+            unchecked = len([k for k in lost if k not in prev_sigs])
             rewritten = len(moved) - len(lost)
             frac = len(lost) / len(prev)
             prev_chars = prev_total
@@ -4522,17 +4613,23 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             if frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION or char_frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION:
                 # Entry count alone misses "one big entry vanished"; the share of
                 # characters alone misses "many small entries gone". Both, then.
-                named = [prev_sigs[k][2] for k in sorted(lost, key=lambda k: -prev_sizes.get(k, 0))
-                         if k in prev_sigs and prev_sigs[k][2]]
+                named = [prev_sigs[k][4] for k in sorted(lost, key=lambda k: -prev_sizes.get(k, 0))
+                         if k in prev_sigs and prev_sigs[k][4]]
                 listed = "; ".join(f"“{t}…”" for t in named[:5]) + (f"; {len(named) - 5} more" if len(named) > 5
                                                                     else "")
+                # A snapshot of an older version holds nothing to look the text up by: say so, not "nowhere".
+                gone = ("their text is nowhere in memory" if not unchecked else
+                        f"the previous snapshot is from an older version and does not say what "
+                        f"{'they' if unchecked == len(lost) else f'{unchecked} of them'} said, so a rewrite could "
+                        f"not be told from a loss — some may only have been reworded")
                 # Only text that is nowhere is a question for the human; the pass's own rewrites are not.
                 alerts.append({"kind": "memory_loss", "file": name,
                                "lost": len(lost), "had": len(prev),
                                "lost_chars": lost_chars, "had_chars": prev_chars,
                                "rewritten": rewritten, "entries": named,
+                               **({"unchecked": unchecked} if unchecked else {}),
                                "message": f"{name}: {len(lost)} of {len(prev)} entries present at the "
-                                          f"previous pass are gone and their text is nowhere in memory "
+                                          f"previous pass are gone and {gone} "
                                           f"({round(100 * frac)}% of entries, "
                                           f"{round(100 * char_frac)}% of characters)"
                                           + (f": {listed}" if listed else "") + ". "
@@ -6396,7 +6493,9 @@ def _read_state_file(path):
     if not path:
         return {}, None
     try:
-        with open(path, encoding="utf-8") as f:
+        # -sig: a BOM (PowerShell 5, a Windows editor) is not a broken file — read as one, the snapshot went aside
+        # and the loss guard ran without its baseline (review of 3.8.4)
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except FileNotFoundError:
         return {}, None

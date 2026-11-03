@@ -9,7 +9,10 @@ import tempfile
 import time
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills/dreaming/scripts/dream_experience.py"
+# the repo (tests/ next to skills/dreaming/) or the skill's own mirror (tests/ inside it), as in test_dream
+_HERE = Path(__file__).resolve().parents[1]
+ROOT = _HERE / "skills" / "dreaming" if (_HERE / "skills" / "dreaming" / "SKILL.md").is_file() else _HERE
+SCRIPT = ROOT / "scripts" / "dream_experience.py"
 
 
 class ExperienceReports(unittest.TestCase):

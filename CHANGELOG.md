@@ -22,6 +22,27 @@ is the one in `plugin.json`.
   `remove` from the `/memory pending` queue, so with `memory.write_approval` on, a staged patch was invisible: its
   candidate was offered again the next night and the entry it changes could be asked about. The entry after the patch
   (core's pinned `matched_entry` with the span swapped) now counts as staged text, and the pinned entry as going away.
+- **The loss guard compares a lost entry only with what the night wrote** (review of 3.8.4). It looked a lost entry
+  up in every entry of memory, the untouched ones too, so a deleted entry that shared most of its words with a sibling
+  still standing ("Masha goes to ballet on Mondays…" next to "…to swimming on Thursdays…") counted as rewritten — and
+  three deleted entries of ten dropped to two, under the 25% threshold, with no alert at all. Now only entries the
+  night added or changed can hold a rewrite; an entry moved verbatim to another durable file is still not a loss.
+- **An entry split in two is not a loss.** Neither half holds 60% of its words, so the split read as a deletion; the
+  pieces cut out of an entry (entries made mostly of its words) now count together. Half of a split entry gone is
+  still a loss.
+- **Numbers are compared as numbers.** Every run of digits had to come back as is, so a numbered list turned into
+  bullets, "9,000" written as "9000" (or "18 000" as "18000") and "2026-11-03" written as "3 November 2026" (or
+  "15.01.2027" as "15 января 2027") each raised a false alarm. List numbers are not counted, thousands are joined, a
+  month named next to a number counts as its number. A date moved to another day is still a loss.
+- **An entry of short words is judged by its words.** "Cat is Dan. Pet is dog." has no word of four letters, so any
+  rewording made it lost; such an entry is now compared by its words of three letters, and one of no such words by
+  its character trigrams (not an entry with a secret).
+- **A snapshot saved with a UTF-8 BOM is still the baseline.** A Windows editor or PowerShell 5 adds one; read as
+  plain UTF-8 the snapshot was moved aside as corrupt and that night's guard ran with nothing to compare. All the
+  dream's state files are read with `utf-8-sig` now.
+- **Against a snapshot of an older version the alert no longer says the text is nowhere in memory** — that version
+  kept nothing to look it up by. It says the rewrite could not be told from a loss, and `unchecked` counts such
+  entries. The first night after this update reads 3.8.4's signatures with its own reading of numbers.
 
 ### Internal
 - **The core contract job checks the memory edits**: every `memory <action>` the nightly prompt names is in core's
@@ -38,7 +59,7 @@ is the one in `plugin.json`.
   deletion nobody made. The snapshot now also keeps what each entry says — its word stems and numbers, hashed — and an
   entry whose key moved counts as lost only when no current entry of any durable file holds 60% of its stems and all
   of its numbers (two door codes share every word). The alert names the lost entries by a 60-character preview (none
-  for an entry with a secret) and says separately how many were rewritten or merged, which is not a question for the
+  for an entry with a secret or an instruction) and says separately how many were rewritten or merged, which is not a question for the
   human. Thresholds are unchanged. The first night after the update compares with a snapshot without signatures and
   judges as before; from the next night on, rewrites are told apart.
 
