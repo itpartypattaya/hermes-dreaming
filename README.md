@@ -190,8 +190,10 @@ alerts, assistant bridges, machine-generated cards — under `excluded_threads`.
 
 The CLI has no flag for `enabled_toolsets`, and `cron/jobs.json` is live scheduler state, so job
 creation goes through the Hermes Python API. The jobs get the plugin skill's qualified name
-(`agent-plugin-hermes-dreaming-<hash>:dreaming`) straight from Hermes' plugin registry, so the plugin
-must be enabled first; all three gates likewise prefer the plugin's copy of `dream.py`. Re-running
+straight from Hermes' plugin registry (`hermes-dreaming:dreaming` on Hermes 0.22.6; earlier cores named
+it `agent-plugin-hermes-dreaming-<hash>:dreaming`), so the plugin must be enabled first. When Hermes
+renames it, a job bound to the old name runs without the skill: `install.py --check` reports a stale
+skill binding, and `install_cron.py --rebind` points the job at the current name; all three gates likewise prefer the plugin's copy of `dream.py`. Re-running
 `install_cron.py` updates existing jobs whose prompts exactly match a known shipped template for
 that job's role. Local edits (even whitespace), missing prompts and unknown templates are preserved
 with a warning: compare them with `DREAM_PROMPT` / `EXTRACT_PROMPT` in the installed script and

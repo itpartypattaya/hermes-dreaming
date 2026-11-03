@@ -38,8 +38,9 @@ a problem; `--rebind` updates its skill in place.
 
 The jobs load the skill they were installed with. Installed as a plugin
 (`hermes plugins install hermes-dreaming`), that is the plugin's
-own, catalog-pinned skill: portable plugin skills are namespaced
-(`agent-plugin-hermes-dreaming-<hash>:dreaming`), so the qualified name is taken
+own, catalog-pinned skill: plugin skills are namespaced, and the namespace is
+Hermes' business (`hermes-dreaming:dreaming` on 0.22.6, before that
+`agent-plugin-hermes-dreaming-<hash>:dreaming`), so the qualified name is taken
 from Hermes' plugin registry rather than guessed. A regular skill install
 (`skills/[<category>/]dreaming`) is used only when the plugin is absent.
 Requires Hermes >= 0.21: cron sessions reach memory and `fact_store` natively.
