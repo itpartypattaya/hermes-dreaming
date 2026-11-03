@@ -11,7 +11,9 @@ permissions:
 
 jobs:
   unittest:
-    runs-on: ubuntu-latest
+    # 24.04, not latest: setup-python has no 3.9 for Ubuntu 26.04 (ubuntu-latest since November 2026), and 3.9 is
+    # the oldest Python the stdlib-only skill promises.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

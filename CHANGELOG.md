@@ -10,6 +10,8 @@ is the one in `plugin.json`.
   providers each feature needs (0.19 for merge, 0.20.1 for the experience journal). 0.26.x changed neither the
   screen nor the store's schema: 933 OK locally against 0.26.2. A later release that changes `screen.py` fails the
   copy check in that step, so the copy is taken again before the dream misses a new rule.
+- **The unittest matrix runs on `ubuntu-24.04`**: `ubuntu-latest` moved to Ubuntu 26.04, where setup-python has no
+  3.9, and 3.9 is the oldest Python the README promises.
 
 ## 3.8.3 — 2026-10-31
 
