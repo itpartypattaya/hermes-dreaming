@@ -84,6 +84,22 @@ jobs:
         env:
           HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic020
         run: python -m unittest discover -s tests -p 'test_task_outcomes*.py' -v
+      # The whole suite against the latest holographic release: the steps above pin the oldest provider each
+      # feature needs, this one the provider Mia runs. A release that changes screen.py fails
+      # test_the_copy_matches_the_provider here: run tools/vendor_screen.py and bump both refs.
+      - name: Check out the latest holographic release (v0.26.2)
+        uses: actions/checkout@v4
+        with:
+          repository: itpartypattaya/hermes-plugin-holographic
+          ref: 327adc7bfdf55c6d85209b5fc9dbf485111394a1
+          path: _holographic_latest
+      - name: Install PyYAML (as inside the Hermes venv)
+        run: python -m pip install pyyaml
+      - name: Run the whole suite against the latest provider
+        env:
+          HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic_latest
+          HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic_latest/screen.py
+        run: python -m unittest discover -s tests -v
 
   lint:
     runs-on: ubuntu-latest
