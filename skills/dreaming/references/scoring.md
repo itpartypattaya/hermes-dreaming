@@ -310,14 +310,21 @@ re-deriving anything:
   - `target` — **which file to edit**, `memory` or `user` (only the runtime pair
     is offered; read-only dedupe copies are never proposed as an edit target),
   - `entry` — a **truncated** preview for the human eye,
-  - `old_text` — a **verbatim anchor** for `memory replace`, present only when
-    it is unambiguous across all live entries.
+  - `full_entry` — the entry verbatim (≤ 1200 chars): `memory patch` (Hermes ≥ 0.22)
+    changes one span copied from it (`old_text` = the span, `content` = its new
+    text, the rest kept; the whole entry as `old_text` rewrites it),
+  - `old_text` — a **verbatim anchor** for the `memory replace` of Hermes 0.21,
+    present only when it is unambiguous across all live entries.
 
-`old_text` exists because the core tool matches it as a *substring of a live
-entry*: a paraphrase, a fact's own text or the truncated preview never match,
-and a few misses trip the core's per-turn consolidation guard, which silently
-costs the whole night's writes. So the anchor is handed over ready to copy, and
-`SKILL.md` makes `add` the default and `replace` conditional on having one.
+The texts are handed over verbatim because the core tool matches `old_text` as a
+*substring of a live entry*: a paraphrase, a fact's own text or the truncated
+preview never match, and a few misses trip the core's per-turn consolidation
+guard, which silently costs the whole night's writes. So they come ready to
+copy, and `SKILL.md` makes `add` the default and a change conditional on having
+one. Since core 0.22 the tool has no `replace` ("'replace' is not available; use
+'patch' … Nothing was written"); the prompt keeps `replace` only for a tool
+without `patch`. The anchor must not go to `patch` with a whole new entry: patch
+swaps only the span, and the entry would be spliced into itself.
 
 ## Per-chat fact stores (`chat_stores`, 2.6.0)
 
@@ -423,8 +430,9 @@ the dream.
 
 The core splits a memory file on the FULL delimiter `\n§\n`, strips each entry
 and drops empty ones (`tools/memory_tool_store.py:_parse_entries`), reads it as
-`utf-8-sig`, and `memory replace` **replaces the whole entry it finds** —
-`old_text` only locates it. This script mirrors that exactly (plus one
+`utf-8-sig`; `memory patch` (0.22+) swaps one span of the entry it finds, and the
+`memory replace` of 0.21 **replaces the whole entry** — `old_text` only locates
+it. This script mirrors the split exactly (plus one
 tolerance: a delimiter at the very start of a file, which a hand edit often
 leaves).
 
@@ -434,10 +442,10 @@ That is why `nearest_entry` ships:
 |---|---|
 | `entry` | preview, 160 chars — never usable as `old_text` |
 | `entry_chars` | the entry is bigger than the preview |
-| `multi_section` | more than one line: `new_content` must carry all of it |
-| `full_entry` | the exact text about to be overwritten (≤1200 chars), also the value for `matched_entry` |
-| `old_text` | a verbatim, raw, single-line anchor unique among entries |
-| `replace_unsafe` | too long to show in full → do not replace blind |
+| `multi_section` | more than one line: patch only the span that changes (a 0.21 `replace` must carry all of it) |
+| `full_entry` | the exact entry (≤1200 chars): where a `patch` span is copied from, all of it to rewrite the entry |
+| `old_text` | a verbatim, raw, single-line anchor unique among entries, for the `replace` of 0.21 |
+| `replace_unsafe` | too long to show in full, a secret, a forgotten fact → do not edit blind |
 
 Splitting on blank lines (as versions up to 2.1.1 did) produced anchors from
 the middle of an entry and anchors with collapsed whitespace: on a live

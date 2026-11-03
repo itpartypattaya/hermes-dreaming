@@ -4266,8 +4266,10 @@ def nearest_entry(content, memory_text=None, sources=None):
 
     Shown next to a candidate so the agent UPDATES the existing entry instead
     of appending a near-duplicate (mem0's ADD/UPDATE/NOOP idea, without an LLM
-    in the cron). Carries `source` (which file to edit) and, when unambiguous,
-    `old_text` — a verbatim anchor for `memory replace`."""
+    in the cron). Carries `source` (which file to edit), `full_entry` — what
+    `memory patch` (Hermes >= 0.22) takes its `old_text` span from, the whole of it
+    to rewrite the entry — and, when unambiguous, `old_text`: a verbatim anchor
+    for the `memory replace` of Hermes 0.21, which only locates the entry."""
     if sources is None:
         sources = [("", chunk) for chunk in _memory_chunks(memory_text)]
     item_stems = _stems(sig_tokens(content))
@@ -4296,19 +4298,21 @@ def nearest_entry(content, memory_text=None, sources=None):
     if classify_unsafe(best):
         item.update(entry=ENTRY_REDACTED, replace_unsafe=True,
                     note="this entry holds a secret or an instruction and is not shown: "
-                         "do not replace it — add a separate entry or ask")
+                         "do not edit it — add a separate entry or ask")
         return item
-    # `replace` rewrites the WHOLE entry, so the agent must know what it is
-    # about to overwrite: how big the entry is, whether it has more than one
-    # line/section, and — while it fits the prompt budget — its full text, so
-    # the edit can keep what is already there (and pin `matched_entry`).
+    # The agent must know what it is about to edit: how big the entry is,
+    # whether it has more than one line/section, and — while it fits the prompt
+    # budget — its full text: `patch` takes its span from it verbatim, and the
+    # `replace` of older cores rewrites the WHOLE entry, keeping only what the
+    # agent carries over.
     if len(best) > 160:
         item["entry_chars"] = len(best)
     sections = [ln for ln in best.split("\n") if ln.strip()]
     if len(sections) > 1:
         item["multi_section"] = True
-        item["note"] = ("replace rewrites this ENTIRE entry — carry over everything "
-                        "worth keeping into new_content")
+        item["note"] = ("several lines: patch only the span that changes (old_text copied "
+                        "verbatim from full_entry); where the tool has only replace, it rewrites "
+                        "this ENTIRE entry — carry over everything worth keeping")
     anchor = _replace_anchor(best, sources)
     if len(best) <= FULL_ENTRY_MAX_CHARS:
         item["full_entry"] = best
@@ -4318,7 +4322,7 @@ def nearest_entry(content, memory_text=None, sources=None):
         # Too big to show, so an update cannot be composed safely here.
         item["replace_unsafe"] = True
         item["note"] = ("this entry is longer than the preview and is not shown in full: "
-                        "do not replace it blind — add a separate entry or ask")
+                        "do not edit it blind — add a separate entry or ask")
     return item
 
 
@@ -4680,6 +4684,8 @@ def load_pending_writes(home=None):
                 "target": str(op.get("target") or payload.get("target") or ""),
                 "content": content if isinstance(content, str) else "",
                 "old_text": op.get("old_text") if isinstance(op.get("old_text"), str) else "",
+                # the whole entry core pinned a staged patch/replace/remove to
+                "matched_entry": op.get("matched_entry") if isinstance(op.get("matched_entry"), str) else "",
                 "created_at": created,
             })
     out.sort(key=lambda p: p.get("created_at") or 0, reverse=True)
@@ -4708,20 +4714,27 @@ def _pending_ops(payload):
     return [payload]
 
 
+def _patched(p):
+    """The entry a staged `patch` (Hermes >= 0.22) leaves behind: its pinned entry with the one span swapped, as
+    core applies it; just the new span when the record carries no entry to put it in."""
+    entry, span = p.get("matched_entry") or "", p.get("old_text") or ""
+    return entry.replace(span, p["content"], 1) if span and span in entry else p["content"]
+
+
 def _staged_text(pending):
     """One blob of everything the queue would write — `already_in_memory` then
     answers "is this candidate already waiting?" with the same machinery that
     answers "is it already in memory?"."""
     return MEMORY_ENTRY_DELIMITER.join(
-        p["content"] for p in pending
-        if p.get("content") and p.get("action") in ("add", "replace", ""))
+        _patched(p) if p.get("action") == "patch" else p["content"] for p in pending
+        if p.get("content") and p.get("action") in ("add", "replace", "patch", ""))
 
 
 def _staged_removals(pending):
-    """Texts the queue would REMOVE (or replace away): an entry whose removal is
+    """Texts the queue would REMOVE (or replace or patch away): an entry whose removal is
     waiting must not be asked about, nor counted as confirmed by its cooldown."""
-    return [p.get("old_text") or p.get("content") or ""
-            for p in pending if p.get("action") in ("remove", "replace")]
+    return [p.get("matched_entry") or p.get("old_text") or p.get("content") or ""
+            for p in pending if p.get("action") in ("remove", "replace", "patch")]
 
 
 def pending_alert(pending, seen, now):

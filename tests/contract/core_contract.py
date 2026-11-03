@@ -306,6 +306,75 @@ def gates_through_core(jobs, store):
     ok("the nightly pass, run by core, reports the memory fill level core itself counts")
 
 
+def memory_edits(ic):
+    """The memory actions the nightly prompt asks for are the ones core's memory tool offers, and a `patch` built from
+    what the pass hands over (`nearest_entry.full_entry`) changes the entry the way the prompt says — live, and as a
+    write core stages for approval, which the pass must then count as waiting."""
+    import re
+    from tools.memory_tool import MEMORY_SCHEMA, load_on_disk_store, memory_tool
+    try:
+        offered = set(MEMORY_SCHEMA["parameters"]["properties"]["operations"]["items"]["properties"]["action"]["enum"])
+    except (KeyError, TypeError) as exc:
+        raise AssertionError(f"core's memory tool schema no longer lists operations[].action ({exc!r})") from exc
+    named = set(re.findall(r"\bmemory (add|patch|remove|replace|update|delete)\b", ic.DREAM_PROMPT))
+    assert named and named <= offered, (
+        f"the nightly prompt asks for memory {sorted(named - offered)}, core's memory tool offers {sorted(offered)}: "
+        "every such write is refused at night")
+    assert "patch" in offered, f"core's memory tool has no patch ({sorted(offered)}): the prompt's way to change an entry"
+    ok(f"the nightly prompt asks only for memory actions core offers ({sorted(named)} of {sorted(offered)})")
+
+    dream = sys.modules["_dream_contract"]
+    mem_md = str(HOME / "memories" / "MEMORY.md")
+    entry = "Masha (daughter, 7): ballet on Mondays at 17:30\nKsenia picks her up afterwards and Anton pays the studio"
+    store = load_on_disk_store()
+    assert json.loads(memory_tool(action="add", target="memory", content=entry, store=store)).get("success")
+
+    def near():
+        found = dream.nearest_entry("Masha has ballet on Mondays and Thursdays at 17:30, Ksenia picks her up",
+                                    sources=dream.load_durable_memory_sources(mem_md))
+        assert found and found.get("full_entry") == entry_now[0] and found.get("target") == "memory", (
+            f"nearest_entry does not hand over the entry core holds: {found}")
+        return found
+
+    def entries():
+        return dream._memory_entries((HOME / "memories" / "MEMORY.md").read_text(encoding="utf-8"))
+
+    entry_now = [entry]
+    # a span copied verbatim from full_entry, its new text: the rest of the entry stays
+    span = "Mondays at 17:30"
+    assert span in near()["full_entry"]
+    result = json.loads(memory_tool(target="memory", store=store, operations=[
+        {"action": "patch", "old_text": span, "content": "Mondays and Thursdays at 17:30"}]))
+    assert result.get("success") and not result.get("staged"), f"core refused the span patch: {result}"
+    entry_now[0] = entry.replace(span, "Mondays and Thursdays at 17:30")
+    assert entry_now[0] in entries() and entry not in entries(), f"the span patch left {entries()}"
+    # the whole full_entry as old_text rewrites the entry
+    rewritten = "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up, Anton pays"
+    result = json.loads(memory_tool(target="memory", store=store, operations=[
+        {"action": "patch", "old_text": near()["full_entry"], "content": rewritten}]))
+    assert result.get("success"), f"core refused the whole-entry patch: {result}"
+    assert rewritten in entries() and not any(e != rewritten and "Masha" in e for e in entries()), (
+        f"patching the whole full_entry did not rewrite the entry: {entries()}")
+    entry_now[0] = rewritten
+    ok("a patch from nearest_entry.full_entry changes one span, or the whole entry, as the prompt says")
+
+    run(["hermes", "config", "set", "memory.write_approval", "true"], "hermes config set memory.write_approval")
+    store = load_on_disk_store()
+    result = json.loads(memory_tool(target="memory", store=store, operations=[
+        {"action": "patch", "old_text": "Anton pays", "content": "Anton pays the studio on the 5th"}]))
+    assert result.get("staged"), f"with write_approval on, core did not stage the patch: {result}"
+    assert rewritten in entries(), "a staged patch changed MEMORY.md"
+    pending = dream.load_pending_writes(str(HOME))
+    assert [p["action"] for p in pending] == ["patch"], f"the pass reads core's approval queue as {pending}"
+    want = rewritten.replace("Anton pays", "Anton pays the studio on the 5th")
+    assert want in dream._staged_text(pending), (
+        f"the pass does not count the staged patch as waiting: {dream._staged_text(pending)!r}, entry after it {want!r}")
+    assert dream._staged_removals(pending) == [rewritten], (
+        f"the pass does not see which entry the staged patch changes: {dream._staged_removals(pending)}")
+    run(["hermes", "config", "set", "memory.write_approval", "false"], "hermes config set memory.write_approval")
+    ok("a patch core staged for approval counts as waiting in the pass, and its entry as going away")
+
+
 def main():
     fresh_home()
     core_config()
@@ -358,6 +427,7 @@ def main():
 
     dream_side(store, jobs, cj)
     gates_through_core(jobs, store)
+    memory_edits(ic)
     print("\ncore contract: all checks passed", flush=True)
 
 
