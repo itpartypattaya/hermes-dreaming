@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.4 — 2026-11-03
 
 ### Fixed
 - **The loss guard no longer takes the night's own tidying for a loss** (#21, reported by @njwangfeng with an exact
