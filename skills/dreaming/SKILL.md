@@ -88,7 +88,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
 | `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
 | `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
-| `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing |
+| `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing. `memory_loss` counts and names (`entries`) only entries whose text is nowhere in memory: the entries it says were rewritten or merged are your own tidying — not a loss, no question about them |
 | `alerts` (`messages_unavailable`) | the chats could not be read tonight (busy or locked), so nothing was corroborated and no relevance question asked: one line, nothing to do — the next pass tries again |
 | `alerts` (`judge_degraded`) | the optional cloud judge could not judge enough pairs for several nights, so the rules decided alone: one line with its reason (keys, network, limits); change no config yourself |
 | `stats.judge` | the cloud judge's counts (`mode`, `vetoes`, `decisions_changed`): not in the report, unless `effective` is `degraded` — then one line. Never retell the pairs, never send anything to a judge yourself; in `veto` a vetoed mention is simply not in `mentions` / `evidence` |

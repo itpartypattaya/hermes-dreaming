@@ -56,7 +56,8 @@ and the forget sweep beside it](docs/overview.png)
   starts. A memory file close to its char limit counts as work (`memory_pressure`) — the limit gates
   writes silently, so otherwise nobody notices until facts stop being recorded.
 - **A loss guard.** If a large share of memory disappears overnight, or a long entry loses half of itself, the
-  next report says so.
+  next report says so and names the entries that are gone. An entry the agent compressed, reworded or merged into
+  another one is not a loss: its words and numbers are still in memory.
 - **Feedback to retrieval.** A fact you rejected keeps its trust in the fact store, so the
   provider's prefetch goes on offering it. Such facts are listed with a ready
   `fact_feedback(unhelpful)` call, so a rejection teaches retrieval too.

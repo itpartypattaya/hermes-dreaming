@@ -5,6 +5,18 @@ is the one in `plugin.json`.
 
 ## Unreleased
 
+### Fixed
+- **The loss guard no longer takes the night's own tidying for a loss** (#21, reported by @njwangfeng with an exact
+  analysis). An entry was keyed by its first 200 characters, and the pass compresses and merges entries to keep a file
+  under its limit, so every rewritten entry looked gone: "compressed 4 entries, merged 1" came back as "5 of 16
+  entries are gone — check whether that was intended" three nights running, and the agent asked the human about a
+  deletion nobody made. The snapshot now also keeps what each entry says — its word stems and numbers, hashed — and an
+  entry whose key moved counts as lost only when no current entry of any durable file holds 60% of its stems and all
+  of its numbers (two door codes share every word). The alert names the lost entries by a 60-character preview (none
+  for an entry with a secret) and says separately how many were rewritten or merged, which is not a question for the
+  human. Thresholds are unchanged. The first night after the update compares with a snapshot without signatures and
+  judges as before; from the next night on, rewrites are told apart.
+
 ### Internal
 - **CI runs the whole suite against the latest holographic release (0.26.2, `327adc7`)**, next to the oldest
   providers each feature needs (0.19 for merge, 0.20.1 for the experience journal). 0.26.x changed neither the

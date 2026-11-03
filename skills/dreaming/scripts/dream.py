@@ -4350,15 +4350,63 @@ def _entry_head_key(entry):
     return hashlib.md5(_norm(entry)[:ENTRY_HEAD_CHARS].encode("utf-8")).hexdigest()[:16]
 
 
+# The pass itself compresses and merges entries to keep a file under its limit,
+# and every rewritten entry gets a new key. Compared by keys alone, "compressed
+# 4 entries, merged 1" read as "5 entries are gone" three nights running, and
+# the agent asked the human about a deletion nobody made (#21). So the snapshot
+# also keeps what each entry SAYS: an entry whose key is gone counts as lost only
+# when no current entry holds most of its word stems and every one of its numbers
+# ("door code 4417" and "door code 9032" share every word).
+REWRITE_COVERAGE = 0.6
+ENTRY_PREVIEW_CHARS = 60
+_NUMBER_RE = re.compile(r"\d+")
+
+
+def _short_hash(s):
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:8]
+
+
+def _entry_sig(entry):
+    """What an entry says, for telling a rewrite from a loss: its stems and numbers, hashed — the snapshot holds no
+    memory text beyond a short preview to name a lost entry by, and none at all of an entry with a secret."""
+    sig = {"stems": sorted({_short_hash(s) for s in _stems(sig_tokens(entry))}),
+           "nums": sorted({_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_fold(entry))})}
+    if not classify_unsafe(entry):
+        sig["preview"] = re.sub(r"\s+", " ", entry).strip()[:ENTRY_PREVIEW_CHARS]
+    return sig
+
+
 def _entry_sizes_of(path):
-    """Snapshot of one file: sizes by entry key and by entry head.
+    """Snapshot of one file: sizes by entry key and by entry head, signatures by entry key.
 
     Sizes make the guard notice that one BIG entry vanished among small ones;
     head keys make it notice an entry that kept its beginning and lost its
-    body — the exact shape of a replace that swallowed a multi-section entry."""
+    body — the exact shape of a replace that swallowed a multi-section entry;
+    signatures tell an entry the pass rewrote from one that is gone."""
     entries = parse_md_entries(path)
     return {"entries": {_entry_key(e): len(e) for e in entries},
-            "heads": {_entry_head_key(e): len(e) for e in entries}}
+            "heads": {_entry_head_key(e): len(e) for e in entries},
+            "sigs": {_entry_key(e): _entry_sig(e) for e in entries}}
+
+
+def _snapshot_sigs(value):
+    """{entry_key: (stems, nums, preview)} of a previous snapshot; empty for the formats before signatures."""
+    sigs = value.get("sigs") if isinstance(value, dict) else None
+    out = {}
+    for key, sig in (sigs.items() if isinstance(sigs, dict) else ()):
+        if isinstance(sig, dict) and isinstance(sig.get("stems"), list) and isinstance(sig.get("nums"), list):
+            preview = sig.get("preview")
+            out[str(key)] = (set(map(str, sig["stems"])), set(map(str, sig["nums"])),
+                             preview if isinstance(preview, str) else None)
+    return out
+
+
+def _still_said(sig, current):
+    """Whether a lost entry's text still stands in one current entry (of any durable file): most of its stems and
+    all of its numbers. An entry of no stems cannot be judged this way and counts as lost."""
+    stems, nums, _ = sig
+    return bool(stems) and any(nums <= cur_nums and len(stems & cur_stems) >= REWRITE_COVERAGE * len(stems)
+                               for cur_stems, cur_nums in current)
 
 
 def _ints(value):
@@ -4428,11 +4476,18 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
     if SETTINGS.PROBES and memory_text is not None:
         probe_alerts, probes_missing = check_probes(memory_text, previous.get("_probes_missing"))
         alerts.extend(probe_alerts)
-    for p in _memory_candidate_paths(mem_md):
+    paths = _memory_candidate_paths(mem_md)
+    for p in paths:
+        if os.path.exists(p):
+            current[_rel_home(p)] = _entry_sizes_of(p)
+    # every entry of every durable file: the pass may move an entry from MEMORY.md to USER.md
+    said_now = [(set(sig["stems"]), set(sig["nums"]))
+                for snap in current.values() for sig in snap["sigs"].values()]
+    for p in paths:
         name = _rel_home(p)
         prev_sizes, prev_heads = _snapshot_sizes(previous.get(name))
         prev = set(prev_sizes)
-        if not os.path.exists(p):
+        if name not in current:
             # A file that was there yesterday and is gone today is the loudest
             # loss there is — it must not slip through as "nothing to compare"
             # and then be overwritten by an empty snapshot. Alert once; the
@@ -4446,13 +4501,16 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
                                           f"present at the previous pass are gone. "
                                           f"Check whether that was intended."})
             continue
-        snap = _entry_sizes_of(p)
-        current[name] = snap
+        snap = current[name]
         sizes, heads = snap["entries"], snap["heads"]
         keys = set(sizes)
         prev_total = sum(prev_sizes.values())
         if len(prev) >= 4 or prev_total >= LOSS_MIN_CHARS:
-            lost = prev - keys
+            prev_sigs = _snapshot_sigs(previous.get(name))
+            moved = prev - keys
+            # a snapshot from before signatures cannot tell a rewrite: such an entry counts as lost, as it did
+            lost = {k for k in moved if k not in prev_sigs or not _still_said(prev_sigs[k], said_now)}
+            rewritten = len(moved) - len(lost)
             frac = len(lost) / len(prev)
             prev_chars = prev_total
             lost_chars = sum(prev_sizes.get(k, 0) for k in lost)
@@ -4460,14 +4518,25 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             if frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION or char_frac > SETTINGS.MEMORY_LOSS_ALERT_FRACTION:
                 # Entry count alone misses "one big entry vanished"; the share of
                 # characters alone misses "many small entries gone". Both, then.
+                named = [prev_sigs[k][2] for k in sorted(lost, key=lambda k: -prev_sizes.get(k, 0))
+                         if k in prev_sigs and prev_sigs[k][2]]
+                listed = "; ".join(f"“{t}…”" for t in named[:5]) + (f"; {len(named) - 5} more" if len(named) > 5
+                                                                    else "")
+                # Only text that is nowhere is a question for the human; the pass's own rewrites are not.
                 alerts.append({"kind": "memory_loss", "file": name,
                                "lost": len(lost), "had": len(prev),
                                "lost_chars": lost_chars, "had_chars": prev_chars,
+                               "rewritten": rewritten, "entries": named,
                                "message": f"{name}: {len(lost)} of {len(prev)} entries present at the "
-                                          f"previous pass are gone "
+                                          f"previous pass are gone and their text is nowhere in memory "
                                           f"({round(100 * frac)}% of entries, "
-                                          f"{round(100 * char_frac)}% of characters). "
-                                          f"Check whether that was intended."})
+                                          f"{round(100 * char_frac)}% of characters)"
+                                          + (f": {listed}" if listed else "") + ". "
+                                          "Check whether that was intended."
+                                          + (f" {rewritten} other "
+                                             f"{'entry was' if rewritten == 1 else 'entries were'} rewritten or "
+                                             f"merged and the text is still there — not a loss, nothing to ask."
+                                             if rewritten else "")})
             # An entry that kept its head but lost most of its body: a replace
             # that swallowed the rest of a multi-section entry.
             for key, was in prev_heads.items():
