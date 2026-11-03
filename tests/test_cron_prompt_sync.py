@@ -2,12 +2,13 @@
 import copy
 import json
 import unittest
+from pathlib import Path
 
 import test_install as support
-from test_install import FakeJobs, ROOT, install_cron
+from test_install import FakeJobs, install_cron
 
 
-OLD = json.loads((ROOT.parents[1] / "tests/fixtures/cron-prompts-340.json").read_text(encoding="utf-8"))
+OLD = json.loads((Path(__file__).resolve().parent / "fixtures" / "cron-prompts-340.json").read_text(encoding="utf-8"))
 
 
 class StoredJobs(FakeJobs):
