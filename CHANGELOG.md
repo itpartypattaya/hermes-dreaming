@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Docs
+- **The skill's qualified name is the registry's.** README said jobs bind `agent-plugin-hermes-dreaming-<hash>:dreaming`;
+  Hermes 0.22.6 registers the plugin skill as `hermes-dreaming:dreaming`, and a job still bound to the old name ran
+  without the skill until `install_cron.py --rebind` (seen on a live install). README (en/ru) and `install_cron.py`'s
+  docstring say so, and how to fix it.
+
 ## 3.8.5 — 2026-11-03
 
 ### Fixed
