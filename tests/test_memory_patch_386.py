@@ -60,10 +60,10 @@ class ThePromptAsksForWhatCoreAccepts(unittest.TestCase):
 
 
 class WhatTheCandidateCarries(unittest.TestCase):
-    ENTRY = "Masha (daughter, 7): ballet on Mondays at 17:30\nKsenia picks her up afterwards, Anton pays the studio"
+    ENTRY = "Masha (daughter, 7): ballet on Mondays at 17:30\nNina picks her up afterwards, Leo pays the studio"
 
     def test_a_multi_line_entry_is_explained_for_patch(self):
-        near = dream.nearest_entry("Masha has ballet on Mondays at 17:30 and Ksenia picks her up",
+        near = dream.nearest_entry("Masha has ballet on Mondays at 17:30 and Nina picks her up",
                                    sources=[("memory", self.ENTRY), ("memory", "Server hr-box runs Debian 12")])
         self.assertTrue(near and near.get("multi_section"), near)
         self.assertIn("patch", near["note"])
@@ -89,7 +89,7 @@ class WhatTheCandidateCarries(unittest.TestCase):
 class AStagedPatchIsWaiting(unittest.TestCase):
     """The record core 0.22.6 writes (`tools/write_approval.stage_write`) for a patch under write_approval."""
 
-    ENTRY = "Masha (daughter, 7): ballet on Mondays at 17:30; Ksenia picks her up"
+    ENTRY = "Masha (daughter, 7): ballet on Mondays at 17:30; Nina picks her up"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -110,7 +110,7 @@ class AStagedPatchIsWaiting(unittest.TestCase):
     def test_the_patched_entry_counts_as_staged_text(self):
         self.assertEqual([p["action"] for p in self.pending], ["patch"])
         staged = dream._staged_text(self.pending)
-        self.assertIn("Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30; Ksenia picks her up", staged)
+        self.assertIn("Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30; Nina picks her up", staged)
         self.assertTrue(dream.already_in_memory("Masha has ballet on Mondays and Thursdays at 17:30", staged))
 
     def test_the_entry_it_changes_counts_as_going_away(self):

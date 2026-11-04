@@ -11,6 +11,12 @@ is the one in `plugin.json`.
   without the skill until `install_cron.py --rebind` (seen on a live install). README (en/ru) and `install_cron.py`'s
   docstring say so, and how to fix it.
 
+### Internal
+- Test fixtures no longer describe the maintainer's real family: names, places, the bank, the bike, the work and
+  community projects are replaced by an invented household (Leo and Nina in Lisbon). Same shapes, numbers and dates,
+  so every test checks what it checked before. The contract test's timezone is now `Asia/Tokyo`. `dream_judge.py`
+  says "for the human" in a docstring. No behaviour change.
+
 ## 3.8.5 — 2026-11-03
 
 ### Fixed

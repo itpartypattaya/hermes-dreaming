@@ -24,8 +24,8 @@ from pathlib import Path
 from test_dream import dream  # noqa: E402
 from test_loss_guard_rewrite_21 import MEMORY  # noqa: E402
 
-BALLET = "Masha (daughter, 7) goes to ballet on Mondays at 17:30; Ksenia picks her up afterwards."
-SWIMMING = "Masha (daughter, 7) goes to swimming on Thursdays at 17:30; Ksenia picks her up afterwards."
+BALLET = "Masha (daughter, 7) goes to ballet on Mondays at 17:30; Nina picks her up afterwards."
+SWIMMING = "Masha (daughter, 7) goes to swimming on Thursdays at 17:30; Nina picks her up afterwards."
 
 
 class _Guard(unittest.TestCase):
@@ -78,12 +78,12 @@ class AnUntouchedSiblingIsNotARewrite(_Guard):
         old_paths = dream.SETTINGS.DURABLE_MEMORY_PATHS
         dream.SETTINGS.DURABLE_MEMORY_PATHS = ["memories/USER.md"]
         try:
-            user.write_text("The human's name is Anton.", encoding="utf-8")
+            user.write_text("The human's name is Leo.", encoding="utf-8")
             self._write(self.BEFORE)
             self.assertEqual(self._check(), [])
             moved = [MEMORY[0], MEMORY[10], MEMORY[11]]
             self._write([e for e in self.BEFORE if e not in moved])
-            user.write_text(dream.MEMORY_ENTRY_DELIMITER.join(["The human's name is Anton."] + moved),
+            user.write_text(dream.MEMORY_ENTRY_DELIMITER.join(["The human's name is Leo."] + moved),
                             encoding="utf-8")
             self.assertEqual(self._check(), [])
         finally:
@@ -94,16 +94,16 @@ class ASplitEntryIsNotALoss(_Guard):
     """Finding 2: an entry split in two was a loss, since neither half holds most of its words."""
 
     COMBINED = [
-        "Masha goes to ballet on Mondays at 17:30 and Ksenia picks her up. Anton pays 9000 baht rent on the 5th "
-        "by transfer to the owner's Kasikorn account.",
-        "Honda Forza needs a service every 6000 km, the last one was at 18400 km. The IT party is on the first "
-        "Friday of the month, with an expert hour at 22:00.",
+        "Masha goes to ballet on Mondays at 17:30 and Nina picks her up. Leo pays 9000 euro rent on the 5th "
+        "by transfer to the owner's Millennium account.",
+        "Vespa GTS needs a service every 6000 km, the last one was at 18400 km. The book club is on the first "
+        "Friday of the month, with an guest talk at 22:00.",
     ]
     SPLIT = [
-        "Masha goes to ballet on Mondays at 17:30 and Ksenia picks her up.",
-        "Anton pays 9000 baht rent on the 5th by transfer to the owner's Kasikorn account.",
-        "Honda Forza needs a service every 6000 km, the last one was at 18400 km.",
-        "The IT party is on the first Friday of the month, with an expert hour at 22:00.",
+        "Masha goes to ballet on Mondays at 17:30 and Nina picks her up.",
+        "Leo pays 9000 euro rent on the 5th by transfer to the owner's Millennium account.",
+        "Vespa GTS needs a service every 6000 km, the last one was at 18400 km.",
+        "The book club is on the first Friday of the month, with an guest talk at 22:00.",
     ]
     REST = [MEMORY[i] for i in (0, 1, 3, 7)]
 
@@ -112,7 +112,7 @@ class ASplitEntryIsNotALoss(_Guard):
         self.assertEqual(self._night(self.COMBINED + self.REST, self.SPLIT + self.REST), [])
 
     def test_half_of_a_split_entry_gone_is_a_loss(self):
-        after = [self.SPLIT[0], self.SPLIT[2]] + self.REST     # the rent and the IT party are nowhere now
+        after = [self.SPLIT[0], self.SPLIT[2]] + self.REST     # the rent and the book club are nowhere now
         self.assertLoss(self._night(self.COMBINED + self.REST, after), 2)
 
 
@@ -125,31 +125,31 @@ class NumbersAreComparedAsNumbers(_Guard):
         return self._night(before + self.REST, after + self.REST)    # 2 of 6 keys moved (33 %)
 
     def test_a_numbered_list_turned_into_bullets_is_not_a_loss(self):
-        before = ["Schedule:\n1. Masha (daughter, 7) has ballet at 17:30\n2. Ksenia picks her up afterwards",
+        before = ["Schedule:\n1. Masha (daughter, 7) has ballet at 17:30\n2. Nina picks her up afterwards",
                   "Deploy checklist for hr-box:\n1. Run nginx -t\n2. Reload nginx\n3. Watch the logs for a minute"]
-        after = ["Schedule:\n- Masha (daughter, 7) has ballet at 17:30\n- Ksenia picks her up afterwards",
+        after = ["Schedule:\n- Masha (daughter, 7) has ballet at 17:30\n- Nina picks her up afterwards",
                  "Deploy checklist for hr-box:\n- Run nginx -t\n- Reload nginx\n- Watch the logs for a minute"]
         self.assertEqual(self._reformatted(before, after), [])
 
     def test_thousands_written_with_and_without_a_separator_are_the_same_number(self):
-        before = ["Rent for the Jomtien condo is 9,000 baht, due on the 5th to the owner's Kasikorn account.",
-                  "Аренда кондо в Джомтьене — 18 000 бат в месяц, депозит 36 000 бат."]
-        after = ["Jomtien condo rent: 9000 baht on the 5th, to the owner's Kasikorn account.",
-                 "Кондо в Джомтьене: аренда 18000 бат в месяц, депозит 36000 бат."]
+        before = ["Rent for the Alfama condo is 9,000 euro, due on the 5th to the owner's Millennium account.",
+                  "Аренда кондо в Алфаме — 18 000 евро в месяц, депозит 36 000 евро."]
+        after = ["Alfama condo rent: 9000 euro on the 5th, to the owner's Millennium account.",
+                 "Кондо в Алфаме: аренда 18000 евро в месяц, депозит 36000 евро."]
         self.assertEqual(self._reformatted(before, after), [])
 
     def test_a_date_written_with_the_month_in_words_is_the_same_date(self):
-        before = ["Masha's school interview in Chiang Mai is on 2026-11-03 at 10:00, Ksenia goes with her.",
-                  "Продление визы Антона — 15.01.2027, документы собирает Ксения."]
-        after = ["Masha's school interview in Chiang Mai: 3 November 2026, 10:00; Ksenia goes with her.",
-                 "Продление визы Антона: 15 января 2027 года, документы собирает Ксения."]
+        before = ["Masha's school interview in Vila Real is on 2026-11-03 at 10:00, Nina goes with her.",
+                  "Продление визы Льва — 15.01.2027, документы собирает Нина."]
+        after = ["Masha's school interview in Vila Real: 3 November 2026, 10:00; Nina goes with her.",
+                 "Продление визы Льва: 15 января 2027 года, документы собирает Нина."]
         self.assertEqual(self._reformatted(before, after), [])
 
     def test_a_date_moved_to_another_day_is_still_a_loss(self):
-        before = ["Masha's school interview in Chiang Mai is on 2026-11-03 at 10:00, Ksenia goes with her.",
-                  "Rent for the Jomtien condo is 9,000 baht, due on the 5th to the owner's Kasikorn account."]
-        after = ["Masha's school interview in Chiang Mai: 4 November 2026, 10:00; Ksenia goes with her.",
-                 "Rent for the Jomtien condo is 9,500 baht, due on the 5th to the owner's Kasikorn account."]
+        before = ["Masha's school interview in Vila Real is on 2026-11-03 at 10:00, Nina goes with her.",
+                  "Rent for the Alfama condo is 9,000 euro, due on the 5th to the owner's Millennium account."]
+        after = ["Masha's school interview in Vila Real: 4 November 2026, 10:00; Nina goes with her.",
+                 "Rent for the Alfama condo is 9,500 euro, due on the 5th to the owner's Millennium account."]
         self.assertLoss(self._reformatted(before, after), 2)
 
 
@@ -219,8 +219,8 @@ class TheFirstNightAfterTheUpdate(_Guard):
                 "nums": sorted({h(n.lstrip("0") or "0") for n in re.findall(r"\d+", dream._fold(entry))}),
                 "preview": re.sub(r"\s+", " ", entry).strip()[:60]}
 
-    BEFORE = ["Rent for the Jomtien condo is 9,000 baht, due on the 5th to the owner's Kasikorn account.",
-              "Аренда кондо в Джомтьене — 18 000 бат в месяц, депозит 36 000 бат."] + MEMORY[:4]
+    BEFORE = ["Rent for the Alfama condo is 9,000 euro, due on the 5th to the owner's Millennium account.",
+              "Аренда кондо в Алфаме — 18 000 евро в месяц, депозит 36 000 евро."] + MEMORY[:4]
 
     def _snapshot_of_3_8_4(self):
         self._write(self.BEFORE)
@@ -231,8 +231,8 @@ class TheFirstNightAfterTheUpdate(_Guard):
 
     def test_a_rewrite_against_a_snapshot_of_3_8_4_is_not_a_loss(self):
         self._snapshot_of_3_8_4()
-        self._write(["Jomtien condo rent: 9,000 baht on the 5th, to the owner's Kasikorn account.",
-                     "Кондо в Джомтьене: 18 000 бат в месяц, депозит 36 000 бат."] + MEMORY[:4])
+        self._write(["Alfama condo rent: 9,000 euro on the 5th, to the owner's Millennium account.",
+                     "Кондо в Алфаме: 18 000 евро в месяц, депозит 36 000 евро."] + MEMORY[:4])
         self.assertEqual(self._check(), [])
 
     def test_a_loss_against_a_snapshot_of_3_8_4_is_still_a_loss(self):
@@ -265,7 +265,7 @@ class ARealLossIsStillCaught(_Guard):
         after[1] = ("hr-box: Debian 12. Run nginx -t before every deploy; restart hermes-* units only "
                     "in a session about Hermes.")
         after = [e for i, e in enumerate(after) if i not in (8, 9, 11, 4)]
-        after.append("Masha now also has piano lessons on Wednesdays; Ksenia found the teacher through LINE.")
+        after.append("Masha now also has piano lessons on Wednesdays; Nina found the teacher through WhatsApp.")
         alerts = self._night(MEMORY, after)    # 4 of 12 gone, 1 rewritten, 1 new entry with shared words
         self.assertLoss(alerts, 4)
         self.assertEqual(alerts[0]["rewritten"], 1)
