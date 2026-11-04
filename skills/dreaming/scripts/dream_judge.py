@@ -595,7 +595,7 @@ def readiness(rows, coverage):
     """The plan's rule on labeled rows ({label S/C/U/?, veto, changed, provider}): `ready` for veto when the upper
     95 % bound of wrong vetoes is at most 10 %, that of lost confirmations at most 20 %, coverage at least 90 % on
     every path and no wrong veto changed a decision; `not_ready` when the lower bound of wrong vetoes is over 10 %;
-    `continue` otherwise. "?" rows (for Anton) are left out. When the fallback gave over a fifth of the verdicts —
+    `continue` otherwise. "?" rows (for the human) are left out. When the fallback gave over a fifth of the verdicts —
     counted over every row, "?" ones too (Codex review of 3.3.0) — each provider must pass on its own."""
     out = _rule(rows, coverage)
     out["for_a_person"] = sum(1 for r in rows if r.get("label") == "?")

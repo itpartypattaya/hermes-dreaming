@@ -18,19 +18,19 @@ from test_dream import dream  # noqa: E402
 
 # A MEMORY.md the way the agent keeps it: one fact per entry, names repeat across entries.
 MEMORY = [
-    "Anton prefers short answers in Russian; code, commands and file names stay in English.",
+    "Leo prefers short answers in Russian; code, commands and file names stay in English.",
     "Server hr-box runs Debian 12. Before every deploy run nginx -t, and never restart the hermes-* units "
     "outside a session about Hermes itself.",
-    "Masha (daughter, 7) goes to ballet on Mondays and Thursdays at 17:30; Ksenia picks her up afterwards.",
-    "The family plans to move to Chiang Mai in spring 2027; the school search for Masha starts in January.",
-    "Weekly grocery order goes out on Saturdays from Makro; Anton pays and Ksenia writes the shopping list.",
-    "Honda Forza needs a service every 6000 km; the last service was at 18400 km in October.",
-    "The IT party is on the first Friday of the month: expert hour at 22:00, then a DJ set until 01:00.",
-    "Ksenia runs HR24, a recruiting agency for sales specialists; she decides on candidates, Anton on marketing.",
-    "Masha's doctor is Dr. Somchai at Bangkok Hospital Pattaya; appointments are booked through LINE.",
-    "Rent for the Jomtien condo is due on the 5th, by transfer to the owner's Kasikorn account.",
-    "Anton dislikes long bulleted lists in articles and prefers a narrative structure with a clear storyline.",
-    "Anton created the Telegram chat for Bang Saray residents and is its main moderator.",
+    "Masha (daughter, 7) goes to ballet on Mondays and Thursdays at 17:30; Nina picks her up afterwards.",
+    "The family plans to move to Vila Real in spring 2027; the school search for Masha starts in January.",
+    "Weekly grocery order goes out on Saturdays from Lidl; Leo pays and Nina writes the shopping list.",
+    "Vespa GTS needs a service every 6000 km; the last service was at 18400 km in October.",
+    "The book club is on the first Friday of the month: guest talk at 22:00, then a jazz set until 01:00.",
+    "Nina runs HireLab, a recruiting agency for sales specialists; she decides on candidates, Leo on marketing.",
+    "Masha's doctor is Dr. Costa at Riverside Hospital Lisbon; appointments are booked through WhatsApp.",
+    "Rent for the Alfama condo is due on the 5th, by transfer to the owner's Millennium account.",
+    "Leo dislikes long bulleted lists in articles and prefers a narrative structure with a clear storyline.",
+    "Leo created the Telegram chat for Costa Nova residents and is its main moderator.",
 ]
 
 
@@ -69,21 +69,21 @@ class LossGuardRewriteTests(unittest.TestCase):
         after = list(MEMORY)
         after[1] = ("hr-box: Debian 12. Run nginx -t before every deploy; restart hermes-* units only "
                     "in a session about Hermes.")
-        after[2] = "Masha (7, daughter): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up."
-        after[3] = "Spring 2027: the family moves to Chiang Mai; Masha's school search starts in January."
-        after[5] = "Honda Forza: service every 6000 km, last one in October at 18400 km."
-        after[7] = "HR24 (Ksenia's recruiting agency, sales specialists): candidates are her call, marketing is Anton's."
+        after[2] = "Masha (7, daughter): ballet on Mondays and Thursdays at 17:30, Nina picks her up."
+        after[3] = "Spring 2027: the family moves to Vila Real; Masha's school search starts in January."
+        after[5] = "Vespa GTS: service every 6000 km, last one in October at 18400 km."
+        after[7] = "HireLab (Nina's recruiting agency, sales specialists): candidates are her call, marketing is Leo's."
         # 5 of 12 keys moved (42 %) — over the 25 % threshold
         self.assertEqual(self._night(MEMORY, after), [])
 
     def test_entries_merged_into_one_are_not_a_loss(self):
         merged = [
-            "Anton: short answers in Russian (code, commands, file names in English); in articles a narrative "
+            "Leo: short answers in Russian (code, commands, file names in English); in articles a narrative "
             "structure with a clear storyline, no long bulleted lists.",
-            "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up; doctor — "
-            "Dr. Somchai, Bangkok Hospital Pattaya, booked through LINE.",
-            "Household: grocery order from Makro on Saturdays (Anton pays, Ksenia writes the list); rent for the "
-            "Jomtien condo due on the 5th by transfer to the owner's Kasikorn account.",
+            "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Nina picks her up; doctor — "
+            "Dr. Costa, Riverside Hospital Lisbon, booked through WhatsApp.",
+            "Household: grocery order from Lidl on Saturdays (Leo pays, Nina writes the list); rent for the "
+            "Alfama condo due on the 5th by transfer to the owner's Millennium account.",
         ]
         after = merged + [MEMORY[i] for i in (1, 3, 5, 6, 7, 11)]
         # 6 entries folded into 3: 6 of 12 keys gone (50 %)
@@ -92,17 +92,17 @@ class LossGuardRewriteTests(unittest.TestCase):
     def test_compressed_entries_are_not_a_loss(self):
         before = [
             "Masha (our daughter, she is 7 years old) goes to ballet classes twice a week, on Mondays and on "
-            "Thursdays, the lessons start at 17:30 and Ksenia usually picks her up afterwards and brings her home.",
-            "The family is planning to move to Chiang Mai, most likely in the spring of 2027; because of that the "
-            "search for a school for Masha is going to start in January, Ksenia is collecting the options.",
-            "The Honda Forza has to be serviced every 6000 km according to the manual; the last service was done in "
-            "October at 18400 km at the dealer in Pattaya, the next one is due around 24400 km.",
+            "Thursdays, the lessons start at 17:30 and Nina usually picks her up afterwards and brings her home.",
+            "The family is planning to move to Vila Real, most likely in the spring of 2027; because of that the "
+            "search for a school for Masha is going to start in January, Nina is collecting the options.",
+            "The Vespa GTS has to be serviced every 6000 km according to the manual; the last service was done in "
+            "October at 18400 km at the dealer in Lisbon, the next one is due around 24400 km.",
         ] + MEMORY[6:]
         after = [
-            "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up and brings her home.",
-            "Move to Chiang Mai likely in spring 2027; school search for Masha starts in January, Ksenia collects "
+            "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Nina picks her up and brings her home.",
+            "Move to Vila Real likely in spring 2027; school search for Masha starts in January, Nina collects "
             "options.",
-            "Honda Forza: service every 6000 km per the manual; last in October at 18400 km at the Pattaya dealer, "
+            "Vespa GTS: service every 6000 km per the manual; last in October at 18400 km at the Lisbon dealer, "
             "next due ~24400 km.",
         ] + MEMORY[6:]
         # 3 of 9 entries rewritten, 47 % of the characters under the old keys
@@ -112,13 +112,13 @@ class LossGuardRewriteTests(unittest.TestCase):
         old_paths = dream.SETTINGS.DURABLE_MEMORY_PATHS
         dream.SETTINGS.DURABLE_MEMORY_PATHS = ["memories/USER.md"]
         try:
-            self._write(["The human's name is Anton."], self.user)
+            self._write(["The human's name is Leo."], self.user)
             moved = [MEMORY[0], MEMORY[10], MEMORY[11], MEMORY[4]]
             after = [e for e in MEMORY if e not in moved]
             self._write(MEMORY)
             self.assertEqual(self._check(), [])
             self._write(after)
-            self._write(["The human's name is Anton."] + moved, self.user)
+            self._write(["The human's name is Leo."] + moved, self.user)
             self.assertEqual(self._check(), [])
         finally:
             dream.SETTINGS.DURABLE_MEMORY_PATHS = old_paths
@@ -133,7 +133,7 @@ class LossGuardRewriteTests(unittest.TestCase):
         self.assertEqual(alerts[0]["lost"], 3)
 
     def test_one_big_entry_is_still_a_loss(self):
-        big = ("House rules for the Jomtien condo: the cleaner comes on Tuesdays and Fridays, the key is with the "
+        big = ("House rules for the Alfama condo: the cleaner comes on Tuesdays and Fridays, the key is with the "
                "building guard, the air conditioners are washed every three months by the company the owner chose, "
                "the water filter cartridge is replaced in March and September, garbage goes out in the evening "
                "only, guests register at the front desk with a passport, the pool closes at 21:00, the gym card "
@@ -156,8 +156,8 @@ class LossGuardRewriteTests(unittest.TestCase):
         after = list(MEMORY)
         after[1] = ("hr-box: Debian 12. Run nginx -t before every deploy; restart hermes-* units only "
                     "in a session about Hermes.")
-        after[3] = "Spring 2027: the family moves to Chiang Mai; Masha's school search starts in January."
-        after[5] = "Honda Forza: service every 6000 km, last one in October at 18400 km."
+        after[3] = "Spring 2027: the family moves to Vila Real; Masha's school search starts in January."
+        after[5] = "Vespa GTS: service every 6000 km, last one in October at 18400 km."
         before = [e for i, e in enumerate(MEMORY) if i not in (6, 10)]
         after = [e for i, e in enumerate(after) if i not in (6, 10, 8, 9, 11)]
         alerts = self._night(before, after)    # 3 of 10 gone, 3 rewritten
@@ -167,7 +167,7 @@ class LossGuardRewriteTests(unittest.TestCase):
         self.assertEqual(alert["rewritten"], 3)
         message = alert["message"]
         # the lost entries are named, so the human knows what to restore
-        for gone in ("Masha's doctor is Dr. Somchai", "Rent for the Jomtien condo", "Anton created the Telegram"):
+        for gone in ("Masha's doctor is Dr. Costa", "Rent for the Alfama condo", "Leo created the Telegram"):
             self.assertIn(gone, message)
         # the rewritten ones are not presented as something to ask about
         self.assertNotIn("Server hr-box", message)
@@ -186,7 +186,7 @@ class LossGuardRewriteTests(unittest.TestCase):
         self._write(MEMORY)
         self._check()
         raw = self.snap.read_text(encoding="utf-8")
-        self.assertNotIn("Kasikorn", raw)       # past the preview of its entry
+        self.assertNotIn("Millennium", raw)       # past the preview of its entry
         self.assertNotIn("kasikorn", raw)       # nor as a stem
 
     # --- an older snapshot ----------------------------------------------------------------------------------------
@@ -204,7 +204,7 @@ class LossGuardRewriteTests(unittest.TestCase):
         after = list(MEMORY[:6])
         after[1] = ("hr-box: Debian 12. Run nginx -t before every deploy; restart hermes-* units only "
                     "in a session about Hermes.")
-        after[2] = "Masha (7, daughter): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up."
+        after[2] = "Masha (7, daughter): ballet on Mondays and Thursdays at 17:30, Nina picks her up."
         self._write(after)
         self.assertEqual(self._check(), [])
 

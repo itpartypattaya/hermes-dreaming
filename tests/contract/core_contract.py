@@ -34,14 +34,14 @@ INSTALLED = HOME / "plugins" / "hermes-dreaming" / "skills" / "dreaming"   # the
 SCRIPTS = INSTALLED / "scripts"
 
 MEMORY_LIMIT, USER_LIMIT = 3100, 1700          # not core's defaults: the dream must take them from config.yaml
-TIMEZONE = "Asia/Bangkok"
+TIMEZONE = "Asia/Tokyo"
 CHAT = "-1009990001"                           # the trusted group of this home
-SAID = "Our family moves to Chiang Mai in spring 2027, the flat search starts in January"
+SAID = "Our family moves to Vila Real in spring 2027, the flat search starts in January"
 MEMORY_ENTRIES = [
     "Rule: a bare § inside a line is text, not an entry delimiter",
     "Backups run every night at 04:00\nand are kept for seven days",
 ]
-USER_ENTRIES = ["Anton prefers short answers with the result first"]
+USER_ENTRIES = ["Leo prefers short answers with the result first"]
 SCHEDULES = {"dream-precheck.py": "0 3 * * *", "dream-extract-precheck.py": "30 2 * * 1",
              "dream-forget-sweep.py": "*/15 * * * *"}
 AGENT_SCRIPTS = ("dream-precheck.py", "dream-extract-precheck.py")
@@ -325,12 +325,12 @@ def memory_edits(ic):
 
     dream = sys.modules["_dream_contract"]
     mem_md = str(HOME / "memories" / "MEMORY.md")
-    entry = "Masha (daughter, 7): ballet on Mondays at 17:30\nKsenia picks her up afterwards and Anton pays the studio"
+    entry = "Masha (daughter, 7): ballet on Mondays at 17:30\nNina picks her up afterwards and Leo pays the studio"
     store = load_on_disk_store()
     assert json.loads(memory_tool(action="add", target="memory", content=entry, store=store)).get("success")
 
     def near():
-        found = dream.nearest_entry("Masha has ballet on Mondays and Thursdays at 17:30, Ksenia picks her up",
+        found = dream.nearest_entry("Masha has ballet on Mondays and Thursdays at 17:30, Nina picks her up",
                                     sources=dream.load_durable_memory_sources(mem_md))
         assert found and found.get("full_entry") == entry_now[0] and found.get("target") == "memory", (
             f"nearest_entry does not hand over the entry core holds: {found}")
@@ -349,7 +349,7 @@ def memory_edits(ic):
     entry_now[0] = entry.replace(span, "Mondays and Thursdays at 17:30")
     assert entry_now[0] in entries() and entry not in entries(), f"the span patch left {entries()}"
     # the whole full_entry as old_text rewrites the entry
-    rewritten = "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Ksenia picks her up, Anton pays"
+    rewritten = "Masha (daughter, 7): ballet on Mondays and Thursdays at 17:30, Nina picks her up, Leo pays"
     result = json.loads(memory_tool(target="memory", store=store, operations=[
         {"action": "patch", "old_text": near()["full_entry"], "content": rewritten}]))
     assert result.get("success"), f"core refused the whole-entry patch: {result}"
@@ -361,12 +361,12 @@ def memory_edits(ic):
     run(["hermes", "config", "set", "memory.write_approval", "true"], "hermes config set memory.write_approval")
     store = load_on_disk_store()
     result = json.loads(memory_tool(target="memory", store=store, operations=[
-        {"action": "patch", "old_text": "Anton pays", "content": "Anton pays the studio on the 5th"}]))
+        {"action": "patch", "old_text": "Leo pays", "content": "Leo pays the studio on the 5th"}]))
     assert result.get("staged"), f"with write_approval on, core did not stage the patch: {result}"
     assert rewritten in entries(), "a staged patch changed MEMORY.md"
     pending = dream.load_pending_writes(str(HOME))
     assert [p["action"] for p in pending] == ["patch"], f"the pass reads core's approval queue as {pending}"
-    want = rewritten.replace("Anton pays", "Anton pays the studio on the 5th")
+    want = rewritten.replace("Leo pays", "Leo pays the studio on the 5th")
     assert want in dream._staged_text(pending), (
         f"the pass does not count the staged patch as waiting: {dream._staged_text(pending)!r}, entry after it {want!r}")
     assert dream._staged_removals(pending) == [rewritten], (

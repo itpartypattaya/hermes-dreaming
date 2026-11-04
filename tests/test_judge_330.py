@@ -1224,7 +1224,7 @@ class ReadinessTests(unittest.TestCase):
                 ("no coverage known", self.rows(0, 40, 20), {}, "continue"),
                 ("losses unbounded", self.rows(0, 40, 5), cov, "continue"),
                 ("a wrong veto that changed a decision", self.rows(1, 60, 40, changed_wrong=True), cov, "continue"),
-                ("questions for Anton are left out", self.rows(0, 29, 20)
+                ("questions for the human are left out", self.rows(0, 29, 20)
                  + [{"label": "?", "veto": True, "changed": True, "provider": "jev"}] * 5, cov, "ready")):
             with self.subTest(name=name):
                 self.assertEqual(r(rows, coverage)["verdict"], verdict)
@@ -1241,7 +1241,7 @@ class ReadinessTests(unittest.TestCase):
                                                                                          provider="openai"), cov))
 
     def test_the_fallbacks_share_counts_its_verdicts_left_for_a_person_too(self):
-        # Codex review of 3.3.0: the fallback gave 21 of 100 verdicts, 10 of them left for Anton ("?").
+        # Codex review of 3.3.0: the fallback gave 21 of 100 verdicts, 10 of them left for the human ("?").
         cov = {"promotion": 1.0}
         rows = self.rows(0, 40, 39) + self.rows(0, 6, 5, provider="openai")
         rows += [{"label": "?", "veto": True, "changed": False, "provider": "openai"}] * 10
