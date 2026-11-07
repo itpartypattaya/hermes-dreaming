@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.6 — 2026-11-07
 
 ### Fixed
 - **`install.py --check` counts a judge key only where the night can read it.** Hermes keeps provider keys out of the
