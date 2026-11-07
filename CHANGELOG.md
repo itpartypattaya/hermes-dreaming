@@ -36,6 +36,35 @@ is the one in `plugin.json`.
   its daily task. `tests/test_night_environment.py`: 7 tests, 5 fail on 3.8.5 (the other two guard against a false
   warning). `tests/test_nightly_run.py`: 12 tests, 9 fail on 3.8.5 (the three left guard against a false warning).
 
+### Fixed (Codex review of 3.8.4–3.8.5)
+- **A patch changes the entry the night meant.** Core picks the entry a `patch` names by a whole-entry exact match
+  first, so an `old_text` that is the whole text of another, shorter entry ("Mondays at 17:30") patched that one —
+  checked on core's own `_find_unique_match`. The nightly prompt and SKILL.md now say so, and have the night patch
+  an entry back when `patched_entry_before` shows the wrong one changed.
+- **A failed batch retried op by op no longer deletes what a failed merge was to keep.** The prompt said "send the ops
+  one at a time"; with memory full, the patch that took entry B's text into A could fail on the limit and the
+  `remove` of B pass. Patches and adds go first now, and a `remove` of an entry whose text went into another op waits
+  for that op: if it failed, the entry stays.
+- **The loss guard no longer takes a touched sibling for the rewrite of a deleted entry.** A changed entry now
+  counts as the rewrite of a lost one only when it also holds most of what only the lost entry said (the words no
+  other entry had yesterday): deleting the ballet entry while adding ", usually" to the swimming one no longer
+  pulled the losses under the threshold. A real merge still counts.
+- **A full date is compared as a date.** "2026-11-03" rewritten as "2026-03-11" kept every number and passed; full
+  dates (ISO, dd.mm.yyyy, "3 November 2026", "3 ноября 2026", "November 3, 2026") are now compared as dates when both
+  sides say one. Snapshot signatures move to format 3 (`dates`, `head`); a format-2 snapshot is read as before.
+- **An honest split is not a truncation.** An entry split into its first sentence and the rest raised
+  `entry_truncated`; a head whose entry is still said elsewhere no longer does. Dropping the rest still alerts.
+- **The test that the prompt asks only for actions core offers reads every phrasing.** It saw `memory delete`, not
+  "the memory tool with action=delete" or `"action": "delete"`; the unit test and the core contract job now do.
+
+  Not changed, on purpose: an entry rewritten into its opposite ("not allergic") is what the night is told to do
+  with a trustworthy conflict, so the guard stays silent there (a test says so). Amounts swapped between purposes
+  inside an entry are still not seen. `tests/test_codex_review_385.py`: 13 tests, 6 fail on 3.8.5; the other 7 guard
+  the fixes from going too far (a merge, a reworded date, a conflict update, a real truncation) or test the wider
+  action check, which fails the old check on Codex's injected sentence. The golden record (`tests/golden/330`) is
+  re-taken for the new snapshot format: only `sig_format` and the signatures' `head` changed, no decision of either
+  night.
+
 ### Docs
 - **The skill's qualified name is the registry's.** README said jobs bind `agent-plugin-hermes-dreaming-<hash>:dreaming`;
   Hermes 0.22.6 registers the plugin skill as `hermes-dreaming:dreaming`, and a job still bound to the old name ran
