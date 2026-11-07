@@ -65,6 +65,11 @@ in each of them (`references/scoring.md`, "Every language").
 - **Clean the copies of forgotten facts now** (every pass does it first anyway):
   `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --forget-sweep`; between nights the `no_agent` gate
   `dream-forget-sweep.py` (installed next to the other gates) does the same without the model.
+- **Is a night coming?** `python3 "${HERMES_SKILL_DIR}/scripts/dream.py" --nightly-status` (read-only) says
+  whether a cron job will run the nightly dream: no job, paused, finished or failed, overdue (the gateway is not
+  firing cron), no next run. A night that does not come sends no report, so nobody else will say it. When the human
+  answers a dream question or asks about the dream in a manual session, run it once; if it prints a problem, tell
+  them in one line with the command it names — never resume, recreate or restart anything yourself.
 - **Check the install:** `python3 "${HERMES_SKILL_DIR}/scripts/install.py" --check`.
 - Tuning (trusted chats, excluded threads, alias rules, timezone, fact source) lives in
   `~/.hermes/dreaming.json` — never edit the scripts. Scoring details:

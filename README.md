@@ -153,7 +153,9 @@ Hermes runs cron scripts only from `~/.hermes/scripts/` (a symlink is refused), 
 copies the three gates there, seeds `~/.hermes/dreaming.json` from the example, does a dry run on
 throw-away copies of the state, and checks the fact source and the core. It is idempotent;
 `install.py --check` verifies without changing anything — run it after every update, since the copies
-in `scripts/` can drift from the skill.
+in `scripts/` can drift from the skill. It also names a job Hermes will not fire: one due more than an hour ago
+(the gateway is not running cron) or one with no next run. `dream.py --nightly-status` answers the short
+question "is a night coming?" (read-only; the agent runs it when you answer a dream question).
 
 ```text
 == hermes-dreaming installer ==
@@ -433,10 +435,11 @@ better on its own but added almost nothing as a veto — hence a cloud option, o
 "judge": {"mode": "shadow", "providers": ["jev", "openai"], "send_from": "trusted", "send_sources": ["telegram"]}
 ```
 
-Put the keys in the environment or in `~/.hermes/.env` — Hermes keeps provider keys out of the environment of cron
-scripts, so the judge reads its own line (`OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) and no other. A key is never
-printed, logged or written anywhere. `install.py --check` then shows the mode, where pairs may go and whether each
-key is there, never its value. A section that breaks the schema turns the judge off and says why.
+Put the keys in `~/.hermes/.env` — Hermes keeps provider keys out of the environment of cron scripts (and
+`terminal.env_passthrough` refuses them), so the nightly judge reads its own line (`OPENROUTER_API_KEY=…`,
+`OPENAI_API_KEY=…`) and no other; a key exported only in your shell works for a pass you run by hand, never at night.
+A key is never printed, logged or written anywhere. `install.py --check` then shows the mode, where pairs may go and
+whether the night has each key (a key only in the terminal it runs in is named as such), never its value. A section that breaks the schema turns the judge off and says why.
 
 ### What leaves the machine
 

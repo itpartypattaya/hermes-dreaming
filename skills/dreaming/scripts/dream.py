@@ -7540,6 +7540,23 @@ def _state_default(env_name, cfg_key):
     return p if os.path.isabs(os.path.expanduser(p)) else os.path.join(HOME, p)
 
 
+def nightly_run_problems(cfg_path=None):
+    """(problems, jobs): what keeps the nightly dream of this home from running on its own
+    (install_cron.nightly_problems), one line each, and the nightly dream's active jobs. Read-only, from
+    cron/jobs.json. A copy without install_cron.py next to it cannot tell, and says so."""
+    try:
+        spec = importlib.util.spec_from_file_location("_install_cron_for_dream",
+                                                      Path(__file__).with_name("install_cron.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        problems = mod.nightly_problems(Path(HOME), cfg_path or config_path())
+        jobs = [] if problems else [j for j in mod.read_jobs(Path(HOME))
+                                    if j.get("script") == mod.DREAM_SCRIPT and mod.job_state(j) == "active"]
+        return problems, jobs
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — a status line, never a crash of the pass that asked
+        return [f"cannot check the cron jobs ({type(exc).__name__}: {exc})"], []
+
+
 def main(argv=None):
     ap =argparse.ArgumentParser(description="Read-only dreaming pass over agent memory")
     ap.add_argument("--hermes-home", default=None,
@@ -7568,6 +7585,9 @@ def main(argv=None):
                          "short plain-text report; writes nothing (no state, no diary)")
     ap.add_argument("--explain", default=None, metavar="FACT_ID",
                     help="print the score breakdown of one fact and exit")
+    ap.add_argument("--nightly-status", action="store_true",
+                    help="say whether a cron job will run the nightly dream (read-only, cron/jobs.json) and exit: "
+                         "1 with a line per problem, 0 when its job is set to run")
     experience_args = ap.add_mutually_exclusive_group()
     experience_args.add_argument("--memory-outcomes", action="store_true",
                                  help="read the live holographic task-outcome summary; no writes or model calls")
@@ -7594,6 +7614,14 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     load_for_home(args.hermes_home or HOME, args.config)
+    if args.nightly_status:
+        problems, night = nightly_run_problems(args.config)
+        for line in problems:
+            print(f"nightly run: {line}")
+        if not problems:
+            print("nightly run: ok" + "".join(f" — job {j['id']}, next {j.get('next_run_at') or 'not stated'}"
+                                              for j in night))
+        return 1 if problems else 0
     if args.memory_outcomes or args.memory_explain is not None:
         report = memory_experience(args.memory_explain, args.memory_store)
         if args.memory_format == "text":
@@ -7646,6 +7674,8 @@ def main(argv=None):
         finally:
             shutil.rmtree(sandbox, ignore_errors=True)
         print(dry_run_summary(result, fact_source()))
+        for line in nightly_run_problems(args.config)[0]:
+            print(f"nightly run: {line}")
         return 0
 
     if not args.forget_sweep:

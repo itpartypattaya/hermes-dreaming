@@ -198,6 +198,12 @@ def api_key(name, home=None):
     value = (os.environ.get(name) or "").strip()
     if value:
         return value
+    return env_file_key(name, home)
+
+
+def env_file_key(name, home):
+    """The value of *name* on its own line in <home>/.env, or None: what a cron script can read, since Hermes keeps
+    provider keys out of the environment of cron scripts. Nothing of it is ever printed."""
     if not home:
         return None
     try:
