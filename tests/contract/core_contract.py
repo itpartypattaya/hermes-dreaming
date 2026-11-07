@@ -316,7 +316,13 @@ def memory_edits(ic):
         offered = set(MEMORY_SCHEMA["parameters"]["properties"]["operations"]["items"]["properties"]["action"]["enum"])
     except (KeyError, TypeError) as exc:
         raise AssertionError(f"core's memory tool schema no longer lists operations[].action ({exc!r})") from exc
-    named = set(re.findall(r"\bmemory (add|patch|remove|replace|update|delete)\b", ic.DREAM_PROMPT))
+    # Every phrasing, as tests/test_memory_patch_386.prompt_memory_actions reads it (Codex review of 3.8.5: `the memory
+    # tool with action=delete` slipped past a check that knew only `memory delete`).
+    verbs = r"(add|patch|remove|replace|update|delete|edit|append|set|write|rewrite|merge|clear)"
+    named = {m.group(1) for rx in (rf"\bmemory {verbs}\b",
+                                   rf"\bmemory(?: tool)?(?: with)?(?: an?)? action\s*[=:]\s*['\"]?{verbs}\b",
+                                   rf"\"action\"\s*:\s*\"{verbs}\"")
+             for m in re.finditer(rx, ic.DREAM_PROMPT)}
     assert named and named <= offered, (
         f"the nightly prompt asks for memory {sorted(named - offered)}, core's memory tool offers {sorted(offered)}: "
         "every such write is refused at night")

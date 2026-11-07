@@ -4368,10 +4368,16 @@ def _entry_head_key(entry):
 # still said by both halves together; numbers are compared as numbers (a list
 # number is not one, "9,000" is 9000, "3 November 2026" holds the month); an
 # entry of short words is judged by those words.
+#
+# Codex review of 3.8.5: a changed entry is the rewrite of a lost one only when it also says what was the lost
+# entry's own — the words no other entry of yesterday had — not just the words they shared (touching the sibling of
+# a deleted entry hid the deletion); a full date is compared as a date (2026-11-03 and 2026-03-11 hold the same
+# numbers); an entry split with its beginning kept is not a truncated one.
 REWRITE_COVERAGE = 0.6
 ENTRY_PREVIEW_CHARS = 60
-# 2: numbers as numbers, `wide` / `grams` for entries of short words. Format 1 (3.8.4) hashed every run of digits.
-SIG_FORMAT = 2
+# 3: + `dates` (full dates, canonical) and `head` (the entry's head key). 2: numbers as numbers, `wide` / `grams` for
+# entries of short words. Format 1 (3.8.4) hashed every run of digits.
+SIG_FORMAT = 3
 _NUMBER_RE = re.compile(r"\d+")
 _LIST_NUMBER_RE = re.compile(r"(?m)^[ \t>#]*\d{1,3}[.)](?=[ \t])")
 # 9,000 / 9 000 / 9'000 (and the no-break spaces of a typeset "18 000"); not a dot, which is also a decimal point
@@ -4408,6 +4414,34 @@ def _entry_numbers(entry):
     return {_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_month_numbers(low))}
 
 
+_MONTH_ALT = "|".join(f"(?:{m})" for m in _MONTHS)
+_DATE_RES = (  # (regex, order of its groups): a full date only — day, month and year all said
+    (re.compile(r"(?<![\d.])(\d{4})-(\d{1,2})-(\d{1,2})(?![\d])"), "ymd"),
+    (re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{4})(?![\d])"), "dmy"),
+    (re.compile(rf"(?<!\d)(\d{{1,2}})(?:-?[^\W\d_]{{1,3}})?[ \t,.]+({_MONTH_ALT})[ \t,.]+(\d{{4}})(?!\d)"), "dMy"),
+    (re.compile(rf"\b({_MONTH_ALT})[ \t.]+(\d{{1,2}})(?:st|nd|rd|th)?,?[ \t]+(\d{{4}})(?!\d)"), "Mdy"),
+)
+
+
+def _entry_dates(entry):
+    """The full dates an entry says, as yyyy-mm-dd, hashed: "2026-11-03", "03.11.2026", "3 November 2026", "3 ноября
+    2026", "November 3, 2026" are one date; 2026-03-11 is another, though it holds the same numbers. A slash date
+    (03/11/2026) says no order and is left to the numbers."""
+    low = _fold(entry).lower()
+    out = set()
+    for rx, order in _DATE_RES:
+        for m in rx.finditer(low):
+            parts = dict(zip(order, m.groups()))
+            if "M" in parts:
+                month = next((i for i, mrx in enumerate(_MONTH_RES, 1) if mrx.fullmatch(parts["M"])), 0)
+            else:
+                month = int(parts["m"])
+            year, day = int(parts["y"]), int(parts["d"])
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                out.add(_short_hash(f"{year:04d}-{month:02d}-{day:02d}"))
+    return out
+
+
 def _entry_grams(entry):
     """Character trigrams of an entry's letters, hashed: what is left to compare an entry of no words by."""
     text = " ".join(_GRAM_TEXT_RE.sub(" ", _fold(entry).lower()).split())
@@ -4421,7 +4455,8 @@ def _entry_features(entry):
             "wide": {_short_hash(s) for s in _stems(sig_tokens(entry, wide=True))},
             "grams": _entry_grams(entry),
             "nums": _entry_numbers(entry),
-            "nums_v1": {_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_fold(entry))}}
+            "nums_v1": {_short_hash(n.lstrip("0") or "0") for n in _NUMBER_RE.findall(_fold(entry))},
+            "dates": _entry_dates(entry), "chars": len(entry)}
 
 
 def _entry_sig(entry):
@@ -4433,7 +4468,10 @@ def _entry_sig(entry):
     easy to guess back from a hash, and together they spell the secret."""
     stems = {_short_hash(s) for s in _stems(sig_tokens(entry))}
     unsafe = classify_unsafe(entry)
-    sig = {"stems": sorted(stems), "nums": sorted(_entry_numbers(entry))}
+    sig = {"stems": sorted(stems), "nums": sorted(_entry_numbers(entry)), "head": _entry_head_key(entry)}
+    dates = _entry_dates(entry)
+    if dates:
+        sig["dates"] = sorted(dates)
     if len(stems) < 2:
         wide = {_short_hash(s) for s in _stems(sig_tokens(entry, wide=True))}
         grams = set() if wide or unsafe else _entry_grams(entry)
@@ -4461,38 +4499,62 @@ def _entry_sizes_of(path, entries=None):
 
 
 def _snapshot_sigs(value):
-    """{entry_key: (kind, features, nums, nums_kind, preview)} of a previous snapshot; empty for the formats before
-    signatures. `kind` is the feature the entry is compared by, `nums_kind` how its numbers were read."""
+    """{entry_key: (kind, features, nums, nums_kind, preview, dates, head)} of a previous snapshot; empty for the
+    formats before signatures. `kind` is the feature the entry is compared by, `nums_kind` how its numbers were read;
+    `dates` and `head` are None in a snapshot of format 2 or older (nothing to compare them with)."""
     sigs = value.get("sigs") if isinstance(value, dict) else None
-    nums_kind = "nums" if isinstance(value, dict) and value.get("sig_format") == SIG_FORMAT else "nums_v1"
+    fmt = value.get("sig_format") if isinstance(value, dict) else None
+    nums_kind = "nums" if fmt in (2, SIG_FORMAT) else "nums_v1"
     out = {}
     for key, sig in (sigs.items() if isinstance(sigs, dict) else ()):
         if isinstance(sig, dict) and isinstance(sig.get("stems"), list) and isinstance(sig.get("nums"), list):
             kind = next((k for k in ("wide", "grams") if isinstance(sig.get(k), list)), "stems")
             preview = sig.get("preview")
+            dates = set(map(str, sig.get("dates") or ())) if fmt == SIG_FORMAT else None
+            head = sig.get("head") if fmt == SIG_FORMAT and isinstance(sig.get("head"), str) else None
             out[str(key)] = (kind, set(map(str, sig[kind])), set(map(str, sig["nums"])), nums_kind,
-                             preview if isinstance(preview, str) else None)
+                             preview if isinstance(preview, str) else None, dates, head)
     return out
 
 
-def _still_said(sig, changed):
+def _still_said(sig, changed, distinct=frozenset()):
     """Whether a lost entry's text still stands in the entries the night wrote or changed (of any durable file):
-    most of its stems and all of its numbers, in one of them (a rewrite, a merge) or across the pieces cut out of it
-    (a split: entries made mostly of its words). An entry with nothing to compare by counts as lost."""
-    kind, feats, nums, nums_kind, _ = sig
+    most of its stems and all of its numbers and full dates, in one of them (a rewrite, a merge) or across the pieces
+    cut out of it (a split: entries made mostly of its words). *distinct* are the lost entry's own features, the ones
+    no other entry of the previous snapshot had: when there are any, most of them must be there too — a sibling the
+    night touched holds the words the two shared, not what only the lost one said. An entry with nothing to compare
+    by counts as lost."""
+    kind, feats, nums, nums_kind, _, dates, _ = sig
     if not feats:
         return False
-    pieces, piece_nums = set(), set()
+
+    def holds(shared, cur_nums, cur_dates):
+        if not nums <= cur_nums:
+            return False
+        if dates and cur_dates and not dates <= cur_dates:  # both say a full date: the same one
+            return False
+        return not distinct or len(distinct & shared) >= REWRITE_COVERAGE * len(distinct)
+
+    pieces, piece_nums, piece_dates = set(), set(), set()
     for cur in changed:
         shared = feats & cur[kind]
         if not shared:
             continue
-        if len(shared) >= REWRITE_COVERAGE * len(feats) and nums <= cur[nums_kind]:
+        if len(shared) >= REWRITE_COVERAGE * len(feats) and holds(shared, cur[nums_kind], cur["dates"]):
             return True
         if len(shared) >= 2 and len(shared) >= REWRITE_COVERAGE * len(cur[kind]):
             pieces |= shared
             piece_nums |= cur[nums_kind]
-    return len(pieces) >= REWRITE_COVERAGE * len(feats) and nums <= piece_nums
+            piece_dates |= cur["dates"]
+    return len(pieces) >= REWRITE_COVERAGE * len(feats) and holds(pieces, piece_nums, piece_dates)
+
+
+def _piece_chars(sig, changed):
+    """How much text the entries the night wrote or changed that are cut from the entry of *sig* hold, in characters
+    (entries made mostly of its words): a split keeps about as much as there was, a truncation keeps its head alone."""
+    kind, feats = sig[0], sig[1]
+    return sum(cur["chars"] for cur in changed
+               if len(feats & cur[kind]) >= 2 and len(feats & cur[kind]) >= REWRITE_COVERAGE * len(cur[kind]))
 
 
 def _ints(value):
@@ -4571,11 +4633,21 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             entries_now.update((_entry_key(e), e) for e in entries)
     # Every durable file: the pass may move an entry from MEMORY.md to USER.md. Only what the night wrote or changed
     # can hold a rewrite — an entry nobody touched says what it said yesterday, whatever words it shares with a lost one.
-    was_sizes = {}
+    was_sizes, was_sigs = {}, {}
     for name, value in previous.items():
         if not name.startswith("_"):
             was_sizes.update(_snapshot_sizes(value)[0])
+            was_sigs.update(_snapshot_sigs(value))
     changed = [_entry_features(e) for k, e in entries_now.items() if was_sizes.get(k) != len(e)]
+
+    def distinct(key):
+        """What only the entry *key* said yesterday, among every durable file's entries."""
+        kind, feats = was_sigs[key][0], was_sigs[key][1]
+        others = set()
+        for other, sig in was_sigs.items():
+            if other != key and sig[0] == kind:
+                others |= sig[1]
+        return feats - others
     for p in paths:
         name = _rel_home(p)
         prev_sizes, prev_heads = _snapshot_sizes(previous.get(name))
@@ -4603,7 +4675,12 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
             moved = prev - keys
             # a snapshot from before signatures cannot tell a rewrite: such an entry counts as lost, as it did
             lost = {k for k in moved if k not in entries_now
-                    and (k not in prev_sigs or not _still_said(prev_sigs[k], changed))}
+                    and (k not in prev_sigs or not _still_said(prev_sigs[k], changed, distinct(k)))}
+            # Entries the night split: their head kept in a shorter entry is not a truncation when the pieces cut from
+            # them hold about as much text as there was. "Still said" alone is not enough: a head that repeats most
+            # of the words of the body it lost says them all.
+            split_chars = {prev_sigs[k][6]: _piece_chars(prev_sigs[k], changed)
+                           for k in moved - lost if k in prev_sigs and prev_sigs[k][6]}
             unchecked = len([k for k in lost if k not in prev_sigs])
             rewritten = len(moved) - len(lost)
             frac = len(lost) / len(prev)
@@ -4644,7 +4721,8 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
                 now_len = heads.get(key)
                 if not was or now_len is None or was < SHRINK_MIN_CHARS:
                     continue
-                if now_len < was * (1 - SETTINGS.MEMORY_LOSS_ALERT_FRACTION * 2):
+                floor = was * (1 - SETTINGS.MEMORY_LOSS_ALERT_FRACTION * 2)
+                if now_len < floor and split_chars.get(key, 0) < floor:
                     alerts.append({"kind": "entry_truncated", "file": name,
                                    "had_chars": was, "chars": now_len,
                                    "message": f"{name}: an entry shrank from {was} to {now_len} "

@@ -113,7 +113,11 @@ in each of them (`references/scoring.md`, "Every language").
    Hermes ≥ 0.22 offers `add`, `patch` and `remove` (`replace` is gone: "'replace' is not available;
    use 'patch' … Nothing was written"). `patch` changes ONE span: `old_text` is the exact text to
    change, `content` its new text, and the rest of the entry is kept. To rewrite a whole entry,
-   `old_text` is the whole entry. The span must occur once in the entry. So `nearest_entry` hands
+   `old_text` is the whole entry. The span must occur once in the entry, and `old_text` is never the
+   whole text of another entry: core takes an entry that EQUALS `old_text` before any entry that
+   contains it, so a short sibling with the same words ("Mondays at 17:30") would be the one changed.
+   When the answer carries `patched_entry_before` (newer cores) and that is not the entry you meant,
+   patch it back to that text at once and stop editing it. So `nearest_entry` hands
    over, besides `target` (`memory` or `user`) and `entry` (a truncated preview — never use the
    preview as `old_text`):
    - `full_entry` — the entry as it is on disk right now. Copy the span to change from it verbatim,
@@ -134,7 +138,9 @@ in each of them (`references/scoring.md`, "Every language").
    `closest_entries`), retry **once**, then stop and report. A failed **batch** is different: it answers without
    `current_entries` on purpose (the inventory it would echo is what the consolidation was
    called to shrink), with at most a few `closest_entries` on newer cores — so recover by
-   re-issuing the ops one at a time, not by guessing a new anchor.
+   re-issuing the ops one at a time, not by guessing a new anchor — patches and adds first, and a
+   `remove` of an entry whose text went into another op only after that op succeeded: if that op
+   failed, keep the entry (a merge that did not happen must not end with the merged entry deleted).
 4a. **More than one change — one atomic call.** `memory` takes `operations[]`: all of them apply or
    none do, and the char limit is checked against the FINAL state. So "remove a stale entry and
    add a new one" fits in a single call even when memory is already full, instead of an `add` that

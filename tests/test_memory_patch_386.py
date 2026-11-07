@@ -33,9 +33,23 @@ def _sentences(text):
     return [s for s in re.split(r"(?<=[.:;])\s+", text) if s]
 
 
+_VERBS = r"(add|patch|remove|replace|update|delete|edit|append|set|write|rewrite|merge|clear)"
+_MEMORY_ACTION_RES = (
+    re.compile(rf"\bmemory {_VERBS}\b"),                                              # "memory patch"
+    re.compile(rf"\bmemory(?: tool)?(?: with)?(?: an?)? action\s*[=:]\s*['\"]?{_VERBS}\b"),  # "the memory tool with action=delete"
+    re.compile(rf"\"action\"\s*:\s*\"{_VERBS}\""),                                    # operations[] written as JSON
+)
+
+
+def prompt_memory_actions(text):
+    """Every memory action *text* asks for, however it is phrased (Codex review of 3.8.5: `memory delete` was caught,
+    `the memory tool with action=delete` was not). `fact_store action=update` is another tool's and is not read."""
+    return {m.group(1) for rx in _MEMORY_ACTION_RES for m in rx.finditer(text)}
+
+
 class ThePromptAsksForWhatCoreAccepts(unittest.TestCase):
     def test_every_memory_action_named_is_one_core_022_accepts(self):
-        named = set(re.findall(r"\bmemory (add|patch|remove|replace|update|delete)\b", install_cron.DREAM_PROMPT))
+        named = prompt_memory_actions(install_cron.DREAM_PROMPT)
         self.assertTrue(named, "the prompt names no memory action at all")
         self.assertLessEqual(named, CORE_022_ACTIONS, f"the prompt asks for {sorted(named - CORE_022_ACTIONS)}")
         self.assertIn("patch", named)
