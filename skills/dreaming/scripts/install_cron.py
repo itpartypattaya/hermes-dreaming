@@ -201,6 +201,27 @@ EXTRACT_PROMPT = (
 )
 
 
+def hermes_python(home):
+    """Hermes' own interpreter on this install: a POSIX venv, a Windows venv (Scripts\\python.exe) or the
+    container's /opt/hermes/.venv; the documented POSIX path when none is there yet."""
+    home = Path(home)
+    for candidate in (home / "hermes-agent" / "venv" / "bin" / "python",
+                      home / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+                      home / ".venv" / "bin" / "python"):
+        if candidate.is_file():
+            return str(candidate)
+    return f"{home}/hermes-agent/venv/bin/python"
+
+
+def command_line(argv):
+    """*argv* as one line to paste into this system's shell: POSIX quoting, or PowerShell's on Windows (single
+    quotes, '' for a quote, `&` to run a quoted program)."""
+    if os.name == "nt":
+        return "& " + " ".join("'" + str(a).replace("'", "''") + "'" for a in argv)
+    import shlex
+    return shlex.join(str(a) for a in argv)
+
+
 def _import_jobs():
     sys.path.insert(0, str(HOME / "hermes-agent"))
     try:
@@ -209,7 +230,7 @@ def _import_jobs():
         raise SystemExit(
             f"cannot import Hermes cron API from {HOME / 'hermes-agent'}: {exc}\n"
             "Run this with the Hermes interpreter, e.g.\n"
-            f"  {HOME}/hermes-agent/venv/bin/python {Path(__file__).name} --help"
+            f"  {command_line([hermes_python(HOME), Path(__file__).name, '--help'])}"
         )
     return jobs
 
@@ -227,7 +248,7 @@ def _list_jobs(jobs):
         raise SystemExit(
             f"cannot list the existing cron jobs ({type(exc).__name__}: {exc}) — nothing was created, so nothing "
             f"is duplicated. Run this with the Hermes interpreter, e.g.\n"
-            f"  {HOME}/hermes-agent/venv/bin/python {Path(__file__).name} --help") from exc
+            f"  {command_line([hermes_python(HOME), Path(__file__).name, '--help'])}") from exc
     return validate_jobs(listed)
 
 
@@ -339,7 +360,7 @@ def _plugin_skill_name():
     except Exception as exc:  # noqa: BLE001 — environment problem, reported by the caller
         raise RegistryError(
             f"cannot read the Hermes plugin registry ({type(exc).__name__}: {exc}) — run this with "
-            f"Hermes' own interpreter: {HOME}/hermes-agent/venv/bin/python") from exc
+            f"Hermes' own interpreter: {hermes_python(HOME)}") from exc
     if len(names) > 1:
         raise RegistryError(f"several registered skills point at {own}: {', '.join(names)}")
     return names[0] if names else None
@@ -461,6 +482,71 @@ def job_state(job):
     if not job.get("enabled", True) or job.get("state") == "paused" or job.get("paused_at"):
         return "paused"
     return "active"
+
+
+OVERDUE_GRACE_S = 3600  # a fire minutes late is a busy gateway; an hour past is no gateway
+
+
+def _parse_time(value):
+    """An ISO time of jobs.json as an aware datetime (a naive one is local time), or None."""
+    from datetime import datetime
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        when = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.astimezone()
+
+
+def run_problem(job, now=None):
+    """Why an active job will not fire on its own, as a line for a human, or None.
+
+    Cron jobs fire only while Hermes' gateway runs, and the gateway moves `next_run_at` on after every fire: a time
+    well in the past means nothing has been firing. A null `next_run_at` on an enabled job never fires (Hermes' own
+    invariant). A paused, running or quota-held job is not overdue; a record without the field says nothing."""
+    from datetime import datetime, timezone
+    if job_state(job) != "active" or job.get("state") == "running" or "next_run_at" not in job:
+        return None
+    now = now or datetime.now(timezone.utc)
+    hold = _parse_time(job.get("quota_hold_until"))
+    if hold is not None and hold > now:
+        return None
+    label = f"job {job.get('id')} ({job.get('script')})"
+    if job["next_run_at"] is None:
+        return (f"{label}: no next run time, so Hermes will not fire it — restart the gateway, or pause and resume the "
+                f"job (hermes cron pause {job.get('id')}, then hermes cron resume {job.get('id')})")
+    due = _parse_time(job["next_run_at"])
+    if due is not None and (now - due).total_seconds() > OVERDUE_GRACE_S:
+        return (f"{label}: due since {job['next_run_at']} and has not run — cron jobs fire only while Hermes' gateway "
+                "runs; check it: hermes gateway status")
+    return None
+
+
+def nightly_problems(home, config=None, now=None):
+    """What keeps the nightly dream from running on its own, one line each for a human; [] when its job is set to
+    run, or the night is left out of `cron.expected_roles` on purpose. The night cannot report that it did not come:
+    this is what a manual session says instead (`dream.py --nightly-status`)."""
+    try:
+        listed = read_jobs(home)
+        expected = expected_roles(home, config)
+    except (SystemExit, ValueError) as exc:
+        return [f"cannot read the cron jobs: {exc}"]
+    if "night" not in expected:
+        return []
+    group = _existing(listed, DREAM_SCRIPT)
+    if not group:
+        return ["no cron job runs the nightly dream — create it with install_cron.py (README, step 4)"]
+    active = [j for j in group if job_state(j) == "active"]
+    if not active:
+        advice = {"paused": "resume it: hermes cron resume {id}",
+                  "terminal": "Hermes holds it as finished or failed: hermes cron resume {id}, or remove it and run "
+                              "install_cron.py",
+                  "unknown": "its state is not one Hermes documents: hermes cron list --all"}
+        return [f"the nightly dream's job {j['id']} is {job_state(j)} — " + advice[job_state(j)].format(id=j["id"])
+                for j in group]
+    problems = [p for p in (run_problem(j, now) for j in active) if p]
+    return problems if len(problems) == len(active) else []
 
 
 def inventory(listed, expected):
