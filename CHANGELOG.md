@@ -5,6 +5,37 @@ is the one in `plugin.json`.
 
 ## Unreleased
 
+### Fixed
+- **`install.py --check` counts a judge key only where the night can read it.** Hermes keeps provider keys out of the
+  environment of cron scripts, and `terminal.env_passthrough` refuses them, so the nightly gate reads the key's line
+  in `~/.hermes/.env` alone. The check also took a key exported in the terminal it ran in: "✓ cloud judge shadow"
+  while every night ran without a provider. Such a key is now named as one the night will not see, with where to put
+  it; with no key in `.env` the check reports the problem. README (en/ru) no longer says "in the environment or in
+  `.env`".
+- **`install.py` names DREAM_* settings exported only in its terminal.** The gates run in the gateway's environment,
+  which loads `~/.hermes/.env`, not the installer's: a `DREAM_CONFIG` set only there had the installer seed and check
+  one config while the night read `dreaming.json` (UTC, no trusted chats), silently. A variable with the same value in
+  `.env` is not named.
+- **The printed next command runs as printed.** It named `venv/bin/python` on every system (a Windows venv keeps
+  `Scripts\python.exe`) and wrapped the home in single quotes, so a home with an apostrophe or a space broke the
+  pasted line. It now names the interpreter the install has (POSIX venv, Windows venv, container `.venv`) and is one
+  line quoted for the shell: POSIX quoting, PowerShell's on Windows. The installers' own error hints name the same
+  interpreter.
+- **`install.py --check` names a job Hermes will not fire.** A job was "active" as long as it was not paused, also
+  while the gateway was down and nothing fired: cron jobs fire only while the gateway runs, and it moves
+  `next_run_at` on after every fire. An active job due more than an hour ago now points at `hermes gateway status`;
+  one with a null `next_run_at` (never fires) says how to re-arm it. A job minutes late, paused, running or
+  quota-held is not named.
+- **`dream.py --nightly-status`: is a night coming?** A night that does not come sends no report, so nobody said
+  that no job ran the dream, that it was paused or finished, or that the gateway was not firing it. The new read-only
+  flag says so in one line per problem with the command to run (exit 1), or "ok" with the job and its next run;
+  `--dry-run` prints the same problems. SKILL.md has the agent run it once when the human answers a dream question
+  or asks about the dream, and tell them — never resume or restart anything itself.
+
+  Found by comparing with agent-dreaming 0.8.2–0.8.3 and Fable's review of its 0.8, which fixed the same classes for
+  its daily task. `tests/test_night_environment.py`: 7 tests, 5 fail on 3.8.5 (the other two guard against a false
+  warning). `tests/test_nightly_run.py`: 12 tests, 9 fail on 3.8.5 (the three left guard against a false warning).
+
 ### Fixed (Codex review of 3.8.4–3.8.5)
 - **A patch changes the entry the night meant.** Core picks the entry a `patch` names by a whole-entry exact match
   first, so an `old_text` that is the whole text of another, shorter entry ("Mondays at 17:30") patched that one —

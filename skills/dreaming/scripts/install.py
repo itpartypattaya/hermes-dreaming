@@ -287,10 +287,16 @@ def check_judge(home, dream, r):
     keyed = []
     for p in js.providers:
         env = judge.PROVIDERS[p]["env"]
-        if judge.api_key(env, str(home)):
+        # Only the .env line counts: Hermes keeps provider keys out of the environment of cron scripts, and
+        # terminal.env_passthrough refuses them too, so a key exported here is not there at night.
+        if judge.env_file_key(env, str(home)):
             keyed.append(p)
+        elif (os.environ.get(env) or "").strip():
+            r.warn(f"cloud judge: {env} is set in this terminal only — Hermes keeps provider keys out of cron "
+                   f"scripts, so the nightly pass reads it from {home / '.env'} alone and {p} is off every night; "
+                   f"put the line there")
         else:
-            r.warn(f"cloud judge: no {env} in the environment or in {home / '.env'} — {p} is off every night")
+            r.warn(f"cloud judge: no {env} in {home / '.env'} — {p} is off every night")
     chats = ("the trusted and private chats" if js.send_trusted
              else ", ".join(sorted(js.send_from)) or "no chat")
     r.ok(f"cloud judge {js.mode}: asks {' then '.join(js.providers)}; may send the fact and the person's own "
@@ -300,6 +306,38 @@ def check_judge(home, dream, r):
         r.bad("cloud judge: no provider has a key — every night is degraded and the agent is alerted")
     if not js.send_sources or not (js.send_trusted or js.send_from or js.send_no_chat_sessions):
         r.warn("cloud judge: send_from / send_sources leave nothing to send — nothing is judged")
+
+
+def _same_setting(a, b):
+    if b is None:
+        return False
+    if a == b:
+        return True
+    norm = lambda p: os.path.normcase(os.path.abspath(os.path.expanduser(p)))  # noqa: E731
+    return norm(a) == norm(b)
+
+
+def check_terminal_settings(home, dream, r):
+    """DREAM_* settings exported in this terminal that the night will not see. The gates run in the gateway's
+    environment, which loads <home>/.env, not in this terminal's; the same value in .env is what the night sees too
+    and is not named (agent-dreaming 0.8.3 warned about such a variable and had to take it back)."""
+    env_file = home / ".env"
+    file_key = dream._load_judge().env_file_key
+    for name in sorted(n for n in os.environ if n.upper().startswith("DREAM_")):
+        here = os.environ[name].strip()
+        if not here:
+            continue
+        there = file_key(name, str(home))
+        if _same_setting(here, there):
+            continue
+        if name.upper() == "DREAM_CONFIG":
+            night = f"reads {there or home / 'dreaming.json'} instead"
+        else:
+            night = f"uses {there!r} from there" if there else "runs without it"
+        where = f"to another value than in {env_file}" if there else "in this terminal only"
+        r.warn(f"{name} is set {where} — the cron gates run in Hermes' environment, which reads {env_file}, not "
+               f"this terminal, so the night {night}. Put the line in {env_file} (or in the gateway service's "
+               "environment), or leave it out")
 
 
 def _load_install_cron(home):
@@ -327,6 +365,11 @@ def check_jobs(home, check_only, r):
             r.bad(message)
         else:
             r.warn(message)
+    for group in groups.values():
+        for job in group:
+            problem = ic.run_problem(job)
+            if problem:
+                r.warn(problem)
     if not any(groups[role] for role in ("night", "extract")):
         return
     try:
@@ -408,6 +451,7 @@ def main(argv=None):
     if not cfg.exists():
         check_config(cfg, args.check, r)
     dream = _load_dream(home, cfg)
+    check_terminal_settings(home, dream, r)
     check_dry_run(dream, cfg, r)
     check_core(home, r)
     check_fact_source(home, dream, r)
@@ -416,11 +460,13 @@ def main(argv=None):
 
     print(f"\n== {r.ok_n} ok, {r.warn_n} warning(s), {r.bad_n} problem(s) ==")
     if not r.bad_n and not args.check:
+        ic = _load_install_cron(home)
+        command = ic.command_line([ic.hermes_python(home), SKILL_DIR / "scripts" / "install_cron.py",
+                                   "--hermes-home", home, "--deliver", "local", "--dry-run"])
         print("\nNext — create the cron jobs (the CLI cannot set enabled_toolsets, so use the "
               "installer):\n\n"
-              f"  {home / 'hermes-agent' / 'venv' / 'bin' / 'python'} \\\n"
-              f"      {SKILL_DIR / 'scripts' / 'install_cron.py'} --hermes-home '{home}' --deliver local --dry-run\n"
-              "  # happy with the plan? drop --dry-run")
+              f"  {command}\n"
+              "  # happy with the plan? run it again without --dry-run")
     return 1 if r.bad_n else 0
 
 
