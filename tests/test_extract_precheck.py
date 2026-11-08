@@ -102,6 +102,17 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertIsNone(payload)
         self.assertEqual(total, 1)
 
+    def test_each_message_carries_its_message_and_session_ids(self):
+        """A stored fact can be traced back to the message it came from: each handed-over message carries its
+        `messages.id` and its session id, not only a minute-precision time."""
+        for i in range(3):
+            self.add_message(f"Сообщение номер {i} про утренний кофе", days_ago=3 - i)
+        con = sqlite3.connect(self.home / "state.db")
+        rows = [tuple(r) for r in con.execute("select id, session_id from messages where role='user' order by id")]
+        con.close()
+        payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertEqual([(m.get("id"), m.get("session")) for m in payload["messages"]], rows)
+
     def test_chunk_and_cursor(self):
         for i in range(6):
             self.add_message(f"Сообщение номер {i} про утренний кофе", days_ago=6 - i)
@@ -335,6 +346,18 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertEqual(third, {"wakeAgent": False})
         self.assertIn("moving on", self.stderr)
         self.assertIn("since_ts", self._state())
+
+    def test_a_window_with_nothing_storable_moves_the_cursor_once(self):
+        """Unsafe messages are never handed over. When the new messages are all unsafe, the cursor passes them at
+        once: left uncommitted, every run rescanned them and counted them as new until a storable message came."""
+        for i in range(3):
+            self.add_message(f"пароль: Kofe{i}Utrom{i}Secret", days_ago=1)
+        self.assertEqual(self._main(), {"wakeAgent": False})
+        state = self._state()
+        self.assertIn("since_ts", state)
+        self.assertNotIn("pending", state)
+        self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("0 new message(s)", self.stderr)
 
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"
