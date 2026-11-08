@@ -177,6 +177,7 @@ def build_payload(dream, cfg, state, now_ts):
     for m in messages:
         text = _clean(dream, m["content"], int(ext["message_chars"]))
         if not text:
+            cursor = (m["ts"], m.get("id") or 0)  # nothing to store: passed like an unsafe one
             continue
         if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
             break
@@ -191,6 +192,12 @@ def build_payload(dream, cfg, state, now_ts):
             cursor = (m["ts"], m.get("id") or 0)
             continue
         item = {"t": stamp.strftime("%Y-%m-%d %H:%M"), "text": text}
+        # Where it was said: the state.db message id and session id, so a stored fact can be traced back to its
+        # message; the minute-precision time alone cannot tell two messages apart.
+        if m.get("id") is not None:
+            item["id"] = m["id"]
+        if m.get("session_id") not in (None, ""):
+            item["session"] = str(m["session_id"])
         # Who said it: in a private chat "I don't eat gluten" names nobody, and two people's
         # first-person statements in one list could not be told apart (Codex review of 2.7.2).
         if m.get("chat_type"):
@@ -288,6 +295,15 @@ def main():
         print(json.dumps({"dream_error": f"{type(exc).__name__}: {exc}"[:300]}, ensure_ascii=False))
         return 0
     stamp = now.isoformat(timespec="seconds")
+    if payload is None and total and total >= int(ext["min_messages"]):
+        # Every new message was skipped (unsafe, or empty once cleaned): nothing to hand over and nothing the agent
+        # could store, so the cursor passes them now. Left uncommitted, every run rescanned them and counted them as
+        # new backlog until a storable message came.
+        state["since_ts"], state["since_id"] = cursor
+        state.pop("attempts", None)
+        state.pop("retry_since", None)
+        print(f"[dream-extract] {total} new message(s), none storable — cursor moved past them", file=sys.stderr)
+        total = 0
     if payload is not None:
         # The stamp is how the next run finds this hand-over's cron session.
         payload = {"note": payload.pop("note"), "generated_at": stamp, **payload}
