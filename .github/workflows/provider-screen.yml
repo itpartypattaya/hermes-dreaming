@@ -1,0 +1,58 @@
+name: provider screen
+
+# scripts/holo_screen.py is a verbatim copy of the holographic provider's screen.py, and tests.yml checks it against
+# the commit it pins. A new provider release is noticed by nobody until someone bumps that pin: on 2026-11-18 the copy
+# was 0.25.3's while the live install ran 0.30.0, and the dream held and showed facts by the old screen. This job
+# compares the copy with the screen.py of the provider's latest release every day and fails while they differ: then
+# run tools/vendor_screen.py from that release, bump both holographic pins in tests.yml and release the dream.
+# Not on every push: a provider release must not turn an unrelated pull request red.
+
+on:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/provider-screen.yml
+      - skills/dreaming/scripts/holo_screen.py
+
+permissions:
+  contents: read
+
+jobs:
+  latest-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Find the provider's latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo itpartypattaya/hermes-plugin-holographic --json tagName -q .tagName)"
+          test -n "$tag"
+          copy="$(sed -n 's/^SOURCE_VERSION = "\(.*\)"$/\1/p' skills/dreaming/scripts/holo_screen.py)"
+          echo "latest holographic release: $tag; holo_screen.py is from $copy"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Check out its screen.py
+        uses: actions/checkout@v4
+        with:
+          repository: itpartypattaya/hermes-plugin-holographic
+          ref: ${{ steps.latest.outputs.tag }}
+          path: _holographic
+          sparse-checkout: screen.py
+          sparse-checkout-cone-mode: false
+      - name: The copy is that release's screen
+        env:
+          HOLOGRAPHIC_SRC: ${{ github.workspace }}/_holographic/screen.py
+        run: |
+          test -f "$HOLOGRAPHIC_SRC"
+          # A skip would pass silently (the test skips without a source): it must run and pass.
+          python -m unittest discover -s tests -p 'test_holographic_017.py' -k test_the_copy_matches_the_provider -v \
+            2>&1 | tee result.txt
+          msg="holo_screen.py is not the screen.py of holographic ${{ steps.latest.outputs.tag }}"
+          msg="$msg: run tools/vendor_screen.py from that release and bump both holographic pins in tests.yml"
+          grep -q "^OK$" result.txt || { echo "::error::$msg"; exit 1; }

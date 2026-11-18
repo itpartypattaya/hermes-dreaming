@@ -3,6 +3,13 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### CI
+- **A new holographic screen is noticed.** `provider-screen.yml` compares `scripts/holo_screen.py` with the screen.py
+  of the provider's latest release every day and fails while they differ (the copy was five provider versions behind
+  before 3.8.11, and nothing failed). Not on every push: a provider release does not turn an unrelated pull request red.
+
 ## 3.8.11 — 2026-11-18
 
 ### Changed
