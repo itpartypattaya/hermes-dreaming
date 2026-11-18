@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.10 — 2026-11-18
 
 ### Fixed
 - **A voice transcript with a bracket inside it.** A speech-to-text annotation ("[music]", "[неразборчиво]") ended
