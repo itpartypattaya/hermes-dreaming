@@ -105,9 +105,9 @@ def _dream():
 
 
 def load_state(dream, path):
-    """The cursor state through dream.py's reader: none → {}; a broken file is moved aside with a warning, not read
-    as "no cursor" — that sent the gate `backfill_days` back and handed two months of messages over again (review of
-    2.9.8)."""
+    """The cursor state through dream.py's reader: none → {}; a broken file is moved aside with a warning and gives
+    {} too — `main()` tells it from "no cursor" first and restarts the cursor now instead of `backfill_days` back,
+    which handed two months of messages over again (review of 2.9.8; the restart since the review of 2026-11-17)."""
     return dream._load_state_file(str(path))
 
 
@@ -279,9 +279,22 @@ def main():
             print(f"[dream-extract] {note} — extraction skipped, the cursor stays where it is", file=sys.stderr)
             print(json.dumps({"wakeAgent": False}))
             return 0
-        loaded = load_state(dream, STATE)
-        state = resolve_pending(dream, loaded, ext["max_retries"])
         now = datetime.now(timezone.utc)
+        broken = dream._read_state_file(str(STATE))[1]
+        loaded = load_state(dream, STATE)
+        if broken:
+            # The cursor is lost. Going `backfill_days` back handed over again what was extracted already, and an add
+            # of a stored text counts as the person saying it again — trust grew on nothing (review of 2026-11-17).
+            # The new cursor starts now: messages since the last good run go unextracted (they still corroborate at
+            # night), and the agent is told once.
+            save_state(dream, STATE, {"since_ts": now.timestamp(), "since_id": -1,
+                                      "at": now.isoformat(timespec="seconds")})
+            problem = (f"the extraction cursor {STATE.name} was {broken}; it was set aside and the cursor restarts "
+                       "now — messages since the last good run are not extracted")
+            print(f"[dream-extract] {problem}", file=sys.stderr)
+            print(json.dumps({"dream_error": problem[:300]}, ensure_ascii=False))
+            return 0
+        state = resolve_pending(dream, loaded, ext["max_retries"])
         payload, cursor, total = build_payload(dream, cfg, state, now.timestamp())
     except Exception as exc:  # noqa: BLE001
         print(f"[dream-extract] fail: {exc!r}", file=sys.stderr)

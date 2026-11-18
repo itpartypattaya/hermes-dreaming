@@ -38,7 +38,7 @@ memory **provider** and its `fact_store` tool were not registered at all. On suc
 works and extraction cannot: either upgrade Hermes, or install the jobs without extraction:
 
 ```bash
-python3 scripts/install_cron.py --deliver local --extract-schedule ""
+~/.hermes/hermes-agent/venv/bin/python scripts/install_cron.py --deliver local --extract-schedule ""
 ```
 
 The dream then consolidates whatever reaches the fact store by other means — the `memory add` mirror

@@ -27,6 +27,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -206,8 +207,12 @@ def env_file_key(name, home):
     provider keys out of the environment of cron scripts. Nothing of it is ever printed."""
     if not home:
         return None
+    # Read as Hermes reads it (python-dotenv): a BOM is no part of the first name, a quoted value may have a comment
+    # after it, and of two lines the last one counts. The first line, quotes and all, used to be taken: `KEY="…" # …`
+    # sent the quotes to the provider (401), and a key below an empty `KEY=` was never found (review of 2026-11-17).
+    found = None
     try:
-        with open(os.path.join(home, ".env"), encoding="utf-8") as f:
+        with open(os.path.join(home, ".env"), encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("export "):
@@ -216,14 +221,12 @@ def env_file_key(name, home):
                 if not sep or key.strip() != name:
                     continue
                 value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                    value = value[1:-1].strip()
-                else:
-                    value = value.split(" #", 1)[0].strip()
-                return value or None
+                quoted = re.match(r"""(["'])(.*?)\1(?:\s+#.*)?$""", value)
+                value = quoted.group(2).strip() if quoted else value.split(" #", 1)[0].strip()
+                found = value or None
     except (OSError, UnicodeDecodeError):
         return None
-    return None
+    return found
 
 
 class Budget:

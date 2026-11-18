@@ -3,6 +3,55 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.7 — 2026-11-18
+
+### Fixed
+- **A rejection no longer silences a newer value of the fact.** The reject list matched a rewording by its words
+  alone, so after "rent is 2500" was rejected, "rent is 3000" — another day of the week, another time, another
+  name alike — was silenced too, for the 180 days of `reject_reask_days`, and `trust_feedback` offered to lower its
+  trust. A fact and a rejected text that each hold a number (digits, a time, a weekday, a month) or a name inside the
+  sentence the other lacks are now different statements; a rewording with the same values is still rejected.
+- **A changed number is not "already in memory" because it starts like the entry.** «…thread 43» is the beginning of
+  «…thread 437 from Monday» as a string, and the check said "in memory" before it compared the numbers: the update
+  never reached `conflicts`. The numbers are compared first and the text must match as whole words.
+- **A time with a dot is no date.** «at 10.30», «at 9.30» were read month-first as 30 October / 30 September (the
+  day-first reading has no month 30), so a weekly lesson became an expired event and left every section. A dotted
+  pair is now a date only when a month (1–12) follows the dot or a year follows; slashes and dashes keep both
+  readings.
+- **A memory-loss alert comes back until an agent turn answers it.** The snapshot moved on the night the alert was
+  raised, so when that night's turn failed — or the pass ran a second time — the loss was never said to anyone. The
+  alerts (`memory_loss`, `entry_truncated`, `probe_missing`) now ride in the pass's `_pending` record like the
+  questions do and are raised again after a night with no answer.
+- **A fact store that cannot be read costs the night its facts, not the night.** An empty file, a file that is not a
+  database or a `facts` table of an older shape ended the pass in a traceback (`dream_error`), and the memory-file
+  review, the loss guard and the memory pressure did not run either. The pass now goes on without facts and raises
+  `fact_store_unreadable` with the error.
+- **A voice message sent as a reply corroborates.** The transcript was cut together with the quote it answered, so a
+  spoken "yes, still the same scooter" under a question counted as nothing.
+- **A date without a year takes its year from the day the fact was stored.** The year closest to today read "the
+  flight on 20 June", stored in November, as last June (an expired event) and "the test on 3 May", stored in April,
+  as next May. It is now the first year that puts the date no earlier than 90 days before the fact was stored (the
+  extraction job stores facts weeks after they were said); a fact without `created_at` keeps the old rule.
+- **A slug is no API key.** `sk-` inside `risk-management-…`, `task-management-…`, `ask-me-…` quarantined the fact as a
+  secret; the key rule now needs a word edge before `sk-`.
+- **Paths with `#` or `%` are opened read-only where they are.** The database path went into the SQLite URI raw: a
+  `#` cut it short together with `?mode=ro`, so SQLite opened — and created — a file of the shorter name for writing.
+  Paths now go in as file URIs.
+- **A broken extraction cursor restarts now, not `backfill_days` back.** The cursor file was set aside and the next
+  run handed two months of messages over again — and an add of a stored text counts as the person saying it again.
+  The gate now starts the cursor at the current time and says so once (`dream_error`).
+- **The judge reads `.env` as Hermes does.** `KEY="…" # comment` sent the quotes to the provider, a BOM hid the first
+  key, and of two lines the first was taken (python-dotenv takes the last).
+- Smaller: a timezone name with spaces around it is that zone, not UTC; a pass in a home without `cache/` writes its
+  state; `install.py --check` piped on a console code page without ✓ ! ✗ prints instead of dying.
+
+### Docs
+- SKILL: before `end` / `change` / `correct` / `forget` on a human's answer, read the fact's `history` and ask again
+  when its text changed since the question — only a merge checks versions. "No network, no LLM" now names the
+  optional cloud judge; `dream-reject.py` writes the proposal and its cooldown too, not only the reject list.
+- README (en/ru): without `tzdata` on Windows every zone is UTC. `references/cron-memory.md` runs `install_cron.py`
+  with Hermes' interpreter; `install.py` speaks of three gates.
+
 ## 3.8.6 — 2026-11-07
 
 ### Fixed

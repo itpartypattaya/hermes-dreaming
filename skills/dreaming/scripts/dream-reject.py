@@ -7,7 +7,9 @@ row from `memory_store.db`, and the only repeat filter of the dream is
 a candidate every night (live case: 12 identical questions about a dead
 thread in 5 weeks).
 
-The script writes only the reject list (`cache/dream-rejected.json`, 0600):
+The script writes the reject list (`cache/dream-rejected.json`, 0600) and,
+for a "merge?" answer (`--not-duplicates`, `--stale`), the proposal in
+`cache/dream-proposals.json` and its cooldown in the seen state:
 neither memory nor `memory_store.db` is touched — the fact stays in the DB but
 the dream stops proposing / asking about it. Matching in `dream.py` is by text,
 not `fact_id`, so a fact re-extracted under a new id is silenced too.

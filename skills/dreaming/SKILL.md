@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects, and the human's answers to its questions."
-version: 3.8.6
+version: 3.8.7
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.23.0)
@@ -13,7 +13,8 @@ tags: [memory, consolidation, dreaming, cron, fact-store]
 
 A nightly, deterministic pass over the agent's memory: it corroborates candidate facts with what
 humans actually said, proposes the few worth keeping, asks whether old memory entries still hold,
-and warns before a memory file fills up. The script never writes memory and calls no LLM — you
+and warns before a memory file fills up. The script never writes memory and its rules call no LLM (the optional
+cloud judge, off by default, sends fact–message pairs to a decision model — README, «Optional cloud judge») — you
 apply its proposals with the regular `memory` tool, and every candidate ends written or rejected.
 It does not extract facts by itself (an optional extraction job does) and never deletes anything — except
 its own copies of a fact the human asked to forget (holographic >= 0.8.0, see step 7c). It reads chats in the
@@ -41,7 +42,7 @@ in each of them (`references/scoring.md`, "Every language").
 - holographic ≥ 0.19.0 (`fact_store merge`) for the "merge?" questions about duplicate facts (step 7e) and for
   merging a retelling the extraction run just stored (step 9). With an older provider both are off
   (`stats.duplicate_pairs_skipped: merge_unavailable`) and everything else works as before.
-- Python 3 standard library. No network, no API keys.
+- Python 3 standard library. No network and no API keys, unless the optional cloud judge is turned on.
 
 ## How to Run
 
@@ -172,7 +173,10 @@ in each of them (`references/scoring.md`, "Every language").
    only. It deletes the fact and its versions from the store; step 7c describes the copies this skill cleans.
 7. **Decay questions.** `fact_decays` and `md_decays` are questions, not deletion candidates. The
    human's answer is closed by substance. With `stats.fact_history: true` (holographic >= 0.8.0) a
-   **fact** is closed through the store, which keeps its history:
+   **fact** is closed through the store, which keeps its history. The answer may come days after the
+   question, and only a merge checks versions (`expect`): before `end` / `change` / `correct` / `forget`, call
+   `fact_store history {fact_id}` — when the current version's text is not the text the human was shown,
+   show the new text and ask again instead (a `forget` of a fact changed since deletes the new text, for good):
    - "no longer true / outdated" → `fact_store end {fact_id}` (`valid_to` only if the human names the
      date): it leaves the store's present and every dream section, so no reject is needed;
    - "it changed" → `fact_store change {fact_id, content}` with the new state;
@@ -337,8 +341,9 @@ in each of them (`references/scoring.md`, "Every language").
   source in `untrusted_sources`; `cron`, `subagent` and `tool` are always excluded) instead of
   raising the gates.
 - **The memory tool cannot touch the fact store.** Without `fact_history`, `dream-reject.py` is the
-  only way to silence a fact, and it writes only `cache/dream-rejected.json` (text fingerprint; a
-  secret's text is never stored). When the dream runs with `--hermes-home`, give `dream-reject.py` the same
+  only way to silence a fact. It writes the reject list `cache/dream-rejected.json` (text fingerprint; a
+  secret's text is never stored) and, for a "merge?" answer, the proposal and its cooldown — never memory or
+  the fact store. When the dream runs with `--hermes-home`, give `dream-reject.py` the same
   `--hermes-home`: the config, the fact store and the state lock are that home's. `quarantined` facts are closed the same way. With it, `end` /
   `correct` / `forget` go through `fact_store` (step 7).
 - **`forget` is final and wide.** It deletes the fact with its history and, through the sweep, this
