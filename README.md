@@ -533,7 +533,7 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 
 | field | meaning |
 |---|---|
-| `timezone` | IANA zone for the diary date and day-bucketing of mentions. Not set → Hermes' own `timezone`, then UTC |
+| `timezone` | IANA zone for the diary date and day-bucketing of mentions. Not set → Hermes' own `timezone`, then UTC. On Windows Python has no zone database of its own: without the `tzdata` package (`pip install tzdata` into the interpreter that runs the jobs) every zone falls back to UTC, with a warning in the job's log |
 | `trusted_chat_ids` | group chats whose messages corroborate memory (**fail-closed**: empty = none) |
 | `excluded_threads` | threads of a trusted chat that must not corroborate — `{"<chat_id>": ["<thread_id>", …]}` |
 | `untrusted_sources` | session sources that are machine prompts — `cron`, `subagent` and `tool` are always excluded; add `cli` when scripts drive the agent |

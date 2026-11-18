@@ -45,6 +45,11 @@ def _load(name, path):
 
 
 REF = _load("_classify_371", TESTS / "fixtures" / "classify_371.py")
+# The one rule changed on purpose since 3.7.1 (review of 2026-11-17, tests/test_review_2026_11b.py): an `sk-` key
+# needs a word edge before it, so a slug (risk-management-…) is no secret. The reference takes that change and no
+# other — every other decision must still be 3.7.1's.
+REF.SECRET_RE = re.compile(REF.SECRET_RE.pattern.replace("(?:sk-", "(?:(?<![A-Za-z0-9])sk-", 1), REF.SECRET_RE.flags)
+assert "(?<![A-Za-z0-9])sk-" in REF.SECRET_RE.pattern
 SCREEN_FUNCTIONS = ("_recall_problem", "_secret_in", "_credential_word", "_injection_in", "_hidden_char")
 
 

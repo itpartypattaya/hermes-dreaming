@@ -3,7 +3,7 @@
 
 Hermes only executes cron scripts that physically live in $HERMES_HOME/scripts
 (the scheduler resolves the path and refuses anything outside that directory —
-a symlink does not help). So the two pre-check scripts must be COPIED there,
+a symlink does not help). So the three gate scripts must be COPIED there,
 which means they can silently drift from the skill after an update. `--check`
 is the guard against exactly that.
 
@@ -432,6 +432,10 @@ def main(argv=None):
     ap.add_argument("--hermes-home", default=None,
                     help="Hermes home (default: $HERMES_HOME or ~/.hermes)")
     args = ap.parse_args(argv)
+    # The marks (✓ ! ✗) on a console code page that has none: piped on Windows (`install.py --check | tail`) the
+    # check died on the first ✗ with UnicodeEncodeError instead of saying what was wrong (review of 2026-11-17).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     home = Path(args.hermes_home or os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
     cfg = Path(os.environ.get("DREAM_CONFIG") or home / "dreaming.json")
 

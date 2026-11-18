@@ -222,7 +222,10 @@ Every fact passes `classify_unsafe` before any output list:
 **Reject list** (`cache/dream-rejected.json`, `dream-reject.py`) matches by
 text — fingerprint or stemmed containment in both directions (a short human
 rejection can close a long re-extracted fact under the same strict reverse
-conditions as dedupe: 0.75 coverage, ≥8 stems, ≥6 shared). Key = text
+conditions as dedupe: 0.75 coverage, ≥8 stems, ≥6 shared). A newer value is no
+rewording: when the fact and the rejected text each hold a number (digits, a time,
+a weekday, a month) or a name past a sentence's first word that the other lacks,
+the rejection does not close the fact. Key = text
 fingerprint, never `fact_id` (sqlite reuses ids). Applied **before**
 quarantine, so a quarantined fact can be closed; a rejected secret stores only
 its fingerprint. A rejection is not forever (2.7.0): when it is older than `reject_reask_days` (180; 0 = never)
@@ -407,14 +410,16 @@ the dream.
   into sections** (dates in words in Russian, English, German, Spanish, French,
   Portuguese, Italian, Dutch, Turkish, Polish, Indonesian and Thai, 11月14日 and
   11월 14일, Buddhist years, ambiguous 5/10 counted as past only under every
-  reading, relative anchors — today / tomorrow in each of these languages — never
+  reading — a dotted pair is day.month only, so «10.30» is a time, not 30 October —, relative anchors — today / tomorrow in each of these languages — never
   expire). A dated fact is an event only with a trigger word (appointment, exam,
   meeting, flight, deadline, bring … in each language; a deadline is "until / by" and a
   whole date): a birthday is not one, and a "since <date>" phrase («с 14 ноября», seit, desde, depuis …) is
   taken out before the check — it starts a state, not an event; a range «с 15.11 по 17.11» stays an event.
 - **alerts** — `memory_loss`: more than `memory_loss_alert_fraction` (25%) of
   the entries present at the previous pass are gone (snapshot in
-  `cache/dream-snapshot.json`). Wakes the agent; nothing is restored. `probe_missing` (2.7.0): a phrase of
+  `cache/dream-snapshot.json`). Wakes the agent; nothing is restored. The loss alerts (`memory_loss`,
+  `entry_truncated`, `probe_missing`) are kept in the pass's `_pending` record and raised again after a night no
+  agent turn answered. `probe_missing` (2.7.0): a phrase of
   `probes` is no longer in the memory files — by its text, or every word of it in one sentence of an entry in any form. One alert
   per disappearance (the missing ones are kept in the snapshot; no snapshot state, no probes); the loss guard misses one entry merged away
   while memory was tidied at its limit. `messages_unavailable` (3.3.2): `state.db` was busy or locked, so the

@@ -833,7 +833,8 @@ _UTC_NAMES = {"utc", "etc/utc", "gmt", "etc/gmt", "z", "zulu", "universal", "etc
 
 
 def _tz(name):
-    if not name or str(name).strip().lower() in _UTC_NAMES:
+    name = str(name or "").strip()
+    if not name or name.lower() in _UTC_NAMES:
         return timezone.utc
     if ZoneInfo is not None:
         try:
@@ -1129,7 +1130,10 @@ _LANG = _load_lang()
 
 
 def _conn(path):
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """A read-only connection. The path goes in as a file URI: spliced in raw, a '#' cut it short together with
+    `?mode=ro` — SQLite opened, and created, a file of the shorter name for writing — and a '%' read as an escape
+    (review of 2026-11-17)."""
+    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
 
 
 def _now():
@@ -1293,7 +1297,9 @@ def sig_tokens(text, wide=False):
     # mentioned — including the entries it proposed to drop (external review,
     # 2026-10-07). The live case that put the unwrapping here ("Да, всё ещё
     # Vespa") keeps working: its tail has its own tokens.
-    tail = VOICE_QUOTE_RE.sub(" ", REPLY_QUOTE_RE.sub(" ", raw))
+    # A voice transcript is the person's own words even under a quote: cut with the quote, a voice answer to a
+    # question ("[Replying to: …] [voice: «I still ride the same scooter»]") corroborated nothing (review of 2026-11-17).
+    tail = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", raw))
     tail_tokens = _raw_tokens(tail, wide)
     quoted = " ".join(m.group(1) for m in REPLY_QUOTE_RE.finditer(raw))
     if not tail_tokens and quoted:
@@ -2475,10 +2481,13 @@ def exact_or_alias_in_memory(content, memory_text):
                 continue
             if polarity_differs(content, chunk):
                 continue  # "use X" inside "do not use X" is a flip, not a copy (Codex review of 2.7.5)
-            if norm in chunk_norm:
-                return True
+            # Numbers first, and the text as whole words: «…ветку 43» is the beginning of «…ветку 437 с понедельника»
+            # as a string, and the substring test said "already in memory" before the numbers were looked at — the
+            # update never reached the conflicts (review of 2026-11-17).
             if not (_numbers(content) <= _numbers(chunk)):
                 continue
+            if re.search(rf"(?<!\w){re.escape(norm)}(?!\w)", chunk_norm):
+                return True
             chunk_stems = _stems(sig_tokens(chunk))
             if (not item_stems
                     or len(item_stems & chunk_stems) / len(item_stems) >= HEAD_MATCH_MIN_STEM_RATIO):
@@ -3503,7 +3512,7 @@ def recent_confirmations(db, rest_days=CONFIRM_REST_DAYS, now=None):
     if not db or not os.path.exists(db):
         return None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn = _conn(db)
         try:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fact_confirmations'"
                                 ).fetchone():
@@ -3599,8 +3608,29 @@ def is_rejected(content, rejected):
     return rejection_of(content, rejected) is not None
 
 
+def _both_lack(a, b):
+    """Each of two sets holds something the other lacks: a value was replaced, not left out or added."""
+    return bool(a - b) and bool(b - a)
+
+
+def _inner_names(text):
+    """Capitalized words of *text* past the first word of each sentence (that one is capitalized whatever it is),
+    folded and stemmed as `_dup_name_seq` does."""
+    names = set()
+    for sentence in _PROBE_SENTENCE_RE.split(_dup_body(text)):
+        for tok in _WORD_RE.findall(sentence)[1:]:
+            if tok[0].isupper() and not any(c.isdigit() for c in tok):
+                low = _fold(tok).lower()
+                names.add(_stem(low) if len(low) >= 5 else low)
+    return names
+
+
 def rejection_of(content, rejected):
-    """The latest reject record that matches `content` (see is_rejected), or None."""
+    """The latest reject record that matches `content` (see is_rejected), or None.
+
+    A rewording matches; a newer value does not: when the fact and the rejected text each hold a number (a price,
+    a time, a day of the week, a month) or a name the other lacks, the human rejected the old value, and the new one
+    is the update they may want — it used to be silenced for `reject_reask_days` (review of 2026-11-17)."""
     if not rejected:
         return None
     fingerprint = _fact_fingerprint(content)
@@ -3615,7 +3645,9 @@ def rejection_of(content, rejected):
         text = rec.get("content") or ""
         if not text or len(item_stems) < 4:
             continue
-        if _covers(item_stems, _stems(sig_tokens(text))) and not polarity_differs(content, text):
+        if (_covers(item_stems, _stems(sig_tokens(text))) and not polarity_differs(content, text)
+                and not _both_lack(_numbers(content), _numbers(text))
+                and not _both_lack(_inner_names(content), _inner_names(text))):
             found.append(rec)
     epoch = datetime.min.replace(tzinfo=timezone.utc)  # an unreadable date loses to any readable one
     return max(found, key=lambda r: _parse_iso(str(r.get("at") or "")) or epoch) if found else None
@@ -3704,8 +3736,12 @@ def load_seen(path):
 (MONTHS_RE, THAI_MONTHS_RE, EPHEMERAL_HINTS_RE) = (
     _LANG.MONTHS_RE, _LANG.THAI_MONTHS_RE, _LANG.EPHEMERAL_HINTS_RE)
 # 14.11, 14/11, 14-11-2026, Korean 12. 31.; the digits may touch Chinese, Japanese or Thai (奶奶11/23上午).
+# A dot is day.month: after it comes a month (1–12) or a year follows — «в 10.30», «в 9.30» are times, and read
+# month-first as 30 October they made a weekly lesson an expired event (review of 2026-11-17). A slash or a dash
+# keeps both readings (5/10 is Oct 5 or May 10).
 NUMERIC_DATE_RE = re.compile(
-    rf"(?<!{_NUM_EDGE}[\w.])(?<!-)(\d{{1,2}})(?:[./-]|\.\s)(\d{{1,2}})(?:[./-](\d{{2,4}}))?(?!{_NUM_EDGE}\w)(?!-\d)")
+    rf"(?<!{_NUM_EDGE}[\w.])(?<!-)(\d{{1,2}})(?:[/-]|\.(?=(?:0?[1-9]|1[0-2])(?!\d)|\d{{1,2}}[./-]\d{{2,4}})|\.\s)"
+    rf"(\d{{1,2}})(?:[./-](\d{{2,4}}))?(?!{_NUM_EDGE}\w)(?!-\d)")
 DATED_RE = re.compile(
     rf"\b\d{{1,2}}\s+(?:{MONTHS_RE})(?:\s+\d{{4}})?\b|"
     r"\b\d{4}-\d{2}-\d{2}\b|"
@@ -3784,14 +3820,31 @@ def is_ephemeral_fact(content):
     _LANG.THAI_DATE_RE)
 
 
-def _resolve_year(year, month, day, today):
-    """No year given → the one that puts the date closest to today (±180 d).
+# A date is said ahead more often than looked back on (a flight, an exam, a meeting), and the extraction job stores a
+# fact up to `backfill_days` after it was said: the year is the first that puts the date no earlier than this many
+# days before the day the fact was stored.
+SAID_BEFORE_DAYS = 90
+
+
+def _resolve_year(year, month, day, today, said=None):
+    """No year given → with *said* (the day the fact was stored) the first year that puts the date on or after
+    `said - SAID_BEFORE_DAYS`; without it the one closest to today (±180 d), which read "the flight on 20 June",
+    stored in November, as last June and "the test on 3 May", stored in April, as next May (review of 2026-11-17).
     A year ≥ 2400 is the Thai Buddhist calendar."""
     if year:
         year = int(year)
         if year >= 2400:
             year -= 543
         return year
+    if said is not None:
+        floor = said - timedelta(days=SAID_BEFORE_DAYS)
+        for candidate in (floor.year, floor.year + 1, floor.year + 2):  # +2: 29 February
+            try:
+                if datetime(candidate, month, day).date() >= floor:
+                    return candidate
+            except ValueError:
+                continue
+        return said.year
     for candidate in (today.year, today.year - 1, today.year + 1):
         try:
             probe = datetime(candidate, month, day).date()
@@ -3802,60 +3855,67 @@ def _resolve_year(year, month, day, today):
     return today.year
 
 
-def _safe_date(year, month, day, today):
+def _safe_date(year, month, day, today, said=None):
     try:
-        return datetime(_resolve_year(year, month, day, today), month, day).date()
+        return datetime(_resolve_year(year, month, day, today, said), month, day).date()
     except (ValueError, TypeError):
         return None
 
 
-def extract_event_dates(text, today):
-    """(certain dates, ambiguous pairs). Both empty — nothing parsed."""
+def extract_event_dates(text, today, said=None):
+    """(certain dates, ambiguous pairs). Both empty — nothing parsed. *said*: the day the fact was stored."""
     text = text or ""
     certain, ambiguous = [], []
     for y, m, d in ISO_DATE_RE.findall(text):
-        got = _safe_date(y, int(m), int(d), today)
+        got = _safe_date(y, int(m), int(d), today, said)
         if got:
             certain.append(got)
     for day, month_word, year in RU_DATE_RE.findall(text):
         month = next((n for stem, n in RU_MONTHS.items()
                       if month_word.lower().startswith(stem)), None)
-        got = _safe_date(year, month, int(day), today) if month else None
+        got = _safe_date(year, month, int(day), today, said) if month else None
         if got:
             certain.append(got)
     for month_word, day, year in EN_DATE_RE.findall(text):
         month = EN_MONTHS.get(month_word.lower()[:3])
-        got = _safe_date(year, month, int(day), today) if month else None
+        got = _safe_date(year, month, int(day), today, said) if month else None
         if got:
             certain.append(got)
     for day, month_word, year in DAY_MONTH_RE.findall(text):
         month = other_month(month_word)
-        got = _safe_date(year, month, int(day), today) if month else None
+        got = _safe_date(year, month, int(day), today, said) if month else None
         if got:
             certain.append(got)
     for regex in (CJK_DATE_RE, KO_DATE_RE):
         for year, month, day in regex.findall(text):
-            got = _safe_date(year, int(month), int(day), today)
+            got = _safe_date(year, int(month), int(day), today, said)
             if got:
                 certain.append(got)
     for day, month_word, year in THAI_DATE_RE.findall(text):
         month = THAI_MONTHS.get(month_word)
-        got = _safe_date(year, month, int(day), today) if month else None
+        got = _safe_date(year, month, int(day), today, said) if month else None
         if got:
             certain.append(got)
     # 5/10 is both Oct 5 and May 10: keep both readings, decide by the worse one.
     for a, b, year in NUMERIC_DATE_RE.findall(text):
-        pair = [d for d in (_safe_date(year, int(b), int(a), today),
-                            _safe_date(year, int(a), int(b), today)) if d]
+        pair = [d for d in (_safe_date(year, int(b), int(a), today, said),
+                            _safe_date(year, int(a), int(b), today, said)) if d]
         if pair:
             ambiguous.append(pair)
     return certain, ambiguous
 
 
-def is_expired_event(content, today=None):
+def _stored_on(fact):
+    """The local day a fact was stored (`created_at`), or None."""
+    created = _parse_ts(fact.get("created_at"))
+    return created.astimezone(SETTINGS.LOCAL_TZ).date() if created else None
+
+
+def is_expired_event(content, today=None, said=None):
     """True — a temporary event whose date has passed. Conservative: a relative
     anchor ("tomorrow") is not resolved; an ambiguous numeric date counts as
-    past only if it is past under EVERY reading."""
+    past only if it is past under EVERY reading. *said*: the day the fact was
+    stored, which decides the year of a date without one (`_resolve_year`)."""
     text = content or ""
     if not is_ephemeral_fact(text):
         return False
@@ -3863,7 +3923,7 @@ def is_expired_event(content, today=None):
     if RELATIVE_DATE_RE.search(text):
         return False
     today = today or _now().astimezone(SETTINGS.LOCAL_TZ).date()
-    certain, ambiguous = extract_event_dates(text, today)
+    certain, ambiguous = extract_event_dates(text, today, said)
     if not certain and not ambiguous:
         return False
     return (all(d < today for d in certain)
@@ -3879,7 +3939,7 @@ def is_expired_event(content, today=None):
 # new_facts, nor the agent's prompt.
 SECRET_RE = re.compile(
     r"(?:"
-    r"sk-[A-Za-z0-9_-]{16,}"                        # OpenAI/Anthropic-style keys
+    r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}"        # OpenAI/Anthropic-style keys (not ri-sk-, ta-sk- of a slug)
     r"|apikey_[A-Za-z0-9]{8,}"                      # Anthropic console key ids
     r"|AKIA[0-9A-Z]{16}"                            # AWS access key
     r"|AIza[0-9A-Za-z_\-]{30,}"                     # Google API key
@@ -4796,15 +4856,17 @@ def _agent_answers(state_db, generated_at):
 
 def _revert_unacked(seen, state_db):
     """Pop the previous pass's `_pending` record from the seen state; if that
-    showing was never acknowledged, drop its marks. Returns the md_decays keys
-    to re-ask (the asked-state lives in its own file)."""
+    showing was never acknowledged, drop its marks. Returns (the md_decays keys
+    to re-ask — the asked-state lives in its own file —, the memory-loss alerts
+    to raise again: the snapshot moved on the night they were raised, so a night
+    nobody answered would have lost them for good; review of 2026-11-17)."""
     pending = seen.pop("_pending", None)
     if not isinstance(pending, dict) or not pending.get("generated_at"):
-        return set()
+        return set(), []
     acked, answers = _agent_answers(state_db, pending.get("generated_at"))
     if acked:
         _reopen_unnamed_proposals(pending, seen, answers)
-        return set()
+        return set(), []
     dropped = 0
     for bucket_name, keys in (pending.get("seen") or {}).items():
         bucket = seen.get(bucket_name)
@@ -4819,7 +4881,7 @@ def _revert_unacked(seen, state_db):
         print(f"[dream] note: the pass of {pending['generated_at']} was not acknowledged by an "
               f"agent turn — {dropped} cooldown(s) and {len(reask)} md question(s) reopened",
               file=sys.stderr)
-    return reask
+    return reask, [a for a in pending.get("loss_alerts") or [] if isinstance(a, dict)]
 
 
 def load_pending_writes(home=None):
@@ -5227,11 +5289,12 @@ BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedbac
 
 class DecisionInputs(namedtuple("DecisionInputs", "now today window_days rules facts messages by_store memory_text "
                                 "staged_text pending_writes rejected recent_confirmations feedback_floor "
-                                "fact_source seen messages_unavailable")):
+                                "fact_source seen messages_unavailable facts_unreadable", defaults=(None,))):
     """Everything the night's decisions read from the world, read once (3.3.0). `_decide` reads nothing else — no
     clock, database, environment or config file; it reads the settings, which must not change while it runs
     (`settings_fingerprint`). `seen` is a copy: deciding never marks anything shown. `recent_confirmations`: a
-    frozenset of fact ids, or None when the store keeps no confirmations. `messages_unavailable`: state.db was busy
+    frozenset of fact ids, or None when the store keeps no confirmations. `facts_unreadable`: why the fact store
+    could not be read (None when it was) — `facts` is then empty. `messages_unavailable`: state.db was busy
     or locked (`load_messages` gave None) — `messages` is empty, and that says nothing about what people said.
 
     A named tuple, not a dataclass: under `from __future__ import annotations` a dataclass looks its module up in
@@ -5241,7 +5304,13 @@ class DecisionInputs(namedtuple("DecisionInputs", "now today window_days rules f
 
 def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_state_path=None, seen=None, now=None):
     """The DecisionInputs of a night. *seen*: the state after `_revert_unacked` when the pass has it already."""
-    facts = load_all_facts()
+    # A store that cannot be read (an empty file, not a database, an older table) used to end the whole night in a
+    # traceback; the memory-file review, the loss guard and the memory pressure need no fact (review of 2026-11-17).
+    try:
+        facts, unreadable = load_all_facts(), None
+    except sqlite3.Error as exc:
+        facts, unreadable = [], f"{type(exc).__name__}: {exc}"
+        print(f"[dream] warn: the fact store cannot be read ({unreadable}) — no facts tonight", file=sys.stderr)
     all_messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
     unavailable = all_messages is None
     all_messages = all_messages or []
@@ -5262,7 +5331,8 @@ def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_s
         pending_writes=tuple(pending_writes), rejected=types.MappingProxyType(load_rejected(rejected_state_path)),
         recent_confirmations=None if rested is None else frozenset(rested),
         feedback_floor=feedback_floor(source), fact_source=source,
-        seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen), messages_unavailable=unavailable)
+        seen=copy.deepcopy(load_seen(seen_state_path) if seen is None else seen), messages_unavailable=unavailable,
+        facts_unreadable=unreadable)
 
 
 class Decisions(namedtuple("Decisions", "scored suppressed quarantined expired expired_ids new_facts_window "
@@ -5325,7 +5395,7 @@ def _decide(inputs, vetoes=frozenset()):
     # («страница», «тест», "example") vanished from every section silently
     # (external review, 2026-10-07). It is now listed in its own read-only
     # section and in the diary; it still wakes nobody.
-    expired = [s for s in safe if is_expired_event(s["content"], today=inputs.today)]
+    expired = [s for s in safe if is_expired_event(s["content"], today=inputs.today, said=_stored_on(s))]
     expired_ids = {s["fact_id"] for s in expired}
     safe = [s for s in safe if s["fact_id"] not in expired_ids]
 
@@ -6160,7 +6230,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     now = _now()
     generated_at = now.isoformat(timespec="seconds")
     seen = load_seen(seen_state_path)
-    reask_md = _revert_unacked(seen, state_db) if seen_state_path else set()
+    reask_md, carried_alerts = _revert_unacked(seen, state_db) if seen_state_path else (set(), [])
     for name in BUCKETS:
         seen.setdefault(name, {})
     inputs = load_inputs(window_days, corr_days, mem_md, rejected_state_path=rejected_state_path, seen=seen,
@@ -6215,6 +6285,10 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     # The queue alert stamps its own cooldown into `seen`: computed before the state is written, or the stamp
     # never reached the file and the same alert woke the agent every night (Codex review of 2.7.2).
     queue_alert = pending_alert(pending_writes, seen, now) if seen_state_path else None
+    # Before the state is written: an alert of tonight rides in `_pending` until an agent turn answers it.
+    loss_alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
+    said = {json.dumps(a, sort_keys=True, ensure_ascii=False) for a in loss_alerts}
+    loss_alerts += [a for a in carried_alerts if json.dumps(a, sort_keys=True, ensure_ascii=False) not in said]
     if seen_state_path:
         # What this pass is about to show, keyed for `_revert_unacked` tomorrow.
         fp = _fact_fingerprint
@@ -6233,6 +6307,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                      # The pairs put to the human tonight (3.4.0); the answer must name their numbers.
                      **({"duplicate_pairs": dups.pending} if dups.pending else {})},
             "asked": [d["key"] for d in md_dec if d.get("key")],
+            **({"loss_alerts": loss_alerts} if loss_alerts else {}),
         }
         try:
             _write_private(seen_state_path, json.dumps(seen, ensure_ascii=False, indent=1))
@@ -6249,7 +6324,13 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         judge_stats = {"mode": "off", "problem": SETTINGS.JUDGE.problem}
 
     usage = memory_usage(mem_md)
-    alerts = check_memory_loss(mem_md, snapshot_state_path, memory_text)
+    alerts = list(loss_alerts)
+    if inputs.facts_unreadable:
+        alerts.append({"kind": "fact_store_unreadable", "error": inputs.facts_unreadable[:200],
+                       "message": f"The fact store {fact_store_path()} could not be read tonight "
+                                  f"({inputs.facts_unreadable[:200]}): no fact was promoted or asked about. The "
+                                  "memory files were checked as usual. An empty or damaged file, or one of an older "
+                                  "provider, needs a look; the next pass tries again."})
     if inputs.messages_unavailable:
         alerts.append({"kind": "messages_unavailable",
                        "message": "The conversations (state.db) could not be read tonight — busy or locked. Nothing "
@@ -6530,6 +6611,8 @@ def _write_private(path, text, append=False):
     took it for "no state" — every rejection and cooldown gone, silently (review of 2.9.8; `dream-reject.save_state`
     has done this since 2.7.2). A symlinked target is written through, not replaced. Appends stay appends."""
     path = os.path.realpath(path)
+    # A home without cache/ (a hand run before the gates made it) kept no state at all, three warnings aside.
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     owner = _owner_of(path) or _owner_of(os.path.dirname(path) or ".")
     if append:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -7533,7 +7616,7 @@ def explain(fact_id, mem_md, corr_days):
         print(f"origin {f.get('origin') or 'not recorded'}: corroboration decides")
     print(f"promotion_ready {promotion_ready(scored)}; in_memory {already_in_memory(f['content'], memory_text)}; "
           f"unsafe {classify_unsafe(f['content'])}; ephemeral {is_ephemeral_fact(f['content'])}; "
-          f"expired {is_expired_event(f['content'])}")
+          f"expired {is_expired_event(f['content'], said=_stored_on(f))}")
     near = nearest_entry(f["content"], sources=load_durable_memory_sources(mem_md))
     if near:
         print(f"nearest entry in {near.get('target', '?')} ({near['overlap']}): {near['entry']}")
