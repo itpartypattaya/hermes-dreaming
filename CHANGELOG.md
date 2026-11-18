@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.12 — 2026-11-18
 
 ### Fixed
 - **Secrets with no separator before their value are held.** The quarantine took a password or a PIN only with ":",
