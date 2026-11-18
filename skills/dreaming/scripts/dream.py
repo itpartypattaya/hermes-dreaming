@@ -6780,11 +6780,13 @@ def _preview_hash(text):
 
 def _preview_hashes(content):
     """Hashes of every form the diary has written a fact in: an 85-character line, a 45-character list item, as
-    is (before 2.4.0, where a newline in the text broke the line: also its first line) and as `_diary_text`."""
+    is (before 2.4.0, where a newline in the text broke the line: also its first line) and as `_diary_text` — and
+    the preview a memory-loss alert names a lost entry by (`_entry_sig`), for a fact that was such an entry."""
     forms = set()
     for n in (85, 45):
         raw = (content or "")[:n]
         forms |= {raw, raw.split("\n", 1)[0], _diary_text(content, n)}
+    forms.add(re.sub(r"\s+", " ", content or "").strip()[:ENTRY_PREVIEW_CHARS])
     return sorted({_preview_hash(f) for f in forms if f.strip()})
 
 
@@ -7012,6 +7014,14 @@ def _scrub_copies(node, hashes, fingerprints=frozenset(), _item=False):
     whole: its anchor without the text is a blind replace. A kept item's own `content` is its fact, already
     judged by `_is_forgotten_item`."""
     removed = 0
+    if isinstance(node, dict) and isinstance(node.get("entries"), list) and isinstance(node.get("message"), str):
+        # A memory-loss alert names the lost entries by a preview, in `entries` and again inside `message`, which
+        # reads as no sentence of the fact: the preview is cut out of it by its own text (review of PR #34).
+        for i, entry in enumerate(node["entries"]):
+            if isinstance(entry, str) and entry != FORGOTTEN_COPY and _carries_forgotten(entry, hashes):
+                node["message"] = node["message"].replace(entry, FORGOTTEN_COPY)
+                node["entries"][i] = FORGOTTEN_COPY
+                removed += 1
     if isinstance(node, dict):
         for key, value in list(node.items()):
             if key == "diary" or (_item and key == "content"):
@@ -7170,7 +7180,7 @@ def forget_sweep(db=None, home=None):
     # last the broken state files set aside — the loads above may have just set one aside.
     summary["payload"] = _sweep_payload(home, ids, index, fingerprints)
     summary["rejected"] = _sweep_rejected(ids, fingerprints)
-    summary["seen"] = _sweep_seen(ids, fingerprints)
+    summary["seen"] = _sweep_seen(ids, fingerprints, hashes=_preview_set(index))
     summary["proposals"] = _sweep_proposals(ids, fingerprints)
     summary["judge"] = _sweep_judge(ids)
     summary["diary_lines"] = _sweep_diary(home, ids, index, summary["errors"])
@@ -7249,9 +7259,11 @@ def _sweep_rejected(ids, fingerprints):
     return len(gone)
 
 
-def _sweep_seen(ids, fingerprints, skip=()):
-    """Forgotten facts out of the cooldowns and out of what tonight's pass showed (`_pending`); how many. *skip*:
-    buckets left as they are (the merge sweep keeps `dup_not`: "these are different" outlives a merge)."""
+def _sweep_seen(ids, fingerprints, skip=(), hashes=frozenset()):
+    """Forgotten facts out of the cooldowns and out of what tonight's pass showed (`_pending`, with the memory-loss
+    alerts it carries until an agent turn answers them, 3.8.7); how many. *skip*: buckets left as they are (the
+    merge sweep keeps `dup_not`: "these are different" outlives a merge). *hashes*: the forgotten facts' preview
+    hashes, which find them in the alerts."""
     seen_path = _state_default("DREAM_SEEN_STATE", "seen")
     seen = _load_state_file(seen_path)
     removed = 0
@@ -7274,6 +7286,8 @@ def _sweep_seen(ids, fingerprints, skip=()):
                 kept = [v for v in values if v not in fingerprints and v not in gone_keys]
                 removed += len(values) - len(kept)
                 pending["seen"][key] = kept
+    if "_pending" not in skip and isinstance(pending, dict) and isinstance(pending.get("loss_alerts"), list):
+        removed += _scrub_copies(pending["loss_alerts"], hashes, fingerprints)
     if removed:
         _write_private(seen_path, json.dumps(seen, ensure_ascii=False, indent=1))
     return removed
