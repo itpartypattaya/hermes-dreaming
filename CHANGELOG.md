@@ -3,6 +3,22 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Fixed
+- **A voice transcript with a bracket inside it.** A speech-to-text annotation ("[music]", "[неразборчиво]") ended
+  the transcript at its "]", and the words after it were cut with the bracket as metadata: the voice message
+  corroborated less than the person said. A transcript that opens with a quote mark now ends at a quote mark before
+  "]", as a reply quote does since 3.8.9; one without quote marks reads as before. (Hermes now writes a transcript as
+  a plain quoted line, which was never affected.)
+
+### Tests
+- **The tests no longer write into a real Hermes home.** dream.py takes its home from `HERMES_HOME` (else
+  `~/.hermes`) when it is loaded, and a test that called a writing function on a copy of the module it had not pointed
+  at a home of its own wrote into the real one. `tests/home_guard.py` gives the run a throwaway home before any script
+  is loaded; every test module that loads a script imports it first, and `test_home_guard.py` checks that it does.
+- The language tests no longer leave a `dream-lang-*` directory in the system temp directory after every run.
+
 ## 3.8.9 — 2026-11-18
 
 ### Fixed
