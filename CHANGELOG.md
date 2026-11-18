@@ -5,6 +5,25 @@ is the one in `plugin.json`.
 
 ## Unreleased
 
+### Fixed
+- **Secrets with no separator before their value are held.** The quarantine took a password or a PIN only with ":",
+  "=" or a dash between the word and the value, and no rule looked for a payment card: "пароль wifi дома Slon2024xx",
+  "PIN карты 4821" and a card number with its CVV went through — into the weekly extraction's hand-over, and from
+  there into a fact (the provider's screen let them through as well). Now a card number (16 to 19 digits starting
+  2–6, or American Express's 15, whole or in groups, passing the Luhn checksum; not in an address, glued to a word,
+  after "+" or "-"), a PIN, CVV or CVC with a number of 3 to 8 digits a few words on (a year is not one), and a
+  password word with a password-like value up to four words on (never a date) are secrets. On a live install's
+  12,946 messages, 39 facts and 33 memory entries the rule held nothing new: the numbers there that pass the checksum
+  are ids in addresses.
+- **An agent's conclusion is confirmed by a person, not by a match of words.** A fact the agent inferred (origin
+  `inferred`) whose words people used again on two days went to `confirm`, and the nightly agent called
+  `fact_feedback(confirmed)` on it by itself: the store then read it as confirmed by a person, and later nights promoted
+  it to durable memory. Such a fact now goes to a new section, `confirm_ask` (at most 3 a night; it never wakes the
+  agent): the agent asks the person whether it is true and makes the item's `call_on_yes` only on their yes; an
+  unanswered question rests like any other and comes back after a night nobody answered. A fact a person said, or one
+  without an origin, said again is confirmed as before. The nightly prompt says so (a prompt of 3.8.11 is updated by
+  `install_cron.py --upgrade`; a prompt of your own does not know the section, and such facts then wait unconfirmed).
+
 ### CI
 - **A new holographic screen is noticed.** `provider-screen.yml` compares `scripts/holo_screen.py` with the screen.py
   of the provider's latest release every day and fails while they differ (the copy was five provider versions behind

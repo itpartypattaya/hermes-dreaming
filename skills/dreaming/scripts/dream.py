@@ -3535,6 +3535,9 @@ def trust_feedback_items(suppressed, rejected, fact_source_name, floor=None):
 # rests.
 CONFIRM_MIN_DAYS = 2
 CONFIRM_CAP = 10
+# An agent's conclusion people seem to say again is a question to the person (`confirm_ask`, finding 6 of the review
+# of 2026-11-17): a few a night, they wait for an answer.
+CONFIRM_ASK_CAP = 3
 CONFIRM_REST_DAYS = 30
 # Said again, not merely talked about: the message holds at least this share of the fact's own word stems. The
 # corroboration rule (two shared stems, or one rare one) is right for "is this fact alive?" and too loose here — a
@@ -4044,6 +4047,61 @@ def _password_marker_unsafe(text):
         if _looks_like_credential(marker.group("value")):
             return True
     return False
+
+
+# Secrets with no separator before their value (review of 2026-11-17, finding 18). PASSWORD_MARKER_RE wants ":", "="
+# or a dash, and no rule looked for a payment card: "пароль wifi дома Slon2024xx", "PIN карты 4821" and a card number
+# with its CVV reached the weekly extraction's hand-over and from there a fact (the provider's screen let them through
+# as well). A live install had 34 numbers that pass the card checksum in its history.
+# A card: 16 to 19 digits starting 2–6 (Mir, Visa, Mastercard, UnionPay, Maestro), or American Express's 15 (34, 37),
+# whole or in groups of four (Amex 4-6-5), passing the Luhn checksum. Not after a digit, "+" or "-" (a phone, the
+# Telegram chat id -100…), nor after or before a decimal point; a timestamp in milliseconds starts with 1. Not in an
+# address or glued to a word either: a post's id in "x.com/…/status/2…" has 19 digits (live install, 2026-11-18).
+CARD_NUMBER_RE = re.compile(
+    r"(?<![\w+\-.,/=#&?%])(?:[2-6]\d{3}(?:[ -]?\d{4}){3}(?:[ -]?\d{1,3})?|3[47]\d{2}[ -]?\d{6}[ -]?\d{5})"
+    r"(?![\w\-/]|[.,]\d)")
+# A PIN, CVV or CVC and, a few words on in the same sentence, a number of 3 to 8 digits of its own — not glued to a
+# letter ("pin 827c639e", a commit) nor part of a version; a year is no PIN ("сменил PIN в 2024 году").
+_PIN_VALUE_RE = re.compile(
+    r"(?:\bpin(?:[- ]?code)?\b|\bпин(?:[- ]?код\w*)?\b|\bcvv2?\b|\bcvc2?\b|\bcvn\b|код\s+безопасности|security\s+code)"
+    r"[^\d\n.!?]{0,30}?(?<![\w.,:/-])(?P<value>\d{3,8})(?!\w|[.,:/-]\d)",
+    re.IGNORECASE)
+# A password word and, up to four words on in the same line, a password-like value (_looks_like_credential), or six
+# digits and more; never a date ("пароль сменили 18.11.2026").
+_PASSWORD_NEAR_RE = re.compile(
+    r"(?:парол[ьяию]|password|passwd|passwort|contraseña|senha|mot\s+de\s+passe)"
+    r"(?:[^\S\n]+[^\s:=—–：]+){0,4}?[^\S\n]+(?P<value>[^\s,;]{6,})",
+    re.IGNORECASE)
+_UNSEPARATED_STARTS = ("парол", "pass", "contrase", "senha", "mot de passe", "пин", "pin", "cvv", "cvc", "cvn",
+                       "код безопасности", "security code")  # _UNSEPARATED_START: see _starts_pattern
+_YEAR_RE = re.compile(r"(?:19|20)\d\d")
+_DATE_VALUE_RE = re.compile(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\.?")
+
+
+def _luhn(digits):
+    total = 0
+    for i, c in enumerate(reversed(digits)):
+        d = int(c) * (2 if i % 2 else 1)
+        total += d - 9 if d > 9 else d
+    return total % 10 == 0
+
+
+def _unseparated_secret(text):
+    if any(_luhn(re.sub(r"\D", "", m.group())) for m in CARD_NUMBER_RE.finditer(text)):
+        return True
+    for m in _found(_PIN_VALUE_RE, _UNSEPARATED_START, text):
+        value = m.group("value")
+        if not (len(value) == 4 and _YEAR_RE.fullmatch(value)):
+            return True
+    for m in _found(_PASSWORD_NEAR_RE, _UNSEPARATED_START, text):
+        value = m.group("value").rstrip(".!?")
+        if _DATE_VALUE_RE.fullmatch(value):
+            continue
+        if (value.isdigit() and len(value) >= 6) or _looks_like_credential(value):
+            return True
+    return False
+
+
 INJECTION_RE = re.compile(
     r"(?:"
     # Stems, not exact forms: «Игнорируйте», «игнорировать», «забудьте» are the
@@ -4108,6 +4166,7 @@ def _starts_pattern(starts):
 
 _PASSWORD_MARKER_START = _starts_pattern(_PASSWORD_MARKER_STARTS)
 _INJECTION_START = _starts_pattern(_INJECTION_STARTS)
+_UNSEPARATED_START = _starts_pattern(_UNSEPARATED_STARTS)
 
 
 def _found(rx, start_rx, text):
@@ -4224,7 +4283,7 @@ def classify_unsafe(content):
     rules and the holographic provider's screen (see _load_holo_screen); a
     secret by either wins over an instruction."""
     text = content or ""
-    if SECRET_RE.search(text) or _password_marker_unsafe(text):
+    if SECRET_RE.search(text) or _password_marker_unsafe(text) or _unseparated_secret(text):
         return "secret"
     screened = _screened_text(text) if HOLO_SCREEN is not None else None
     if screened is not None and HOLO_SCREEN._secret_in(screened):
@@ -4912,7 +4971,8 @@ def _revert_unacked(seen, state_db):
             continue
         for k in keys or []:
             # Ride-along sections are reopened silently: on a night the gate kept shut nobody was meant to answer.
-            if bucket.pop(k, None) is not None and bucket_name not in ("trust_feedback", "keywords_needed", "confirm"):
+            if bucket.pop(k, None) is not None and bucket_name not in ("trust_feedback", "keywords_needed", "confirm",
+                                                                         "confirm_ask"):
                 dropped += 1
     reask = set(pending.get("asked") or [])
     if dropped or reask:
@@ -5302,7 +5362,7 @@ def _new_themes(messages, window_days, facts, memory_text):
 
 
 def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_needed, confirm, fact_decays,
-                conflicts):
+                conflicts, confirm_ask=()):
     """Stamp what this pass shows into the cooldown buckets of `seen` (only the published slices), then drop
     stamps older than their cooldown."""
     mark_seen(new_facts, seen["new_facts"], now)
@@ -5310,6 +5370,7 @@ def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_ne
     mark_seen(trust_feedback, seen["trust_feedback"], now, key=_feedback_key)
     mark_seen(keywords_needed, seen["keywords_needed"], now, key=_feedback_key)
     mark_seen(confirm, seen["confirm"], now, key=_feedback_key)
+    mark_seen(confirm_ask, seen["confirm_ask"], now, key=_feedback_key)
     mark_seen(fact_decays, seen["fact_decays"], now)
     mark_seen(conflicts, seen["conflicts"], now)
     for name in ("new_facts", "fact_decays", "conflicts"):
@@ -5320,9 +5381,11 @@ def _mark_shown(seen, now, *, new_facts, promotions, trust_feedback, keywords_ne
     # Pruned like the others (it was not before 3.0: one key more for every fact ever offered for a confirmation). Past
     # two cooldowns a stamp holds nothing back (`unseen` lets the fact through after one), so pruning changes no answer.
     prune_seen(seen["confirm"], now)
+    prune_seen(seen["confirm_ask"], now)
 
 
-BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedback", "keywords_needed", "confirm")
+BUCKETS = ("new_facts", "fact_decays", "conflicts", "promotions", "trust_feedback", "keywords_needed", "confirm",
+           "confirm_ask")
 
 
 class DecisionInputs(namedtuple("DecisionInputs", "now today window_days rules facts messages by_store memory_text "
@@ -5377,7 +5440,7 @@ class Decisions(namedtuple("Decisions", "scored suppressed quarantined expired e
                                   "new_facts new_facts_dups new_facts_suppressed all_promotions promotions_dups "
                                   "all_ephemeral promotions_suppressed staged_suppressed all_conflicts "
                                   "conflicts_suppressed all_decays decays_suppressed trust_feedback "
-                                  "feedback_suppressed keywords_needed keywords_pending confirm counted "
+                                  "feedback_suppressed keywords_needed keywords_pending confirm confirm_ask counted "
                                   "publish_cap")):
     """What one night decides from the mention count, before anything is marked shown. The sections named as in
     the payload are the published slices; `all_*` are the whole lists (stats, diary). `counted`: the PairIds that
@@ -5409,7 +5472,7 @@ def _decide(inputs, vetoes=frozenset()):
     facts, all_messages, by_store = inputs.facts, inputs.messages, inputs.by_store
     rejected, memory_text, staged_text = inputs.rejected, inputs.memory_text, inputs.staged_text
     (seen_new_facts, seen_fact_decays, seen_conflicts, seen_promotions, seen_feedback, seen_keywords,
-     seen_confirm) = (inputs.seen.get(name) or {} for name in BUCKETS)
+     seen_confirm, seen_confirm_ask) = (inputs.seen.get(name) or {} for name in BUCKETS)
     counted = {"promotion": set(), "confirm": set()}
 
     scored = _score_facts(facts, all_messages, by_store, rejected, memory_text, staged_text, now=now,
@@ -5514,7 +5577,14 @@ def _decide(inputs, vetoes=frozenset()):
     confirm_pending = confirm_items(safe, all_messages, by_store, source, rules=inputs.rules, now=now,
                                     veto=vetoes, rested=inputs.recent_confirmations,
                                     counted=counted["confirm"])
+    # An agent's conclusion (origin `inferred`) whose words people used again is not the agent's to confirm: a call
+    # made by the agent itself read in the store as a person's confirmation, and the next nights promoted it to durable
+    # memory on a match of words (finding 6 of the review of 2026-11-17). The person is asked; the call is theirs.
+    confirm_ask_pending = [{**{k: v for k, v in i.items() if k != "call"}, "call_on_yes": i["call"]}
+                           for i in confirm_pending if i.get("origin") == "inferred"]
+    confirm_pending = [i for i in confirm_pending if i.get("origin") != "inferred"]
     confirm = unseen(confirm_pending, seen_confirm, now, key=_feedback_key)[:CONFIRM_CAP]
+    confirm_ask = unseen(confirm_ask_pending, seen_confirm_ask, now, key=_feedback_key)[:CONFIRM_ASK_CAP]
 
 
     return Decisions(
@@ -5525,7 +5595,8 @@ def _decide(inputs, vetoes=frozenset()):
         staged_suppressed=staged_suppressed, all_conflicts=conflicts, conflicts_suppressed=conflicts_suppressed,
         all_decays=decays, decays_suppressed=decays_suppressed, trust_feedback=feedback,
         feedback_suppressed=feedback_suppressed, keywords_needed=keywords_needed, keywords_pending=keywords_pending,
-        confirm=confirm, counted={k: frozenset(v) for k, v in counted.items()}, publish_cap=SETTINGS.PUBLISH_CAP)
+        confirm=confirm, confirm_ask=confirm_ask, counted={k: frozenset(v) for k, v in counted.items()},
+        publish_cap=SETTINGS.PUBLISH_CAP)
 
 
 # ---------------------------------------------------------------------------
@@ -5896,7 +5967,7 @@ JUDGE_MIN_COVERAGE = 0.5
 JUDGE_KEEP_DAYS = 90  # the journal of sent pairs and a review manifest
 # The sections whose membership the count decides (the diff of a night with and without the vetoes).
 _DIFF_SECTIONS = ("promotions", "ephemeral_events", "new_facts", "conflicts", "fact_decays", "confirm",
-                  "trust_feedback")
+                  "confirm_ask", "trust_feedback")
 _JUDGE = None
 
 
@@ -6299,6 +6370,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
     decays, decays_suppressed = d.all_decays, d.decays_suppressed
     feedback, feedback_suppressed = d.trust_feedback, d.feedback_suppressed
     keywords_needed, keywords_pending, confirm = d.keywords_needed, d.keywords_pending, d.confirm
+    confirm_ask = d.confirm_ask
     themes = _new_themes(messages, window_days, facts, memory_text)
 
     # Not called on a night without messages: every entry would be "never mentioned", and asking records it asked.
@@ -6318,7 +6390,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                                  write=bool(seen_state_path))
     if seen_state_path:
         _mark_shown(seen, now, new_facts=new_facts + new_facts_dups, promotions=published_promotions,
-                    trust_feedback=feedback, keywords_needed=keywords_needed, confirm=confirm,
+                    trust_feedback=feedback, keywords_needed=keywords_needed, confirm=confirm, confirm_ask=confirm_ask,
                     fact_decays=published_decays, conflicts=published_conflicts)
     # The queue alert stamps its own cooldown into `seen`: computed before the state is written, or the stamp
     # never reached the file and the same alert woke the agent every night (Codex review of 2.7.2).
@@ -6342,6 +6414,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                      "trust_feedback": [_feedback_key(i) for i in feedback],
                      "keywords_needed": [_feedback_key(i) for i in keywords_needed],
                      "confirm": [_feedback_key(i) for i in confirm],
+                     "confirm_ask": [_feedback_key(i) for i in confirm_ask],
                      # The pairs put to the human tonight (3.4.0); the answer must name their numbers.
                      **({"duplicate_pairs": dups.pending} if dups.pending else {})},
             "asked": [d["key"] for d in md_dec if d.get("key")],
@@ -6431,6 +6504,7 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   "keywords_needed": len(keywords_needed),
                   "keywords_missing": len(keywords_pending),
                   "confirm": len(confirm),
+                  "confirm_ask": len(confirm_ask),
                   "fact_decays_suppressed": decays_suppressed,
                   "conflicts_suppressed": conflicts_suppressed,
                   "expired_events": len(expired_ids),
@@ -6453,6 +6527,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         "keywords_needed": keywords_needed,
         # Not actionable either: people said these again on different days.
         "confirm": confirm,
+        # Not actionable either: an agent's conclusions people seem to say again, a question to the person (finding 6).
+        "confirm_ask": confirm_ask,
         "fact_decays": [_pub(s) for s in decays[:SETTINGS.PUBLISH_CAP]],
         "conflicts": [dict(_pub_near(s), conflicts=s["conflicts"]) for s in published_conflicts],
         "md_decays": md_dec,
@@ -7694,7 +7770,7 @@ def explain(fact_id, mem_md, corr_days):
     scored = {"meta": meta, "helpful_count": f.get("helpful_count"), "origin": f.get("origin")}
     if f.get("origin") == "inferred":
         print("origin inferred: an agent's conclusion nobody confirmed is not promoted, nor offered in new_facts; "
-              "people repeating it offer it to `confirm`")
+              "people repeating it put it to the person as a question (`confirm_ask`)")
     else:
         print(f"origin {f.get('origin') or 'not recorded'}: corroboration decides")
     print(f"promotion_ready {promotion_ready(scored)}; in_memory {already_in_memory(f['content'], memory_text)}; "
@@ -7743,6 +7819,8 @@ def dry_run_summary(result, source):
     facts("conflicts (same subject, different numbers or negation)", result.get("conflicts") or [])
     facts("facts that look unused", result.get("fact_decays") or [])
     lines.append(f"facts people said again on different days (to confirm): {len(result.get('confirm') or [])}")
+    lines.append(f"agent's conclusions people seem to say again (ask the person): "
+                 f"{len(result.get('confirm_ask') or [])}")
     pairs = result.get("duplicate_pairs") or []
     skipped = st.get("duplicate_pairs_skipped")
     lines.append(f'pairs of facts to ask "merge?" about: {len(pairs)}'

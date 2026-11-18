@@ -228,6 +228,10 @@ def compact_payload(data, actionable_keys=DEFAULT_ACTIONABLE_KEYS, max_content=D
         "confirm": [{"fact_id": c.get("fact_id"), "days": c.get("days"),
                      "content": str(c.get("content") or "")[:max_content],
                      **({"origin": c["origin"]} if c.get("origin") else {})} for c in data.get("confirm", [])],
+        # An agent's conclusion people seem to say again (finding 6): asked, never confirmed by the agent on its own.
+        "confirm_ask": [{"fact_id": c.get("fact_id"), "days": c.get("days"),
+                         "content": str(c.get("content") or "")[:max_content],
+                         **({"origin": c["origin"]} if c.get("origin") else {})} for c in data.get("confirm_ask", [])],
         # The same: facts without keywords, given while the agent is awake.
         "keywords_needed": [
             {"fact_id": k.get("fact_id"), "content": str(k.get("content") or "")[:max_content]}

@@ -66,6 +66,7 @@
      "fingerprint": "7c1345cd57c01e23"
     }
    ],
+   "confirm_ask": [],
    "conflicts": [
     {
      "category": "general",
@@ -522,6 +523,7 @@
    "stats": {
     "alerts": 0,
     "confirm": 4,
+    "confirm_ask": 0,
     "conflicts": 1,
     "conflicts_suppressed": 0,
     "duplicate_pairs_skipped": "scope_chat",
@@ -621,6 +623,7 @@
        "8c907e0bf36bd15e",
        "7c1345cd57c01e23"
       ],
+      "confirm_ask": [],
       "conflicts": [
        "ab30e1b52540ff42"
       ],
@@ -663,6 +666,7 @@
       "fact_id": 6
      }
     },
+    "confirm_ask": {},
     "conflicts": {
      "ab30e1b52540ff42": {
       "at": "2026-10-20T05:00:00+00:00",
@@ -812,6 +816,7 @@
     ]
    },
    "confirm": [],
+   "confirm_ask": [],
    "conflicts": [],
    "corr_window_days": 60,
    "diary": "## Сон 2026-10-21\nTheme window: 14 d · facts: 14 · messages (corroboration): 18.\n\nℹ️ holographic runs with scope: chat — the dream reads the databases per chat through chat_stores (an overview of all, facts of 1 listed promoted); a cron job writes nothing, so the extraction job stays asleep.\nChat stores (chat): 2 database(s), 2 fact(s), 2 new in the window; promoted: telegram--100777.\nNo strong promotion candidates yet.\n\n**Temporary events (do not promote):**\n- (0.839, mentions 4/3d) Встреча юниоров клуба с тренером сборной 2026-11-08, собрать заявки к пятнице. [#6]\n\n**Emerging themes:** встречу×3, собираем×3\n\n**Quarantined (not promoted): 1** — secret.\n\n**Rejected earlier — not asking again: 1.**\n",
@@ -996,6 +1001,7 @@
    "stats": {
     "alerts": 0,
     "confirm": 0,
+    "confirm_ask": 0,
     "conflicts": 0,
     "conflicts_suppressed": 1,
     "duplicate_pairs_skipped": "scope_chat",
@@ -1072,6 +1078,7 @@
      "generated_at": "2026-10-21T05:00:00+00:00",
      "seen": {
       "confirm": [],
+      "confirm_ask": [],
       "conflicts": [],
       "fact_decays": [],
       "keywords_needed": [],
@@ -1101,6 +1108,7 @@
       "fact_id": 6
      }
     },
+    "confirm_ask": {},
     "conflicts": {
      "ab30e1b52540ff42": {
       "at": "2026-10-20T05:00:00+00:00",

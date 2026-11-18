@@ -92,6 +92,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `memory_pressure` | consolidate the file it names before adding anything |
 | `quarantined` | one line: how many and why; never retell, restore or request the content |
 | `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
+| `confirm_ask` | your own conclusion people seem to say again: ask the person whether it is true; `call_on_yes` only on their yes (step 7d) |
 | `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
 | `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
 | `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing. `memory_loss` counts and names (`entries`) only entries whose text is nowhere in memory: the entries it says were rewritten or merged are your own tidying — not a loss, no question about them |
@@ -237,8 +238,12 @@ in each of them (`references/scoring.md`, "Every language").
    is read as the conflict check reads it, by the same word form — best effort). Rare by design: on a live family store of
    58 facts the looser "mentions the topic" rule offered 26, this one none. For each, call
    `fact_feedback` with `action="confirmed"` and that `fact_id` —
-   one call per item, nothing else: trust +0.05, at most once a night per fact, and a conclusion the
-   agent stored as `inferred` counts as confirmed. A fact the store counted a confirmation of in the
+   one call per item, nothing else: trust +0.05, at most once a night per fact. A conclusion of yours
+   (origin `inferred`) whose words people used again is not here but in **`confirm_ask`**: words are
+   not their confirmation, so ask the person once, in your own words, whether it is true, and make the
+   item's `call_on_yes` (the same `fact_feedback` call) only on their yes; a no is a human answer like
+   any other (was wrong → `correct`, no longer true → `end`). Never confirm one on your own; at most 3 a
+   night, and an unanswered one rests like any question. A fact the store counted a confirmation of in the
    last 30 days is not offered; at most 10 a night. No `confirmed` action on `fact_feedback` (an older
    provider) → skip the section silently; the section is empty anyway when the store has no
    confirmations table. In the report: one line with the count, no ids.

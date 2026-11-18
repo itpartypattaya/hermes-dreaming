@@ -64,7 +64,9 @@ and the forget sweep beside it](docs/overview.png)
   `fact_feedback(unhelpful)` call, so a rejection teaches retrieval too.
 - **Confirmations** (holographic ≥ 0.15.0). A fact people said again — on two different days, in messages that
   hold most of its words and neither negate it nor give it a new number — is listed with a ready `fact_feedback(confirmed)` call: its trust
-  rises a little, and the agent's own conclusion counts as confirmed. Naming the topic is not saying it again, so
+  rises a little. The agent's own conclusion (`inferred`) is not confirmed that way: words are not a person's
+  confirmation, so it goes to `confirm_ask`, and the agent asks the person and confirms it only on their yes
+  (3.8.12; before, the agent confirmed it itself). Naming the topic is not saying it again, so
   this is rare by design (none of 58 facts on a live family store; the loose rule would have offered 26). It never
   wakes the model. Items also carry the fact's `origin` — `said`, `confirmed` or `inferred` (an agent's conclusion
   nobody confirmed, asked about rather than written).
