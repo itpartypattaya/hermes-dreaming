@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.7 — 2026-11-18
 
 ### Fixed
 - **A rejection no longer silences a newer value of the fact.** The reject list matched a rewording by its words
