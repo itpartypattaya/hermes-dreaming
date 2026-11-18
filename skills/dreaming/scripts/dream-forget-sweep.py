@@ -65,6 +65,7 @@ def main():
         return 1
     parts = [f"{summary[k]} {label}" for k, label in (("payload", "payload items"), ("rejected", "reject records"),
                                                       ("seen", "cooldowns"), ("judge", "cloud judge records"),
+                                                      ("snapshot", "loss-guard previews"),
                                                       ("diary_lines", "diary lines"),
                                                       ("cron_logs", "cron logs"),
                                                       ("corrupt_copies", "set-aside broken state files"))

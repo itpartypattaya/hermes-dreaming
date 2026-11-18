@@ -1165,9 +1165,15 @@ def _norm(s):
 # Tokenization
 # ---------------------------------------------------------------------------
 
-# Reply quote: [Replying to: "…"] — the quoted text is unwrapped, not cut.
-REPLY_QUOTE_RE = re.compile(r'\[replying\s+to:?\s*[«"“]?(.*?)[»"”]?\s*\]',
-                            re.IGNORECASE | re.DOTALL)
+# Reply quote: [Replying to: "…"] — the quoted text (group "text") is unwrapped, not cut. Hermes writes it as
+# `[Replying to{who}: "{text}"]` (gateway/inbound_reply_context.py), who being " your previous message" or a cron
+# delivery's note in brackets. A quote that opens with a quote mark ends at a quote mark before "]": the first "]"
+# alone ended "…the Vespa [1] is…" at "[1", and the rest of the agent's message counted as the person's own words
+# (review of 2026-11-17). Without such an ending (a quote cut short) it ends at the first "]", as it always did.
+REPLY_QUOTE_RE = re.compile(
+    r'\[replying\s+to(?:\s+your\s+previous\s+message|\s+an\s+earlier\s+scheduled\s+cron\s+delivery\s*\([^)\n]*\))?'
+    r':?\s*(?P<q>[«"“])?(?P<text>.*?)(?(q)[»"”]|[»"”]?)\s*\]',
+    re.IGNORECASE | re.DOTALL)
 # Voice message: [The user sent a voice message~ Here's what they said: "…"].
 # The transcript is human speech and must be unwrapped like a reply quote:
 # wrapped in brackets it yielded 0 tokens, i.e. voice messages (78 of 1103 in
@@ -1301,14 +1307,14 @@ def sig_tokens(text, wide=False):
     # question ("[Replying to: …] [voice: «I still ride the same scooter»]") corroborated nothing (review of 2026-11-17).
     tail = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", raw))
     tail_tokens = _raw_tokens(tail, wide)
-    quoted = " ".join(m.group(1) for m in REPLY_QUOTE_RE.finditer(raw))
+    quoted = " ".join(m.group("text") for m in REPLY_QUOTE_RE.finditer(raw))
     if not tail_tokens and quoted:
         return set()
     if quoted and MACHINE_QUOTE_RE.search(quoted):
         # Quoting a machine (a cron report, a script block) is not speech about
         # the subject, however much the person adds around it.
         return tail_tokens
-    unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", raw)
+    unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group("text") + " ", raw)
     unwrapped = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", unwrapped)
     return _raw_tokens(unwrapped, wide)
 
@@ -1388,6 +1394,12 @@ def load_facts(db=None):
         return _load_holographic(path)
     cols = dict(DEFAULT_FACT_COLUMNS, **(SETTINGS.CONFIG.get("fact_columns") or {}))
     raw = _load_generic_sqlite(path, cols) if src == "sqlite" else _load_jsonl(path, cols)
+    unread = [(cols[k], r.get(cols[k])) for r in raw for k in ("created_at", "updated_at")
+              if r.get(cols[k]) not in (None, "") and _ts_text(r.get(cols[k])) is None]
+    if unread:
+        print(f"[dream] warn: {len(unread)} time value(s) in {'/'.join(sorted({c for c, _ in unread}))} of "
+              f"{path} cannot be read (e.g. {str(unread[0][1])[:40]!r}) — those facts have no age",
+              file=sys.stderr)
     return [f for f in (_normalize_fact(r, cols) for r in raw) if f]
 
 
@@ -1488,19 +1500,43 @@ def _load_jsonl(path, cols):
     return out
 
 
+_EPOCH_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+_DAY_FIRST_FORMATS = ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y")
+
+
 def _ts_text(v):
-    """A timestamp in the holographic text form ('YYYY-MM-DD HH:MM:SS', UTC)
-    from epoch seconds / milliseconds or an ISO string with any offset."""
-    if v is None or v == "":
+    """A timestamp in the holographic text form ('YYYY-MM-DD HH:MM:SS', UTC) from an epoch in seconds, milliseconds,
+    microseconds or nanoseconds (a number or a string of one), an ISO string with any offset, or a day-first date
+    with dots ("17.11.2026 09:30", UTC); None for a time that cannot be read. A string of an epoch or
+    "17.11.2026" used to be passed on as it was, which _parse_ts does not read: the fact lost its age without a
+    word; and an epoch in microseconds ended the pass (review of 2026-11-17)."""
+    if v is None or v == "" or isinstance(v, bool):
         return None
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        sec = v / 1000 if v > 1e11 else v
-        return datetime.fromtimestamp(sec, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     s = str(v).strip()
+    if isinstance(v, (int, float)) or _EPOCH_RE.fullmatch(s):
+        try:
+            sec = float(v)
+            for limit, unit in ((1e17, 1e9), (1e14, 1e6), (1e11, 1e3)):
+                if abs(sec) > limit:
+                    sec /= unit
+                    break
+            return datetime.fromtimestamp(sec, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        except (OverflowError, OSError, ValueError):  # out of range for this platform's clock
+            return None
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
-        return s  # leave it to _parse_ts; an unparsable date only weakens recency
+        dt = None
+    for fmt in _DAY_FIRST_FORMATS if dt is None else ():
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except ValueError:
+            pass
+    if dt is None:
+        dt = _parse_ts(s)  # "2026-11-17 09:30:00 UTC": what _parse_ts reads of it
+    if dt is None:
+        return None
     if dt.tzinfo:
         dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -6713,7 +6749,18 @@ def rotate_diary(path, keep=None):
     if len(starts) <= keep:
         return False
     cut = starts[len(starts) - keep]
-    _write_private(path + ".archive.md", text[:cut], append=True)
+    # A rotation cut between the two writes below left those sections in both files, and the next one appended them
+    # to the archive again (review of 2026-11-17): the sections the archive already ends with are not appended twice.
+    # A section's heading carries its date, and the diary writes a day's section once.
+    try:
+        with open(path + ".archive.md", encoding="utf-8") as f:
+            archived = f.read()
+    except OSError:
+        archived = ""
+    done = next((b for b in sorted({s for s in starts if 0 < s <= cut} | {cut}, reverse=True)
+                 if archived.endswith(text[:b])), 0)
+    if cut > done:
+        _write_private(path + ".archive.md", text[done:cut], append=True)
     _write_private(path, text[cut:])
     print(f"[dream] diary: {len(starts) - keep} old section(s) moved to the archive",
           file=sys.stderr)
@@ -7161,7 +7208,7 @@ def forget_sweep(db=None, home=None):
     done = state.setdefault("swept", {})
     new = sorted(str(i) for i in tombstones if str(i) not in done)
     summary = {"tombstones": len(tombstones), "swept": len(new), "payload": 0, "rejected": 0, "seen": 0,
-               "proposals": 0, "judge": 0, "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0,
+               "proposals": 0, "judge": 0, "snapshot": 0, "diary_lines": 0, "cron_logs": 0, "corrupt_copies": 0,
                "errors": store_errors}
     if not tombstones:
         return summary
@@ -7183,6 +7230,7 @@ def forget_sweep(db=None, home=None):
     summary["seen"] = _sweep_seen(ids, fingerprints, hashes=_preview_set(index))
     summary["proposals"] = _sweep_proposals(ids, fingerprints)
     summary["judge"] = _sweep_judge(ids)
+    summary["snapshot"] = _sweep_snapshot(_preview_set(index))
     summary["diary_lines"] = _sweep_diary(home, ids, index, summary["errors"])
     summary["cron_logs"] = _sweep_cron_logs(home, ids, index, summary["errors"])
     # A wipe that did not finish (a copy that could not be deleted) is owed until it does: the tombstone is recorded
@@ -7335,6 +7383,25 @@ def _sweep_judge(ids):
         if kept != records or broken:
             removed += pairs + broken
             _write_private(files.journal, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
+    return removed
+
+
+def _sweep_snapshot(hashes):
+    """Previews of forgotten facts out of the loss-guard snapshot; how many. The snapshot names every memory entry by
+    its first characters (`_entry_sig`), so that tomorrow's alert can say which entries were lost; an entry written
+    from a fact the human then asked to forget kept its preview there, and the next pass's alert named it again
+    (review of 2026-11-17). The entry's hashes stay: they tell a rewrite from a loss and hold no text."""
+    path = _state_default("DREAM_SNAPSHOT_STATE", "snapshot")
+    snapshot = _load_state_file(path)
+    removed = 0
+    for name, value in snapshot.items():
+        sigs = value.get("sigs") if isinstance(value, dict) and not name.startswith("_") else None
+        for sig in (sigs.values() if isinstance(sigs, dict) else ()):
+            if isinstance(sig, dict) and _carries_forgotten(sig.get("preview"), hashes):
+                del sig["preview"]
+                removed += 1
+    if removed:
+        _write_private(path, json.dumps(snapshot, ensure_ascii=False))
     return removed
 
 
@@ -7870,7 +7937,7 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 — a sweep hiccup must not cost the night's pass
             swept = {"errors": [f"{type(e).__name__}: {e}"]}
         if not args.forget_sweep and (swept.get("errors") or any(
-                swept.get(k) for k in ("payload", "rejected", "seen", "proposals", "judge", "diary_lines",
+                swept.get(k) for k in ("payload", "rejected", "seen", "proposals", "judge", "snapshot", "diary_lines",
                                        "cron_logs", "corrupt_copies"))):
             print(f"[dream] forget sweep ({when}): {json.dumps(swept, ensure_ascii=False)}", file=sys.stderr)
         if not args.forget_sweep:

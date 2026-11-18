@@ -297,7 +297,9 @@ def plan_existing(job, plan, skill, rebind):
 
 
 def _preview_jobs():
-    """Offline read-only snapshot, like install.py --check; no Hermes import."""
+    """The jobs as `cron/jobs.json` holds them, read-only, like install.py --check — without Hermes' cron API. The
+    dry run still asks the Hermes plugin registry for the skill name when the plugin is installed
+    (`_plugin_skill_name`), so it, too, runs with Hermes' own interpreter."""
     return read_jobs(HOME)
 
 

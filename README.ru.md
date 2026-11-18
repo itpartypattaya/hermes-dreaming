@@ -243,7 +243,7 @@ Hermes переименует скилл, задача со старым име�
 | `none` | хранилища фактов нет | — | только файлы памяти: «ещё актуально?», заполненность, сторож потери |
 
 `fact_columns` сопоставляет ваши имена с `id` и `content` (обязательные) и `created_at`,
-`updated_at` (ISO или epoch), `category`, `tags` (строка или список), `trust` (0..1). Пример:
+`updated_at` (ISO, `17.11.2026 09:30` как UTC или epoch в с/мс/мкс/нс, числом или строкой), `category`, `tags` (строка или список), `trust` (0..1). Пример:
 `{"fact_source": "jsonl", "fact_store_path": "exports/facts.jsonl", "fact_columns": {"content": "memory"}}`.
 
 Хостинговые провайдеры (mem0, Honcho, Supermemory, RetainDB) извлекают и дедуплицируют факты на

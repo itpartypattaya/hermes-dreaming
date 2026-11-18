@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.9 — 2026-11-18
+
+### Fixed
+- **A forgotten fact leaves the loss-guard snapshot.** `cache/dream-snapshot.json` names every memory entry by a
+  60-character preview, so that the next pass can say which entries were lost. An entry written from a fact the human
+  then asked to forget kept its preview there, and the next pass's memory-loss alert named it again. The forget sweep
+  now takes such a preview out of the snapshot (`snapshot` in its summary); the entry's hashes stay, so the loss is
+  still counted.
+- **A reply quote with a "]" inside it ends where it ends.** `[Replying to: "…the Vespa [1] is…"]` ended at "[1": the
+  rest of the agent's quoted message counted as the person's own words, and a bare "ок" under it corroborated what the
+  agent had said. A quote that opens with a quote mark now ends at a quote mark before "]"; one cut short still ends at
+  its first "]". The forms Hermes writes now — "Replying to your previous message", "Replying to an earlier scheduled
+  cron delivery (…)" — are read too: their words were part of the quote.
+- **Times of a generic fact source.** A `sqlite` or `jsonl` store that keeps its times as an epoch in a string
+  ("1763372400") or day-first with dots ("17.11.2026 09:30") lost each fact's age without a word, and an epoch in
+  microseconds or nanoseconds ended the pass (on Windows `OSError`). All of these are read now; a time that still
+  cannot be read leaves the fact without an age and says so in one warning line.
+- **A diary rotation cut halfway does not archive the same sections twice.** Between appending the old sections to
+  `DREAMS.md.archive.md` and rewriting the diary, a timeout or a full disk left them in both files, and the next
+  rotation appended them again. The sections the archive already ends with are not appended a second time.
+
+### Docs
+- `install_cron.py --dry-run` reads the jobs without Hermes' cron API, but with the plugin installed it still asks the
+  Hermes plugin registry for the skill name, so it, too, runs with Hermes' own interpreter (as the README says); the
+  comment that promised "no Hermes import" is corrected.
+
 ## 3.8.8 — 2026-11-18
 
 ### Fixed

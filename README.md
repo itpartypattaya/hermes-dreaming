@@ -319,7 +319,7 @@ The dream consolidates *candidate* facts; where they come from is `fact_source` 
 | `none` | no fact store | — | the memory files alone: "still relevant?", fill level, loss guard |
 
 `fact_columns` maps your names onto `id` and `content` (required) and `created_at`, `updated_at`
-(ISO or epoch), `category`, `tags` (string or list), `trust` (0..1). Example:
+(ISO, `17.11.2026 09:30` read as UTC, or an epoch in s/ms/µs/ns, number or string), `category`, `tags` (string or list), `trust` (0..1). Example:
 `{"fact_source": "jsonl", "fact_store_path": "exports/facts.jsonl", "fact_columns": {"content": "memory"}}`.
 
 Hosted providers (mem0, Honcho, Supermemory, RetainDB) extract and deduplicate facts on their own
