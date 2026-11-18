@@ -474,6 +474,46 @@ class ForgetSweep(unittest.TestCase):
         self.assertIn(str(self.db), summary["errors"][0])
 
 
+class LossAlertsLoseAForgottenFact(unittest.TestCase):
+    """3.8.7 keeps a memory-loss alert in the seen state (`_pending.loss_alerts`) until an agent turn answers it, and
+    the alert names the lost entries by a preview — in `entries` and inside `message`. When the lost entry was a fact
+    the human then asked to forget, the sweep left its text there (Codex review of PR #34), and in the payload's
+    `alerts` too."""
+
+    # The store, the home and the helpers of ForgetSweep, without running its tests a second time.
+    setUp, tearDown = ForgetSweep.setUp, ForgetSweep.tearDown
+    path, forget, _no_trace_of = ForgetSweep.path, ForgetSweep.forget, ForgetSweep._no_trace_of
+
+    OTHERS = ["Лео живёт в Лиссабоне с весны", "Нина работает в школе учителем",
+              "Ветка 30 для рабочих задач Лео", "Абонемент в зал стоит 1500 в месяц", "Кошку зовут Мурка"]
+
+    def _loss_alert(self):
+        mem = self.path("memories/MEMORY.md")
+        snap = str(self.path("cache/dream-snapshot.json"))
+        mem.write_text("\n§\n".join([FORGOTTEN_OLD] + self.OTHERS) + "\n", encoding="utf-8")
+        self.assertEqual(dream.check_memory_loss(str(mem), snap), [])
+        mem.write_text("\n§\n".join(self.OTHERS[:2]) + "\n", encoding="utf-8")  # the entry went with three others
+        alerts = [a for a in dream.check_memory_loss(str(mem), snap) if a["kind"] == "memory_loss"]
+        self.assertTrue(alerts)
+        self.assertIn(FORGOTTEN_OLD[:40], json.dumps(alerts, ensure_ascii=False))  # the alert does name it
+        return alerts
+
+    def test_the_sweep_scrubs_carried_and_published_loss_alerts(self):
+        dream.forget_sweep(db=str(self.db))  # the diary index, while the fact exists
+        alerts = self._loss_alert()
+        seen = {"_pending": {"generated_at": "2026-11-17T17:30:00+00:00", "seen": {}, "loss_alerts": alerts}}
+        self.path("cache/dream-seen.json").write_text(json.dumps(seen, ensure_ascii=False), encoding="utf-8")
+        self.path("cache/dream.json").write_text(json.dumps({"alerts": alerts}, ensure_ascii=False), encoding="utf-8")
+        self.forget(2)
+        summary = dream.forget_sweep(db=str(self.db))
+        self.assertEqual(summary["errors"], [])
+        self._no_trace_of(FORGOTTEN_OLD)
+        kept = json.loads(self.path("cache/dream-seen.json").read_text(encoding="utf-8"))["_pending"]["loss_alerts"]
+        self.assertEqual(len(kept), 1, "the loss itself is still news")
+        self.assertIn(dream.FORGOTTEN_COPY, kept[0]["message"])
+        self.assertIn(self.OTHERS[2][:30], json.dumps(kept, ensure_ascii=False), "other entries keep their names")
+
+
 class SweepGateFindsDream(unittest.TestCase):
     """The third gate keeps its own copy of the lookup (gates are copied into `scripts/` one by one and cannot share
     a module); the other two have this test, now this one does too (review of 2.9.8)."""

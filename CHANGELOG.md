@@ -3,6 +3,16 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.8 — 2026-11-18
+
+### Fixed
+- **A forgotten fact leaves the memory-loss alerts too.** 3.8.7 keeps a memory-loss alert in the seen state until an
+  agent turn answers it, and the alert names the lost entries by a 60-character preview — in `entries` and again
+  inside `message`. When the lost entry was a fact the human then asked to forget, the forget sweep left its text
+  there, and in the alerts of the night's payload, while reporting success (Codex review of #34). The sweep now cuts
+  the preview out of both fields, in the seen state and in the payload, and the diary index keeps the hash of that
+  preview form for every fact. The alert itself stays: the loss is still news.
+
 ## 3.8.7 — 2026-11-18
 
 ### Fixed
