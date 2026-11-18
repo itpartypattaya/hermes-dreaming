@@ -50,6 +50,11 @@ REF = _load("_classify_371", TESTS / "fixtures" / "classify_371.py")
 # other — every other decision must still be 3.7.1's.
 REF.SECRET_RE = re.compile(REF.SECRET_RE.pattern.replace("(?:sk-", "(?:(?<![A-Za-z0-9])sk-", 1), REF.SECRET_RE.flags)
 assert "(?<![A-Za-z0-9])sk-" in REF.SECRET_RE.pattern
+# The provider's screen is the provider's: these guards hold the dream's own rules and the way it reads the screen to
+# 3.7.1, over the screen it ships now. 3.8.11 carries holographic 0.30.1's, the first copy since 3.7.2 that decides
+# otherwise (new kinds of secrets, door keys as errands, look-alike letters); test_holographic_017 holds the copy to
+# the provider's source. The frozen 0.18.2 copy (fixtures/holo_screen_0182.py) is what classify_371 loads itself.
+REF.HOLO_SCREEN = dream.HOLO_SCREEN
 SCREEN_FUNCTIONS = ("_recall_problem", "_secret_in", "_credential_word", "_injection_in", "_hidden_char")
 
 
@@ -195,8 +200,7 @@ class DerivedStartsTests(unittest.TestCase):
                      "_ZH_PASSWORD_IS_RE", "_EMOJI_JOINER_RE", "_FLAG_TAGS_RE"):
             self.assertEqual((getattr(dream, name).pattern, getattr(dream, name).flags),
                              (getattr(REF, name).pattern, getattr(REF, name).flags), name)
-        for new, old in zip(dream.HOLO_SCREEN._RE_CREDENTIALS, REF.HOLO_SCREEN._RE_CREDENTIALS):
-            self.assertEqual((new.pattern, new.flags), (old.pattern, old.flags))
+        # The screen's own patterns are the provider's, as test_holographic_017 checks against its source (3.8.11).
 
     def test_the_folded_copy_keeps_every_letter_where_the_engine_finds_it(self):
         """A guard: a character the case-blind engine takes for a letter of a listed start is that letter in the
