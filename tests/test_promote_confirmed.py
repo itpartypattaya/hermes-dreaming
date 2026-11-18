@@ -3,7 +3,9 @@
 Requirements, in the user's words:
 - A conclusion the agent drew and nobody confirmed (origin `inferred`) is never offered for MEMORY.md, however
   often it is recalled, marked helpful or its words come up in chat. When people did say it again, the night offers
-  it for confirmation instead, and once a person confirmed it, it is promoted as before.
+  it for confirmation instead, and once a person confirmed it, it is promoted as before. Since 2026-11-18 (Anton,
+  finding 6 of the review of 2026-11-17) "offers it for confirmation" means the person is asked (`confirm_ask`): the
+  agent confirmed it on its own before, on a match of words (tests/test_review_2026_11e.py).
 - What the person said or confirmed is promoted by the same corroboration rule as before.
 - A store that keeps no origins (a provider before 0.15.0, another fact source) or a fact stored without one keeps
   today's behaviour: nothing silently stops being promoted there.
@@ -74,7 +76,8 @@ class InferenceIsNotPromoted(_Holographic):
         self.history({1: "inferred"})
         result = self.run_dream()
         self.assertEqual(self.promoted(result), set())
-        self.assertEqual([c["fact_id"] for c in result["confirm"]], [1])
+        self.assertEqual([c["fact_id"] for c in result["confirm_ask"]], [1])  # the person is asked (2026-11-18)
+        self.assertEqual(result["confirm"], [])
 
     def test_once_a_person_confirmed_it_the_inference_is_promoted(self):
         self.used_often()

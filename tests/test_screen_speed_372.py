@@ -17,6 +17,7 @@ Run:  python -m unittest discover -s tests   (from the repository root)
 """
 
 import ast
+import functools
 import importlib.util
 import random
 import re
@@ -55,6 +56,12 @@ assert "(?<![A-Za-z0-9])sk-" in REF.SECRET_RE.pattern
 # otherwise (new kinds of secrets, door keys as errands, look-alike letters); test_holographic_017 holds the copy to
 # the provider's source. The frozen 0.18.2 copy (fixtures/holo_screen_0182.py) is what classify_371 loads itself.
 REF.HOLO_SCREEN = dream.HOLO_SCREEN
+# And one rule added on purpose (finding 18, tests/test_review_2026_11d.py): a card number, a PIN or a password with
+# no separator before its value is a secret. The reference holds it the dream's way, ahead of its own rules, as the
+# dream does; every other decision must still be 3.7.1's.
+_REF_CLASSIFY = REF.classify_unsafe.__wrapped__
+REF.classify_unsafe = functools.lru_cache(maxsize=None)(
+    lambda text: "secret" if dream._unseparated_secret(text or "") else _REF_CLASSIFY(text))
 SCREEN_FUNCTIONS = ("_recall_problem", "_secret_in", "_credential_word", "_injection_in", "_hidden_char")
 
 
@@ -188,7 +195,10 @@ class DerivedStartsTests(unittest.TestCase):
         """A guard: a match of PASSWORD_MARKER_RE or INJECTION_RE begins only where a listed start is, in the folded
         text; both patterns are case-blind throughout. A word added to either without its start fails here."""
         for rx, listed in ((dream.PASSWORD_MARKER_RE, dream._PASSWORD_MARKER_STARTS),
-                           (dream.INJECTION_RE, dream._INJECTION_STARTS)):
+                           (dream.INJECTION_RE, dream._INJECTION_STARTS),
+                           # finding 18 (3.8.12): the patterns of a secret with no separator, tried the same way
+                           (dream._PIN_VALUE_RE, dream._UNSEPARATED_STARTS),
+                           (dream._PASSWORD_NEAR_RE, dream._UNSEPARATED_STARTS)):
             self.assertTrue(rx.flags & re.IGNORECASE)
             self.assertNotIn("(?-i", rx.pattern)
             self.assertEqual(_Starts(listed).missing(rx), set(), rx.pattern[:60])
