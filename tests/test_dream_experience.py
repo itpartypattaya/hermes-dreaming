@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import home_guard  # noqa: F401  (before any script is loaded: a throwaway HERMES_HOME)
 
 # the repo (tests/ next to skills/dreaming/) or the skill's own mirror (tests/ inside it), as in test_dream
 _HERE = Path(__file__).resolve().parents[1]

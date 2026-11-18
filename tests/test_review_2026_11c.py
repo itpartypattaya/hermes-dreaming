@@ -172,5 +172,31 @@ class ReplyQuoteWithABracket(unittest.TestCase):
         self.assertEqual(dream._own_words(text).split(), ["ок"])
 
 
+class VoiceTranscriptWithABracket(unittest.TestCase):
+    """A speech-to-text transcript may carry an annotation in brackets ("[music]", "[неразборчиво]"). The transcript
+    ended at its "]", and the words after it were cut with the bracket as metadata: the voice message corroborated
+    less than the person said."""
+
+    WORDS = "Купил новый скутер {} Vespa, красного цвета"
+
+    @staticmethod
+    def _voice(text):
+        return f"[The user sent a voice message~ Here's what they said: \"{text}\"]"
+
+    def test_the_words_after_an_annotation_count(self):
+        for prefix in ("", '[Replying to: "Какой у тебя теперь скутер?"]\n\n'):
+            plain = dream.sig_tokens(prefix + self._voice(self.WORDS.format("")))
+            self.assertIn("vespa", plain)
+            for note in ("[неразборчиво]", "[music]"):
+                with self.subTest(note=note, reply=bool(prefix)):
+                    text = prefix + self._voice(self.WORDS.format(note))
+                    self.assertEqual(dream.sig_tokens(text), plain)
+                    self.assertIn("vespa", dream._own_words(text).lower())
+
+    def test_a_transcript_without_quote_marks_reads_as_before(self):
+        text = "[The user sent a voice message~ Here's what they said: Купил новый скутер Vespa]"
+        self.assertIn("vespa", dream.sig_tokens(text))
+
+
 if __name__ == "__main__":
     unittest.main()

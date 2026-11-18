@@ -1179,9 +1179,11 @@ REPLY_QUOTE_RE = re.compile(
 # wrapped in brackets it yielded 0 tokens, i.e. voice messages (78 of 1103 in
 # 60 days on live data) corroborated nothing. Image descriptions (`sent an
 # image`) deliberately stay metadata: that is the model's retelling, not words
-# of a human.
+# of a human. The transcript (group "text") ends as a reply quote does: a "]" inside it ("…[music] …", "[inaudible]")
+# ended it there, and the words after it were cut with the bracket as metadata (review of 2026-11-17). Hermes since
+# writes a transcript as a plain quoted line with `[User sent audio: …]` after it: the person's words already.
 VOICE_QUOTE_RE = re.compile(
-    r'\[the user sent a voice message[^:\]]*:\s*[«"“]?(.*?)[»"”]?\s*\]',
+    r'\[the user sent a voice message[^:\]]*:\s*(?P<q>[«"“])?(?P<text>.*?)(?(q)[»"”]|[»"”]?)\s*\]',
     re.IGNORECASE | re.DOTALL)
 
 # Harness envelopes: context-compaction banner and skill-body injection. They
@@ -1305,7 +1307,7 @@ def sig_tokens(text, wide=False):
     # Vespa") keeps working: its tail has its own tokens.
     # A voice transcript is the person's own words even under a quote: cut with the quote, a voice answer to a
     # question ("[Replying to: …] [voice: «I still ride the same scooter»]") corroborated nothing (review of 2026-11-17).
-    tail = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", raw))
+    tail = VOICE_QUOTE_RE.sub(lambda m: " " + m.group("text") + " ", REPLY_QUOTE_RE.sub(" ", raw))
     tail_tokens = _raw_tokens(tail, wide)
     quoted = " ".join(m.group("text") for m in REPLY_QUOTE_RE.finditer(raw))
     if not tail_tokens and quoted:
@@ -1315,7 +1317,7 @@ def sig_tokens(text, wide=False):
         # the subject, however much the person adds around it.
         return tail_tokens
     unwrapped = REPLY_QUOTE_RE.sub(lambda m: " " + m.group("text") + " ", raw)
-    unwrapped = VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", unwrapped)
+    unwrapped = VOICE_QUOTE_RE.sub(lambda m: " " + m.group("text") + " ", unwrapped)
     return _raw_tokens(unwrapped, wide)
 
 
@@ -1821,7 +1823,7 @@ def _own_stems(text, generation, wide=False):
 
 def _own_words(text):
     """The person's own words of a message: the reply quote left out, a voice transcript unwrapped (it is speech)."""
-    return VOICE_QUOTE_RE.sub(lambda m: " " + m.group(1) + " ", REPLY_QUOTE_RE.sub(" ", text or ""))
+    return VOICE_QUOTE_RE.sub(lambda m: " " + m.group("text") + " ", REPLY_QUOTE_RE.sub(" ", text or ""))
 
 
 # Words nearly every fact of a home shares ("чат", "ветка", "Telegram", "сообщения" in a store of thread rules) made a

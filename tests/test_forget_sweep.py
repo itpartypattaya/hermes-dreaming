@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import home_guard  # noqa: F401  (before any script is loaded: a throwaway HERMES_HOME)
 from pathlib import Path
 
 

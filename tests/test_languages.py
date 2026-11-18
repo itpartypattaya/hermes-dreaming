@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+import home_guard  # noqa: F401  (before any script is loaded: a throwaway HERMES_HOME)
 from datetime import date
 from pathlib import Path
 
@@ -20,7 +21,9 @@ ROOT = _HERE / "skills" / "dreaming" if (_HERE / "skills" / "dreaming" / "SKILL.
 def _load():
     # Built-in defaults only: no household config may add stopwords or aliases.
     old = os.environ.get("HERMES_HOME"), os.environ.get("DREAM_CONFIG")
-    os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="dream-lang-")
+    # Inside the run's throwaway home, which goes when the run ends: a directory of its own was left in /tmp
+    # after every run (75 of them on a live install, 2026-11-18).
+    os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="dream-lang-", dir=home_guard.SANDBOX)
     os.environ.pop("DREAM_CONFIG", None)
     try:
         spec = importlib.util.spec_from_file_location("dream_languages", ROOT / "scripts/dream.py")

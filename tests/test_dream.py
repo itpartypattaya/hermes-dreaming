@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import home_guard  # noqa: F401  (before any script is loaded: a throwaway HERMES_HOME)
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
