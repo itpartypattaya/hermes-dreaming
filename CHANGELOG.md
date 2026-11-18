@@ -3,6 +3,24 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.11 — 2026-11-18
+
+### Changed
+- **The screen is holographic 0.30.1's** (was 0.25.3's): `scripts/holo_screen.py`, copied whole by
+  `tools/vendor_screen.py` from `76689f9`; CI checks the copy against that commit and runs the whole suite against
+  that release. The first copy since 3.7.2 that decides otherwise, as the provider does since 0.30.0: it finds secrets
+  it missed (a TOTP seed, a seed phrase after its name, Stripe keys, Slack and Discord webhooks, a password after a
+  dash), instructions in look-alike letters (full-width forms, a Cyrillic "о" in a Latin word), and takes keys to a
+  flat or a bike for an errand, not a credential; texts with thousands of blank lines or image tags no longer take
+  seconds. On 4,500 generated texts the dream's quarantine decision changed for 6: three more held as secrets, three
+  held before under another reason; none held before is let through. 0.30.1 differs from 0.30.0 in comments only, so
+  a provider on 0.30.0 decides the same. Nothing else of the provider the dream reads changed (tables, tool schemas).
+
+### Tests
+- The quarantine guards of 3.7.2 (`test_screen_speed_372`) hold the dream's own rules and its reading of the screen to
+  3.7.1 over the screen it ships now; the screen's own decisions are the provider's, held to its source by
+  `test_holographic_017`.
+
 ## 3.8.10 — 2026-11-18
 
 ### Fixed
