@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.9 — 2026-11-18
 
 ### Fixed
 - **A forgotten fact leaves the loss-guard snapshot.** `cache/dream-snapshot.json` names every memory entry by a
