@@ -148,7 +148,7 @@ def resolve_pending(dream, state, max_retries):
 def _clean(dream, text, n):
     # A reply quote is mostly the agent's own words — keep a short hint of it only. The quote's shape is dream.py's
     # (`REPLY_QUOTE_RE`): one rule, kept in one place.
-    text = dream.REPLY_QUOTE_RE.sub(lambda m: "[re: " + m.group(1)[:80] + "] ", text or "")
+    text = dream.REPLY_QUOTE_RE.sub(lambda m: "[re: " + m.group("text")[:80] + "] ", text or "")
     text = re.sub(r"\s+", " ", text).strip()
     return text[:n] + ("…" if len(text) > n else "")
 
