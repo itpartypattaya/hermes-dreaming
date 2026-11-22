@@ -131,7 +131,11 @@ def fetch_content(fact_id):
     store's loader reports its own failures and gives no facts, so there an unreadable store is still "not found"."""
     d = _dream()
     # holographic: resolve the store against this script's HERMES_HOME.
-    if "#" in str(fact_id):  # "<chat store>#<id>" of a promoted chat store (chat_stores, 2.6.0)
+    label = str(fact_id).split("#", 1)[0]
+    extra_labels = {e["label"] for e in d.extra_fact_sources_settings(quiet=True)}
+    if "#" in str(fact_id) and label in extra_labels:  # "<label>#<id>" of an extra fact source (3.9.0)
+        facts = d.load_extra_facts()
+    elif "#" in str(fact_id):  # "<chat store>#<id>" of a promoted chat store (chat_stores, 2.6.0)
         facts = d.load_chat_facts(HOME)
     else:
         facts = (d.load_facts(d.fact_store_path(HOME)) if d.fact_source() == "holographic"

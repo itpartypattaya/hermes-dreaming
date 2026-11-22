@@ -21,6 +21,8 @@
 
   "durable_memory_paths": ["memories/MEMORY.md", "memories/USER.md"],
   "fact_store_path": "",
+  "_comment_extra_fact_sources": "Extra fact stores read beside the main one, read-only, each with its own fact_source, fact_table and fact_columns. Their facts are labelled <label>#<id> and reach the agent through the memory tool only, never the judge. A missing or unreadable file is warned about and skipped. Example entry: {\"label\": \"kanban\", \"fact_source\": \"jsonl\", \"fact_store_path\": \"state/kanban.jsonl\"}. Empty = none. See the README, Extra fact sources.",
+  "extra_fact_sources": [],
   "memory_char_limits": {"memories/MEMORY.md": 2200, "memories/USER.md": 1375},
 
   "profile_hint_terms": ["prefer", "likes", "dislikes", "goal", "plans", "works", "lives",

@@ -99,6 +99,9 @@ PUBLISHED_FIELDS = (
     # rejection to the agent as an ordinary promotion (Codex review of 2.7.2).
     "previously_rejected",
     "store",
+    # The label of an extra fact source (fork 3.9.0): "store" is never set on its facts, so the agent learns
+    # which store a candidate comes from from this field alone.
+    "source",
     # Who stands behind the fact (holographic >= 0.15.0): `change` takes it, and an unconfirmed inference is
     # asked about rather than written (2.9.0).
     "origin",
