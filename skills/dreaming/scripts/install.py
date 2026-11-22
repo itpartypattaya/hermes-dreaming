@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -210,7 +211,41 @@ def _check_holographic_settings(home, dream, r):
              "not the 0.3 default")
 
 
+def check_extra_fact_sources(dream, r):
+    """One line per `extra_fact_sources` entry (fork 3.9.0): present, absent (the pass skips it), unreadable, or
+    left out by `extra_fact_sources_settings` (the raw list is compared with the validated one, entry by entry)."""
+    raw = dream.SETTINGS.CONFIG.get("extra_fact_sources")
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        r.bad("extra_fact_sources is not a list — every entry is ignored")
+        return
+    valid = dream.extra_fact_sources_settings(quiet=True)
+    valid_labels = {e["label"] for e in valid}
+    pending = list(valid)  # each validated entry is matched once, so a repeated entry is reported as ignored
+    for n, entry in enumerate(raw, 1):
+        if entry in pending:
+            pending.remove(entry)
+            continue
+        problem = dream._extra_entry_problem(entry, valid_labels) or "not kept"
+        r.bad(f"extra_fact_sources entry {n} is ignored by the pass: {problem}")
+    for entry in valid:
+        label, kind = entry["label"], entry["fact_source"]
+        path = dream._resolve_store_path(entry["fact_store_path"])
+        if not os.path.exists(path):
+            r.warn(f"extra fact source '{label}' ({kind}): {path} does not exist yet — the pass skips it")
+            continue
+        cols = dict(dream.DEFAULT_FACT_COLUMNS, **(entry.get("fact_columns") or {}))
+        try:
+            count = len(dream._read_generic_facts(path, kind, cols, entry.get("fact_table")))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            r.bad(f"extra fact source '{label}' ({kind}): {path} cannot be read: {exc}")
+            continue
+        r.ok(f"extra fact source '{label}' ({kind}): {path}, {count} facts")
+
+
 def check_fact_source(home, dream, r):
+    check_extra_fact_sources(dream, r)
     try:
         source = dream.fact_source()
     except ValueError as exc:

@@ -328,6 +328,27 @@ Hosted providers (mem0, Honcho, Supermemory, RetainDB) extract and deduplicate f
 servers; reading them would need API keys in a cron job for little gain, so there is no adapter. If
 you still want the dream's corroboration over them, export to `jsonl`.
 
+### Extra fact sources
+
+`extra_fact_sources` in `dreaming.json` reads more fact stores *in addition to* the main one above. Each entry is read-only, takes the formats of the `sqlite` and `jsonl` sources, and has its own `fact_table` and `fact_columns`:
+
+```json
+"extra_fact_sources": [
+  {"label": "kanban", "fact_source": "jsonl", "fact_store_path": "state/kanban.jsonl", "fact_columns": {"content": "memory"}}
+]
+```
+
+`label` is a plain name (`A-Z a-z 0-9 _ . -`), unique in the list. The facts of that source get the ids `<label>#<id>` (`kanban#17`) and the mark `source: <label>`, so the reports and `dream-reject.py` can tell them apart. The rules:
+
+- **Corroboration**: ordinary trusted messages corroborate them, as they do a main fact.
+- **Promotion**: only through the `memory` tool. Never `fact_store` or `fact_feedback`, and no confirmation, keyword, merge, conflict or decay write, since their ids do not exist in the holographic store. They are also left out of the household and rules context.
+- **Judge**: never sent to the external judge, whatever `judge.send_*` lists (reason `extra_source`).
+- **Duplicates**: near-duplicates collapse only inside one source; a fact of one source never hides a fact of another.
+- **Errors**: an invalid entry (label missing, repeated or not a plain name; unknown `fact_source`; no path; bad `fact_table` or `fact_columns`) gets a warning and is ignored, as `exclude_patterns` is. A source that is missing or unreadable gets a warning and is skipped; the night goes on.
+- **What you see**: the dry-run prints `extra sources: <label> N facts` for each source; the JSON report carries `extra_sources` (`[{label, facts}]`), absent when no entry is configured; `install.py --check` prints one line per entry (present, absent, unreadable or ignored).
+- **Counts**: `stats.facts` leaves them out. It still counts the main source and the promoted chat stores; the count per source is in `extra_sources`.
+- Without the key, nothing changes.
+
 ### One database per chat
 
 holographic with `scope: chat`, `thread` or `user` keeps one database per chat (topic, user) — a bot that serves
@@ -544,6 +565,7 @@ past it and say so. Precedence: CLI flag > `DREAM_*` env > config > default.
 | `agent_names`, `extra_stopwords` | noise words for the tokenizer |
 | `alias_rules` | declarative "same fact, other words" rules — `{"fact": [["a","b"],["c"]], "memory": [["x"]]}` |
 | `fact_source`, `fact_store_path`, `fact_table`, `fact_columns` | where candidate facts come from (above). Env: `DREAM_FACT_SOURCE`, `DREAM_FACT_STORE` |
+| `extra_fact_sources` | more fact stores read beside the main one, read-only, their facts labelled `<label>#<id>` — see [Extra fact sources](#extra-fact-sources). Absent: nothing changes |
 | `durable_memory_paths` | files that already are memory (dedupe targets) |
 | `memory_char_limits` | char limits of MEMORY.md / USER.md. **Leave it out** and the limits are read from Hermes' own `memory.memory_char_limit` / `user_char_limit`; the example's numbers are the core defaults and will misreport an install that raised them |
 | `pending.dir`, `pending.alert_min`, `pending.alert_days` | the approval queue (`pending/memory`): when ≥`alert_min` writes have waited longer than `alert_days`, one alert is raised |

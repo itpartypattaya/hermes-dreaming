@@ -112,7 +112,7 @@ DREAM_PROMPT = (
     "numbers/dates, or fact_negations vs memory_negations — one of them says 'not'): patch the "
     "entry if the newer statement is trustworthy, otherwise ask; a conflict with replace_unsafe hides an entry that holds a secret or an instruction: ask, never edit it. An item with previously_rejected was "
     "rejected by a human before and said again since: never write it — ask once whether it is "
-    "true now. An item with store comes from one chat's own database: memory tool only, never "
+    "true now. An item with store or source comes from one chat's own database or an extra fact source: memory tool only, never "
     "fact_store or fact_feedback with its fact_id. Do not save "
     "temporary events, schedules, raw medical data, secrets or one-off noise. Do not delete "
     "trust_feedback: each item is a fact a human already rejected that the store still trusts, so "

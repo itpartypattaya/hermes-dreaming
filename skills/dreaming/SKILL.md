@@ -1,7 +1,7 @@
 ---
 name: dreaming
 description: "Memory dreaming: nightly consolidation, questions, rejects, and the human's answers to its questions."
-version: 3.8.12
+version: 3.9.0
 author: "Anton Vaskov (itpartypattaya), https://t.me/passone"
 license: MIT
 compatibility: Hermes Agent >= 0.21 (checked against 0.23.0)
@@ -39,6 +39,7 @@ in each of them (`references/scoring.md`, "Every language").
   `python3 "${HERMES_SKILL_DIR}/scripts/install.py"` (README: installation).
 - A fact source: the Hermes `holographic` memory provider (default), `sqlite` / `jsonl` export,
   or `none` (memory files only). Extraction works with `holographic` only (`fact_store` tool).
+  Extra sources (`extra_fact_sources` in `dreaming.json`) are read beside it: their facts carry `source`, never `store`, and reach only `memory`.
 - holographic ≥ 0.19.0 (`fact_store merge`) for the "merge?" questions about duplicate facts (step 7e) and for
   merging a retelling the extraction run just stored (step 9). With an older provider both are off
   (`stats.duplicate_pairs_skipped: merge_unavailable`) and everything else works as before.
@@ -93,7 +94,7 @@ in each of them (`references/scoring.md`, "Every language").
 | `quarantined` | one line: how many and why; never retell, restore or request the content |
 | `keywords_needed` | `fact_store` `update` with 3–8 keywords per item; not in the report |
 | `confirm_ask` | your own conclusion people seem to say again: ask the person whether it is true; `call_on_yes` only on their yes (step 7d) |
-| `store` on an item | the fact lives in one chat's own database (`chat_stores`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
+| `store` or `source` on an item | the fact lives in one chat's own database (`chat_stores`) or in an extra fact source (`extra_fact_sources`): only `memory` applies — never pass its `fact_id` to `fact_store` / `fact_feedback`; "outdated / wrong / forget it" must be said in that chat |
 | `chat_stores` | counts per chat database — at most one line in the report, never names or texts of other chats |
 | `alerts` (`memory_loss`, `probe_missing`) | one line, ask whether it was intended; restore nothing. `memory_loss` counts and names (`entries`) only entries whose text is nowhere in memory: the entries it says were rewritten or merged are your own tidying — not a loss, no question about them |
 | `alerts` (`messages_unavailable`) | the chats could not be read tonight (busy or locked), so nothing was corroborated and no relevance question asked: one line, nothing to do — the next pass tries again |

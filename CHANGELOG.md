@@ -3,6 +3,32 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.9.0 — 2026-11-22
+
+### Added
+- **Extra fact sources.** `extra_fact_sources` lists fact stores read in addition to the main one (`fact_source`,
+  holographic by default). Each entry has a `label`, a `fact_source` of `sqlite` or `jsonl`, a `fact_store_path`, and
+  optionally `fact_table` and `fact_columns`. Their facts get the id `<label>#<id>` and a `source` field holding the
+  label. Every store is opened read-only. Without the key, nothing changes.
+- **Extra-source facts are corroborated like the others, and only the memory tool promotes them.** The ordinary
+  trusted messages corroborate them. No write reaches the holographic store for them: no `fact_store`, no
+  `fact_feedback` (confirmation or trust feedback), no keywords, no duplicate merge, no conflict and no decay. They
+  never go to the external judge (reason `extra_source`, fail-closed).
+- **A bad entry or an unreadable source is a warning, not a stop.** An entry with no label, a repeated label, a label
+  outside `A-Z a-z 0-9 _ . -`, an unknown `fact_source`, or no path is warned about and left out, as
+  `exclude_patterns` does. A source missing or unreadable at night is skipped, and the night goes on.
+- **Visible in the dry run, the report and the installer check.** `--dry-run` prints `extra sources: <label> N facts`.
+  The JSON report gets an `extra_sources` block, with counts only, absent when no extra source is set. `stats.facts`
+  still counts the main source alone. `install.py --check` reports each entry: present, absent, unreadable, or ignored.
+- **`dream-reject.py` finds an extra-source fact** by its `<label>#<id>` and rejects it in its own source.
+  `dream-precheck.py` publishes the `source` field of such a fact.
+
+### Changed
+- **The night prompt says "store or source".** A fact that comes from a chat's own store or from an extra source is
+  written with the memory tool only. `install_cron.py` writes the new wording, `examples/cron-job.example.json`
+  follows it, and `install_cron.py --upgrade` updates an existing nightly cron. The 3.8.12 prompt is recognized as
+  stock and replaced. A prompt of your own is kept, with a warning to migrate it by hand.
+
 ## 3.8.12 — 2026-11-18
 
 ### Fixed

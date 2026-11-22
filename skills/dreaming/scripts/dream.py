@@ -639,8 +639,108 @@ def load_chat_facts(home=None):
 
 
 def load_all_facts(home=None):
-    """The shared store's facts and those of the promoted chat stores."""
-    return load_facts() + load_chat_facts(home)
+    """The shared store's facts, those of the promoted chat stores, and those of the extra fact sources."""
+    return load_facts() + load_chat_facts(home) + load_extra_facts()
+
+
+EXTRA_SOURCE_KINDS = ("sqlite", "jsonl")
+EXTRA_LABEL_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def extra_fact_sources_settings(quiet=False):
+    """The valid entries of `extra_fact_sources` (fork 3.9.0), in config order. An entry that breaks the contract
+    (label missing, not a plain name, or repeated — the first one is kept —, unknown `fact_source`, no path, a table
+    that is not a SQL name, `fact_columns` not an object) is warned about and left out, as `exclude_patterns` does.
+    A missing key, or one that is not a list, gives []. `quiet`: no warning (a count read after the pass has warned)."""
+    raw = SETTINGS.CONFIG.get("extra_fact_sources")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if not quiet:
+            print("[dream] warn: extra_fact_sources is not a list — ignored", file=sys.stderr)
+        return []
+    out, labels = [], set()
+    for n, entry in enumerate(raw, 1):
+        problem = _extra_entry_problem(entry, labels)
+        if problem:
+            if not quiet:
+                print(f"[dream] warn: extra_fact_sources entry {n} ignored: {problem}", file=sys.stderr)
+            continue
+        labels.add(entry["label"])
+        out.append(dict(entry))
+    return out
+
+
+def _extra_entry_problem(entry, labels):
+    """Why *entry* cannot be used, or None. *labels*: the labels of the entries kept so far."""
+    if not isinstance(entry, dict):
+        return "not an object"
+    label = entry.get("label")
+    if not isinstance(label, str) or not EXTRA_LABEL_RE.fullmatch(label):
+        return f"label {label!r} is missing or not made of A-Z a-z 0-9 _ . -"
+    if label in labels:
+        return f"label {label!r} is already used by an earlier entry"
+    if entry.get("fact_source") not in EXTRA_SOURCE_KINDS:
+        return f"fact_source {entry.get('fact_source')!r} is not one of {', '.join(EXTRA_SOURCE_KINDS)}"
+    path = entry.get("fact_store_path")
+    if not isinstance(path, str) or not path.strip():
+        return "fact_store_path is missing"
+    table = entry.get("fact_table")
+    if table is not None and not (isinstance(table, str) and _SQL_NAME_RE.match(table)):
+        return f"fact_table {table!r} is not a plain SQL name"
+    columns = entry.get("fact_columns")
+    if columns is not None and not isinstance(columns, dict):
+        return "fact_columns is not an object"
+    return None
+
+
+def load_extra_facts():
+    """Facts of the `extra_fact_sources` entries: ids "<label>#<id>", each with `source` = its label, never `store`.
+    Every store is opened read-only, with its own table and columns. A source that is missing or unreadable is
+    warned about and skipped — the rest of the night goes on."""
+    out = []
+    for entry in extra_fact_sources_settings():
+        label = entry["label"]
+        path = _resolve_store_path(entry["fact_store_path"])
+        if not os.path.exists(path):
+            print(f"[dream] warn: extra fact source {label} unreadable: {path} does not exist — source skipped",
+                  file=sys.stderr)
+            continue
+        cols = dict(DEFAULT_FACT_COLUMNS, **(entry.get("fact_columns") or {}))
+        try:
+            rows = _read_generic_facts(path, entry["fact_source"], cols, entry.get("fact_table"))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            print(f"[dream] warn: extra fact source {label} unreadable: {exc} — source skipped", file=sys.stderr)
+            continue
+        for f in rows:
+            f["fact_id"] = f"{label}#{f['fact_id']}"
+            f["source"] = label
+            out.append(f)
+    return out
+
+
+def _extra_fact(f):
+    """A fact of an extra fact source: it carries `source` (its label), never `store`."""
+    return bool(f.get("source"))
+
+
+def _main_store_fact(f):
+    """A fact of the shared store: neither a chat store's (`store`) nor an extra source's (`source`). The write paths
+    of the holographic store (feedback, keywords, merges, confirmations) and the household / rules context use it."""
+    return not f.get("store") and not _extra_fact(f)
+
+
+def extra_sources_report(facts):
+    """[{label, facts}] of the configured extra sources, the count of each among *facts* (0 when it is missing),
+    or None when no extra source is configured — then the report carries no `extra_sources` key."""
+    entries = extra_fact_sources_settings(quiet=True)
+    if not entries:
+        return None
+    counts = {e["label"]: 0 for e in entries}
+    for f in facts:
+        if _extra_fact(f):
+            counts[f["source"]] = counts.get(f["source"], 0) + 1
+    return [{"label": label, "facts": n} for label, n in counts.items()]
 
 
 def chat_stores_overview(window_days, home=None):
@@ -744,6 +844,12 @@ def fact_store_path(home=None):
         if fact_source() != "holographic" or ".".join(_STORE) in hermes_config_unread(home):
             return None
         raw = _hermes_plugin_db_path(home) or "memory_store.db"
+    return _resolve_store_path(raw, home)
+
+
+def _resolve_store_path(raw, home=None):
+    """A store path as the config writes it: `$HERMES_HOME`, `~`, or relative to the home."""
+    home = home or HOME
     raw = str(raw).replace("${HERMES_HOME}", home).replace("$HERMES_HOME", home)
     raw = os.path.expanduser(raw)
     return raw if os.path.isabs(raw) else os.path.join(home, raw)
@@ -1395,7 +1501,13 @@ def load_facts(db=None):
     if src == "holographic":
         return _load_holographic(path)
     cols = dict(DEFAULT_FACT_COLUMNS, **(SETTINGS.CONFIG.get("fact_columns") or {}))
-    raw = _load_generic_sqlite(path, cols) if src == "sqlite" else _load_jsonl(path, cols)
+    return _read_generic_facts(path, src, cols, SETTINGS.CONFIG.get("fact_table"))
+
+
+def _read_generic_facts(path, src, cols, table):
+    """The facts of a generic store at *path* (`sqlite`: *table*; `jsonl`), keys mapped by *cols*. Shared by the
+    configured source (`load_facts`) and each extra one (`load_extra_facts`), which bring their own table and columns."""
+    raw = _load_generic_sqlite(path, cols, table) if src == "sqlite" else _load_jsonl(path, cols)
     unread = [(cols[k], r.get(cols[k])) for r in raw for k in ("created_at", "updated_at")
               if r.get(cols[k]) not in (None, "") and _ts_text(r.get(cols[k])) is None]
     if unread:
@@ -1466,8 +1578,8 @@ def split_keywords(tags):
 _SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _load_generic_sqlite(db, cols):
-    table = str(SETTINGS.CONFIG.get("fact_table") or "facts")
+def _load_generic_sqlite(db, cols, table=None):
+    table = str(table or "facts")
     if not _SQL_NAME_RE.match(table):
         raise ValueError(f"fact_table {table!r} is not a plain SQL name")
     c = _conn(db)
@@ -3173,11 +3285,12 @@ def _store_duplicates(a, b):
 def collapse_store_duplicates(items):
     """Keep the first fact of every near-duplicate group (callers sort
     best-first). Returns (kept, hidden); kept items are copies carrying
-    `duplicates` (fact ids) — the input dicts are shared between sections."""
+    `duplicates` (fact ids) — the input dicts are shared between sections. Facts are compared within their own
+    extra source (or the shared store): a fact of one source never hides a fact of another (fork 3.9.0)."""
     kept, hidden = [], []
     for s in items:
         for k in kept:
-            if _store_duplicates(k["content"], s["content"]):
+            if k.get("source") == s.get("source") and _store_duplicates(k["content"], s["content"]):
                 k.setdefault("duplicates", []).append(s["fact_id"])
                 hidden.append(s)
                 break
@@ -3585,7 +3698,7 @@ def confirm_items(safe, messages, by_store, fact_source_name, db=None, rules=Non
         return []
     out = []
     for s in safe:
-        if s.get("store") or s.get("unsafe") or s["fact_id"] in rested \
+        if not _main_store_fact(s) or s.get("unsafe") or s["fact_id"] in rested \
                 or (s.get("meta") or {}).get("ref_days", 0) < CONFIRM_MIN_DAYS:
             continue
         tokens = fact_tokens(s["content"])
@@ -5331,7 +5444,7 @@ def _conflict_candidates(safe, promoted_ids, memory_text):
     """Facts that may update a memory entry (same subject, other numbers), each with its `conflicts`."""
     conflicts_pending = []
     for s in safe:
-        if s["fact_id"] in promoted_ids:
+        if s["fact_id"] in promoted_ids or _extra_fact(s):
             continue
         if is_ephemeral_fact(s["content"]) or exact_or_alias_in_memory(s["content"], memory_text):
             continue
@@ -5342,12 +5455,13 @@ def _conflict_candidates(safe, promoted_ids, memory_text):
 
 
 def _decay_candidates(safe, window_days):
-    """Facts nobody retrieved or mentioned for twice the window, not trusted above 0.5, not in memory."""
+    """Facts nobody retrieved or mentioned for twice the window, not trusted above 0.5, not in memory. An extra
+    source's fact is never one of them: its store is not the holographic one the decay would act on (fork 3.9.0)."""
     return [s for s in safe
             if (s["meta"]["rc"] == 0 and s["meta"]["mentions"] == 0
                 and s["meta"]["days_old"] > window_days * 2
                 and (s["trust_score"] if s["trust_score"] is not None else 0.5) <= 0.5
-                and not s["in_memory"])]
+                and not s["in_memory"] and not _extra_fact(s))]
 
 
 def _new_themes(messages, window_days, facts, memory_text):
@@ -5425,7 +5539,7 @@ def load_inputs(window_days, corr_days, mem_md, rejected_state_path=None, seen_s
     rested = recent_confirmations(fact_store_path(), now=now) if source == "holographic" else None
     return DecisionInputs(
         now=now, today=now.astimezone(SETTINGS.LOCAL_TZ).date(), window_days=window_days,
-        rules=rules_context(f.get("content") for f in facts if not f.get("store")),
+        rules=rules_context(f.get("content") for f in facts if _main_store_fact(f)),
         facts=tuple(facts), messages=tuple(all_messages),
         by_store=types.MappingProxyType({k: tuple(v) for k, v in messages_by_store(all_messages).items()}),
         memory_text=load_durable_memory_text(mem_md), staged_text=_staged_text(pending_writes),
@@ -5555,7 +5669,7 @@ def _decide(inputs, vetoes=frozenset()):
     # retrieval. Shown at most once per cooldown, and never on a source without
     # the tool.
     # Chat-store facts get neither call: a cron session cannot reach a chat's database.
-    feedback_pending = trust_feedback_items([s for s in suppressed if not s.get("store")], rejected, source,
+    feedback_pending = trust_feedback_items([s for s in suppressed if _main_store_fact(s)], rejected, source,
                                             floor=inputs.feedback_floor)
     feedback_fresh = unseen(feedback_pending, seen_feedback, now, key=_feedback_key)
     # Only the shown slice is marked, so what the cap cuts off is not suppressed
@@ -5568,7 +5682,7 @@ def _decide(inputs, vetoes=frozenset()):
     # expired facts are not offered — `safe` already left them out. A fact the
     # agent found nothing for rests like any shown item instead of coming back
     # every night; one that got keywords simply leaves the list.
-    keywords_pending = keywords_needed_items([s for s in safe if not s.get("store")], source)
+    keywords_pending = keywords_needed_items([s for s in safe if _main_store_fact(s)], source)
     keywords_fresh = unseen(keywords_pending, seen_keywords, now, key=_feedback_key)
     keywords_needed = keywords_fresh[:SETTINGS.KEYWORDS_CAP]
 
@@ -5817,7 +5931,7 @@ def duplicate_pairs_night(inputs, d, excluded_ids, seen, proposals_file, now, wr
     eligible = []
     for f in inputs.facts:
         fid, s = f["fact_id"], scored.get(f["fact_id"])
-        if f.get("store") or s is None or s["unsafe"] or s["rejected"] or fid in excluded_ids:
+        if not _main_store_fact(f) or s is None or s["unsafe"] or s["rejected"] or fid in excluded_ids:
             continue
         if fid in merges or len(f.get("content") or "") > SETTINGS.DUP_MAX_CHARS:
             continue
@@ -5996,6 +6110,8 @@ def judge_permission(fact, m, js=None):
     without a chat only with `send_no_chat_sessions`; a chat type without a chat id never. A chat-store fact's text
     leaves only from a listed store; memory entries are never candidates."""
     js = js or SETTINGS.JUDGE
+    if _extra_fact(fact):  # fail-closed: an extra source's text never leaves the machine (fork 3.9.0)
+        return "extra_source"
     store = fact.get("store")
     if store and store not in js.send_fact_stores:
         return "fact_store"
@@ -6454,7 +6570,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         alerts.append(dups.alert)
     store_note = fact_store_note()
     chat_stores = chat_stores_overview(window_days)
-    diary = build_diary(window_days, len(facts), len(messages), promotions, decays, themes, md_dec,
+    diary = build_diary(window_days, len([f for f in facts if not _extra_fact(f)]), len(messages),
+                        promotions, decays, themes, md_dec,
                         ephemeral_events, quarantined, len(suppressed), conflicts=published_conflicts,
                         alerts=alerts, note=store_note, chat_stores=chat_stores, judge=judge_stats)
 
@@ -6479,7 +6596,8 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
                   # The store's own recall floor (provider `min_trust_threshold` unless
                   # overridden here): what `trust_feedback` has to push a fact below.
                   "feedback_trust_floor": feedback_floor()},
-        "stats": {"facts": len(facts), "new_facts_reviewed": len(new_facts),
+        "stats": {"facts": len([f for f in facts if not _extra_fact(f)]),  # the shared store and chat stores
+                  "new_facts_reviewed": len(new_facts),
                   # holographic >= 0.8.0: the store takes change / end / correct / forget (SKILL.md, step 7).
                   "fact_history": fact_history_supported(),
                   "new_facts_window": len(new_facts_window),
@@ -6546,6 +6664,9 @@ def run(window_days, corr_days, md_decay_days, mem_md, asked_state_path=None,
         result["fact_store_note"] = store_note  # why the fact store cannot fill up; not work
     if chat_stores:
         result["chat_stores"] = chat_stores  # per-chat databases: counts, which are promoted, which are missing
+    extra_sources = extra_sources_report(facts)
+    if extra_sources is not None:
+        result["extra_sources"] = extra_sources  # extra fact sources (fork 3.9.0): counts only; absent when none
     if SETTINGS.CONFIG.get("task_outcomes") is True:
         # Counts/enums only: no new copy of corrections, source text, or attempt/fact identifiers in state/diary.
         result["task_outcomes"] = memory_experience()
@@ -6583,6 +6704,9 @@ def _pub_fields(s):
     out = _pub_base(s)
     if s.get("store"):
         out["store"] = s["store"]  # a chat's own database: memory tool only, never fact_store / fact_feedback
+    if _extra_fact(s):
+        # An extra source's fact: its label, and the memory tool only, as for a chat's database (fork 3.9.0).
+        out["source"] = s["source"]
     if s.get("previously_rejected"):
         out["previously_rejected"] = s["previously_rejected"]  # ask the human again; never write it straight away
     return out
@@ -7352,6 +7476,7 @@ def _index_current_facts(db, home, index_path):
             print(f"[dream] warn: diary index not updated for the shared store: {exc}", file=sys.stderr)
     if not db:
         facts += load_chat_facts(home)  # indexed even without a shared store (scope chat may have none)
+        facts += load_extra_facts()  # the sweep must find an extra source's fact too (fork 3.9.0)
     if facts:
         try:
             update_diary_index(index_path, facts)
@@ -7751,7 +7876,7 @@ def explain(fact_id, mem_md, corr_days):
         print(f"fact {fact_id} not found", file=sys.stderr)
         return 1
     f = facts[0]
-    set_household(g.get("content") for g in load_all_facts() if not g.get("store"))
+    set_household(g.get("content") for g in load_all_facts() if _main_store_fact(g))
     all_messages = load_messages(os.path.join(HOME, "state.db"), corr_days)
     if all_messages is None:
         print("[dream] messages unavailable (state.db busy or locked) — mentions are not counted below",
@@ -7795,6 +7920,8 @@ def dry_run_summary(result, source):
              "directory and discarded; no diary, no memory change.",
              f"fact source: {source} · facts: {st['facts']} · human messages in window: "
              f"{st['messages_window']}"]
+    for src in result.get("extra_sources") or []:
+        lines.append(f"extra sources: {src['label']} {src['facts']} facts")
     usage = ", ".join(f"{name} {rec['percent']}% ({rec['chars']}/{rec['limit']})"
                       if rec.get("percent") is not None else f"{name} {rec['chars']} chars"
                       for name, rec in (result.get("memory_usage") or {}).items())
