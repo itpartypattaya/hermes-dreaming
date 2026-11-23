@@ -1503,6 +1503,7 @@ def _load_jsonl(path, cols):
 
 
 _EPOCH_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+_BASIC_DATE_RE = re.compile(r"[0-9]{8}")
 _DAY_FIRST_FORMATS = ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y")
 
 
@@ -1511,10 +1512,17 @@ def _ts_text(v):
     microseconds or nanoseconds (a number or a string of one), an ISO string with any offset, or a day-first date
     with dots ("17.11.2026 09:30", UTC); None for a time that cannot be read. A string of an epoch or
     "17.11.2026" used to be passed on as it was, which _parse_ts does not read: the fact lost its age without a
-    word; and an epoch in microseconds ended the pass (review of 2026-11-17)."""
+    word; and an epoch in microseconds ended the pass (review of 2026-11-17). A string of eight digits that is a
+    day is the basic ISO date ("20261117"), as `fromisoformat` read it before 3.8.9: as seconds it was a day of
+    1970 (Codex review of PR #36)."""
     if v is None or v == "" or isinstance(v, bool):
         return None
     s = str(v).strip()
+    if isinstance(v, str) and _BASIC_DATE_RE.fullmatch(s):
+        try:
+            return datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass  # "20261317" is no day: seconds, as any other run of digits
     if isinstance(v, (int, float)) or _EPOCH_RE.fullmatch(s):
         try:
             sec = float(v)
@@ -7106,15 +7114,18 @@ FORGOTTEN_COPY = "[removed: a forgotten fact]"
 _COPY_PIECE_RE = re.compile(r"\n|(?<=[.!?;])\s+")
 
 
-def _carries_forgotten(text, hashes):
-    """True when *text* holds a forgotten fact verbatim — as a whole, as a line or as a sentence. Only the
-    preview hashes are left of its text, so a reworded copy is not found; a memory entry written from the fact
-    and an `existing_facts` line of the extraction pass are verbatim."""
+def _carries_forgotten(text, hashes, whole=True):
+    """True when *text* holds a forgotten fact verbatim — as a whole, as a line or as a sentence (with *whole*
+    false: as a line or a sentence of more text). Only the preview hashes are left of its text, so a reworded copy
+    is not found; a memory entry written from the fact and an `existing_facts` line of the extraction pass are
+    verbatim."""
     if not hashes or not isinstance(text, str) or not text.strip():
         return False
+    own = text.strip().lstrip("§").strip()
     for piece in {text, *_COPY_PIECE_RE.split(text)}:
         piece = piece.strip().lstrip("§").strip()
-        if piece and hashes & {_preview_hash(piece[:85]), _preview_hash(_diary_text(piece, 85))}:
+        if piece and (whole or piece != own) and hashes & {_preview_hash(piece[:85]),
+                                                           _preview_hash(_diary_text(piece, 85))}:
             return True
     return False
 
@@ -7122,14 +7133,19 @@ def _carries_forgotten(text, hashes):
 def _is_forgotten_item(item, hashes, fingerprints):
     """A payload item (it has `content`) that IS a forgotten fact. Its full fingerprint decides: two facts may
     share their first 85 characters — all the preview hashes keep — and differ in the end ("…to Telegram" /
-    "…by email"; Codex review of 2.7.5). A text no longer than a preview is matched by its hashes, and so is
-    every item while no fingerprint was recorded (tombstones swept before 2.4)."""
+    "…by email"; Codex review of 2.7.5). A text no longer than a preview is matched by its hashes when one of its
+    lines or sentences is a forgotten fact, and so is every item while no fingerprint was recorded (tombstones swept
+    before 2.4). The item's whole text matching a hash does not override its own fingerprint: it is then how a longer
+    forgotten fact begins (its first 45, 60 or 85 characters or its first line), and the item is another fact still
+    alive (Codex review of PR #35: with the 60-character preview of 3.8.8 a live fact of 60 characters went)."""
     content = item.get("content")
     if not isinstance(content, str):
         return False
     if (item.get("fingerprint") or _fact_fingerprint(content)) in fingerprints:
         return True
-    return (len(content.strip()) <= 85 or not fingerprints) and _carries_forgotten(content, hashes)
+    if not fingerprints:
+        return _carries_forgotten(content, hashes)
+    return len(content.strip()) <= 85 and _carries_forgotten(content, hashes, whole=False)
 
 
 def _scrub_copies(node, hashes, fingerprints=frozenset(), _item=False):
