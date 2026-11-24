@@ -3,9 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.13 — 2026-11-24
 
 ### Fixed
+- **The screen no longer stalls on a crafted value or a long word** (holographic 0.31.2, Codex review of #39).
+  `holo_screen.py` is holographic 0.31.2's screen: a credential value that almost names a model ("tokens gpt" and a
+  run of letters ending in "/") made a pattern backtrack exponentially, 28 letters taking about 11 s, and a long word
+  with no Latin letter (CJK, Cyrillic, Greek, Thai) was rescanned from each of its letters, 12 000 characters taking
+  about 2 s; a nightly pass reads whole messages. Both now take milliseconds and decide every text as before.
 - **A basic ISO date of a generic fact source is that day again.** Since 3.8.9 a `sqlite` or `jsonl` source keeping
   `created_at` as "20261117" read it as an epoch in seconds: the fact was dated 23 August 1970 and looked decades old
   to recency and to "said again". Eight digits that make a day are that day; any other string of digits is still an
