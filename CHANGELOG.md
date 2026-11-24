@@ -3,6 +3,19 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Fixed
+- **A basic ISO date of a generic fact source is that day again.** Since 3.8.9 a `sqlite` or `jsonl` source keeping
+  `created_at` as "20261117" read it as an epoch in seconds: the fact was dated 23 August 1970 and looked decades old
+  to recency and to "said again". Eight digits that make a day are that day; any other string of digits is still an
+  epoch (Codex review of #36).
+- **The forget sweep keeps a live fact that is how a forgotten one begins.** A payload item whose whole text was the
+  first 45, 60 or 85 characters of a longer forgotten fact went out of `promotions` and the other lists with it,
+  though its own fingerprint said it was another fact; with the 60-character preview of 3.8.8 a live fact of exactly
+  60 characters started to go too. Such an item stays; one whose line or sentence is a forgotten fact still goes
+  (Codex review of #35).
+
 ## 3.8.12 — 2026-11-18
 
 ### Fixed
