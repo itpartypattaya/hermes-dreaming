@@ -235,9 +235,8 @@ is the one in `plugin.json`.
   docstring say so, and how to fix it.
 
 ### Internal
-- Test fixtures no longer describe the maintainer's real family: names, places, the bank, the bike, the work and
-  community projects are replaced by an invented household (Leo and Nina in Lisbon). Same shapes, numbers and dates,
-  so every test checks what it checked before. The contract test's timezone is now `Asia/Tokyo`. `dream_judge.py`
+- Test examples renamed: the fixtures describe an invented household (Leo and Nina in Lisbon). Same shapes, numbers
+  and dates, so every test checks what it checked before. The contract test's timezone is now `Asia/Tokyo`. `dream_judge.py`
   says "for the human" in a docstring. No behaviour change.
 
 ## 3.8.5 — 2026-11-03
@@ -1468,7 +1467,7 @@ Fixes from an audit of 2.4.0–2.6.0.
 
 ### Changed
 
-- Test fixtures no longer use the maintainer's family names.
+- Test examples renamed.
 
 ## 2.5.3 — 2026-10-13
 
