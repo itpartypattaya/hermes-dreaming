@@ -87,7 +87,7 @@ jobs:
           HOLOGRAPHIC_PROVIDER: ${{ github.workspace }}/_holographic020
         run: python -m unittest discover -s tests -p 'test_task_outcomes*.py' -v
       # The whole suite against the latest holographic release: the steps above pin the oldest provider each
-      # feature needs, this one the provider Mia runs. A release that changes screen.py fails
+      # feature needs, this one the provider users run. A release that changes screen.py fails
       # test_the_copy_matches_the_provider here: run tools/vendor_screen.py and bump both refs.
       - name: Check out the latest holographic release (v0.31.2)
         uses: actions/checkout@v4
