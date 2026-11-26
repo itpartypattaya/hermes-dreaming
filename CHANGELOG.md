@@ -3,7 +3,7 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
-## Unreleased
+## 3.8.16 — 2026-11-26
 
 ### Fixed
 - **A window of new messages with nothing storable no longer comes back every run.** When every new message was
