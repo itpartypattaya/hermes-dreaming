@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: itpartypattaya/hermes-plugin-holographic
-          ref: e4b7552a19f524d57db4ed54a38cbf9009f22f03
+          ref: 3fb5ff65c8eb6395255eb5fe446f3ca4fd6bbc2c
           path: _holographic
           sparse-checkout: screen.py
           sparse-checkout-cone-mode: false
@@ -89,11 +89,11 @@ jobs:
       # The whole suite against the latest holographic release: the steps above pin the oldest provider each
       # feature needs, this one the provider users run. A release that changes screen.py fails
       # test_the_copy_matches_the_provider here: run tools/vendor_screen.py and bump both refs.
-      - name: Check out the latest holographic release (v0.31.2)
+      - name: Check out the latest holographic release (v0.31.6)
         uses: actions/checkout@v4
         with:
           repository: itpartypattaya/hermes-plugin-holographic
-          ref: e4b7552a19f524d57db4ed54a38cbf9009f22f03
+          ref: 3fb5ff65c8eb6395255eb5fe446f3ca4fd6bbc2c
           path: _holographic_latest
       - name: Install PyYAML (as inside the Hermes venv)
         run: python -m pip install pyyaml
