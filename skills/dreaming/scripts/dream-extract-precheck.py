@@ -33,7 +33,10 @@ the cursor moves; no (the model or the scheduler failed) → the same chunk is
 handed over again. Before this a failed turn skipped its chunk for good, and
 nothing said so. After `extract.max_retries` unanswered hand-overs the cursor
 moves anyway with a note on stderr: a chunk that kills the turn every time must
-not stall extraction forever.
+not stall extraction forever. A run that hands nothing over (state.db locked,
+the answer unreadable, a chunk cut by the limits) leaves `pending` and
+`attempts` as it found them, and a hand-over whose record cannot be written is
+not made: without it the next run could not find the answer.
 
 Only for `fact_source: holographic` — the agent stores candidates with that
 provider's `fact_store` tool. With any other source the gate stays closed.
@@ -123,16 +126,21 @@ def resolve_pending(dream, state, max_retries):
     """Close the previous hand-over: return the state with the cursor committed
     (agent answered, or retries exhausted) or kept (no answer yet), `pending`
     removed. A state without `pending` (nothing handed over, or a state written
-    before acknowledgements existed) is returned as is."""
+    before acknowledgements existed) is returned as is. With state.db locked the
+    answer cannot be known: the state comes back unchanged, `pending` in it, and
+    `main` hands nothing over."""
+    loaded = state
     state = dict(state)
     pending = state.pop("pending", None)
     if not isinstance(pending, dict) or not pending.get("generated_at"):
         return state
-    acked = dream._agent_acked(str(HOME / "state.db"), pending["generated_at"])
+    acked = dream._agent_acked(str(HOME / "state.db"), pending["generated_at"], busy=None)
+    if acked is None:
+        return dict(loaded)
     attempts = 0 if acked else int(state.get("attempts") or 0) + 1
     if not acked and attempts < max(1, int(max_retries)):
         print(f"[dream-extract] the hand-over of {pending['generated_at']} has no agent answer — "
-              f"handing the same chunk over again (attempt {attempts + 1})", file=sys.stderr)
+              f"the same chunk is due again (attempt {attempts + 1})", file=sys.stderr)
         state["attempts"] = attempts
         state.setdefault("retry_since", pending["generated_at"])  # the first unanswered hand-over
         return state
@@ -307,6 +315,14 @@ def main():
             print(json.dumps({"dream_error": problem[:300]}, ensure_ascii=False))
             return 0
         state = resolve_pending(dream, loaded, ext["max_retries"])
+        if state.get("pending"):
+            # state.db locked: whether the last hand-over was answered is unknown. Read as "answered" the cursor
+            # passed a chunk nobody may have read; handed over again, an answered chunk counted twice (Codex
+            # review of 6d1e463). Nothing changes this run, and the next one asks again.
+            print(f"[dream-extract] state.db busy — cannot tell whether the hand-over of "
+                  f"{state['pending']['generated_at']} was answered; it stays pending", file=sys.stderr)
+            print(json.dumps({"wakeAgent": False}))
+            return 0
         payload, cursor, total, why = build_payload(dream, cfg, state, now.timestamp())
     except Exception as exc:  # noqa: BLE001
         print(f"[dream-extract] fail: {exc!r}", file=sys.stderr)
@@ -319,6 +335,11 @@ def main():
         state["since_ts"], state["since_id"] = cursor
         state.pop("attempts", None)
         state.pop("retry_since", None)
+    elif payload is None and state.get("attempts") and isinstance(loaded.get("pending"), dict):
+        # The last hand-over is unanswered and none is made now: its record stays for the next run to look up,
+        # and no attempt is counted. Dropped, an answer that came later was never seen and the chunk went over
+        # again (Codex review of 6d1e463).
+        state = dict(loaded)
     if payload is not None:
         # The stamp is how the next run finds this hand-over's cron session.
         payload = {"note": payload.pop("note"), "generated_at": stamp, **payload}
@@ -327,13 +348,22 @@ def main():
         try:
             save_state(dream, STATE, dict(state, at=stamp))
         except OSError as e:
+            if payload is not None:
+                # Without its record the next run cannot find this hand-over's answer and makes it again: every add
+                # would count twice (Codex review of 6d1e463). Not made, and the person is told.
+                problem = f"extraction state not written ({e}) — nothing handed over"
+                print(f"[dream-extract] {problem}", file=sys.stderr)
+                print(json.dumps({"dream_error": problem[:300]}, ensure_ascii=False))
+                return 0
             print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)
+            why = "unsaved" if why == "nothing_storable" else why
     if payload is None:
         if why == "busy":  # nothing was read: "0 new message(s)" would be a count nobody made (reviews of 6d1e463)
             line = "state.db busy — no messages read, the cursor stays"
         else:
             line = f"{total} new message(s)" + {
                 "nothing_storable": ", none storable (unsafe or empty) — cursor moved past them",
+                "unsaved": ", none storable (unsafe or empty) — the cursor could not be written, they come back",
                 "cut": f", the first storable one does not fit max_messages={ext['max_messages']} / "
                        f"max_chars={ext['max_chars']} — nothing is extracted until they are raised (max_chars "
                        "above message_chars)"}.get(why, " — below the gate")

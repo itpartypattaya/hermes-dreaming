@@ -17,6 +17,16 @@ is the one in `plugin.json`.
   size limits, so a long one is skipped rather than stopping the chunk.
 - **`remaining_after_this_chunk` counts only messages after the cursor**, not the unsafe and empty ones it passed.
 - **A locked `state.db` is logged as such**, not as "0 new message(s) — below the gate".
+- **A locked `state.db` no longer counts as the agent's answer to the last hand-over.** The extraction gate read it as
+  "answered" and moved its cursor past a chunk nobody may have read. Now the hand-over stays pending and the next run
+  asks again. The nightly pass keeps its old fail-soft reading, and a `state.db` without the messages table still
+  counts as answered.
+- **A run that hands nothing over keeps the record of the last hand-over.** A run with no answer on record and no
+  chunk (a busy `state.db`, a chunk cut by the limits) dropped `pending` and counted an attempt it never made. A later
+  answer was then never seen and the chunk went over again.
+- **A hand-over whose record cannot be written is not made.** When the state file could not be written the chunk was
+  still printed, the next run could not find its answer, and every add counted twice. Now the gate reports a
+  `dream_error` and hands nothing over.
 
 ## 3.8.15 — 2026-11-26
 
