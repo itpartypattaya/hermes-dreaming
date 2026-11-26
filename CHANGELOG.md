@@ -3,6 +3,14 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## 3.8.15 — 2026-11-26
+
+### Fixed
+- **`holo_screen.py` is holographic 0.31.7's screen.** 3.8.14's copy (0.31.6) let through an instruction to the
+  assistant whose lookalike letter stood before a combining mark (Cyrillic "с" + U+0327 becomes "ç" only on a second
+  normalization), so a nightly pass could carry it into durable memory or show it in its report. 0.31.7 rewrites until
+  nothing changes and decides such text as 0.31.5 did; long text in other alphabets screens as fast as with 3.8.14.
+
 ## 3.8.14 — 2026-11-26
 
 ### Changed

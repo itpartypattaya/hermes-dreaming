@@ -1,5 +1,5 @@
 # The holographic memory provider's screen for secrets and instructions to the assistant — a verbatim copy.
-# Source: itpartypattaya/hermes-plugin-holographic 0.31.6 (`3fb5ff65c8eb6395255eb5fe446f3ca4fd6bbc2c`), `screen.py`; MIT, (c) its authors.
+# Source: itpartypattaya/hermes-plugin-holographic 0.31.7 (`715cee5b588b2d05d7cc54a10c694bdcb66107f0`), `screen.py`; MIT, (c) its authors.
 # Copied whole by tools/vendor_screen.py. Do not edit here — run the tool again; tests/test_holographic_017.py
 # compares this file with the provider's source.
 # flake8: noqa
@@ -992,10 +992,13 @@ _RE_LATIN_END = re.compile(r"[A-Za-z]\W*\Z")
 # Latin letter the Cyrillic and Greek letters drawn as Latin ones. A word of Cyrillic alone stays as it is.
 _CONFUSABLE = str.maketrans("аеорсухіјѕԁԛԝАВЕКМНОРСТХІЈЅΑΒΕΗΙΚΜΝΟΡΤΧΥΖοα",
                             "aeopcyxijsdqwABEKMHOPCTXIJSABEHIKMNOPTXYZoa")
-# A word is a run of letters; only one with a Latin letter in it is rewritten. The Latin letter is looked for in the
-# word found, not by the pattern: `[^\W\d_]*[A-Za-z][^\W\d_]*` tried at each letter of a word without one ran to its
-# end, so 12 000 CJK characters took 1.8 s (Codex review of hermes-dreaming#39, 0.31.2).
-_RE_WORD_LETTERS = re.compile(r"[^\W\d_]+")
+# A word is a run of letters and combining diacritics; only one with a Latin letter in it is rewritten. The Latin letter
+# is looked for in the word found, not by the pattern: `[^\W\d_]*[A-Za-z][^\W\d_]*` tried at each letter of a word
+# without one ran to its end, so 12 000 CJK characters took 1.8 s (Codex review of hermes-dreaming#39, 0.31.2). The
+# diacritics (U+0300-U+036F) belong to the word because a Latin letter put in place of a lookalike composes with the
+# one after it: Cyrillic "с" + U+0327 becomes "ç", and the lookalikes after the mark are then in that Latin word too.
+# Every mark that composes with a Latin letter is in that block (unicodedata, checked by the tests).
+_RE_WORD_LETTERS = re.compile(r"(?:[^\W\d_]|[\u0300-\u036f])+")
 _RE_A_LATIN_LETTER = re.compile(r"[A-Za-z]")
 
 
@@ -1005,11 +1008,17 @@ def _latin_lookalikes(match: re.Match) -> str:
 
 
 def _plain_letters(text: str) -> str:
-    """*text* with letters drawn as Latin ones written as those (_CONFUSABLE); *text* itself when it has none."""
+    """*text* with letters drawn as Latin ones written as those (_CONFUSABLE); *text* itself when it has none.
+
+    The result is its own rewrite, which the screens rely on: they rewrite a text once (0.31.6). 0.31.6 took a single
+    pass as final and missed a lookalike before a combining mark; 0.31.7 repeated the pass until nothing changed, which
+    a chain of such pairs made quadratic (Codex review of #142). With the marks inside the word one pass is enough, and
+    a last normalization composes what the rewrite put next to its marks."""
     if text.isascii():
         return text
     text = unicodedata.normalize("NFKC", text)
-    return _RE_WORD_LETTERS.sub(_latin_lookalikes, text)
+    plain = _RE_WORD_LETTERS.sub(_latin_lookalikes, text)
+    return plain if plain == text else unicodedata.normalize("NFKC", plain)
 
 
 # Quoted spans are reported text ("the test case contains 'ignore previous instructions'"), not instructions.
@@ -1197,5 +1206,5 @@ def _sendable(content: str) -> bool:
     return _recall_problem(content) is None and not _secret_in(content)
 
 
-SOURCE_VERSION = "0.31.6"
-SOURCE_COMMIT = "3fb5ff65c8eb6395255eb5fe446f3ca4fd6bbc2c"
+SOURCE_VERSION = "0.31.7"
+SOURCE_COMMIT = "715cee5b588b2d05d7cc54a10c694bdcb66107f0"
