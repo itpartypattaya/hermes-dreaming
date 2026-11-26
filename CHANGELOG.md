@@ -3,6 +3,21 @@
 All notable changes to hermes-dreaming. Dates are the release day; the version
 is the one in `plugin.json`.
 
+## Unreleased
+
+### Fixed
+- **A window of new messages with nothing storable no longer comes back every run.** When every new message was
+  unsafe or empty once cleaned, the extraction gate kept its cursor before them, rescanned them each run and logged
+  them as new backlog until a storable message arrived. The cursor now moves past them at once and the log says
+  "none storable". Empty messages also move the cursor inside a chunk, so they no longer trail behind it (found by
+  artyficialmind in #33).
+- **A first message longer than `max_chars` is named, not passed.** With `max_chars` set below `message_chars` such a
+  message left the chunk empty, and the log said "below the gate". The cursor still stays before it, so nothing is
+  skipped, and the log now names `max_chars` as what stops the extraction. Unsafe messages are screened before the
+  size limits, so a long one is skipped rather than stopping the chunk.
+- **`remaining_after_this_chunk` counts only messages after the cursor**, not the unsafe and empty ones it passed.
+- **A locked `state.db` is logged as such**, not as "0 new message(s) — below the gate".
+
 ## 3.8.15 — 2026-11-26
 
 ### Fixed

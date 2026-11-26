@@ -154,6 +154,9 @@ def _clean(dream, text, n):
 
 
 def build_payload(dream, cfg, state, now_ts):
+    """(payload, cursor, total, why): `why` says why there is no payload — "busy" (state.db locked), "below_gate",
+    "nothing_storable" (every new message unsafe or empty once cleaned: `main` commits the cursor past them) or
+    "cut" (the first storable message did not fit `max_chars`: the cursor stays). None with a payload."""
     ext = dict(DEFAULTS, **(cfg.get("extract") or {}))
     since = state.get("since_ts")
     if not isinstance(since, (int, float)):
@@ -167,29 +170,35 @@ def build_payload(dream, cfg, state, now_ts):
     days = max(1, int((now_ts - since) / 86400) + 1)
     loaded = dream.load_messages(str(HOME / "state.db"), days)
     if loaded is None:  # state.db busy or locked (dream.py warned): nothing tonight, the cursor stays
-        return None, cursor, 0
+        return None, cursor, 0, "busy"
     messages = [m for m in loaded if (m["ts"], m.get("id") or 0) > cursor]
     messages.sort(key=lambda m: (m["ts"], m.get("id") or 0))
     if len(messages) < int(ext["min_messages"]):
-        return None, cursor, len(messages)
+        return None, cursor, len(messages), "below_gate"
 
-    chunk, chars, skipped_unsafe = [], 0, 0
+    chunk, chars, skipped_unsafe, cut = [], 0, 0, False
     for m in messages:
         text = _clean(dream, m["content"], int(ext["message_chars"]))
         if not text:
+            # Passed like an unsafe one: nothing to store. Left behind the cursor, trailing empty messages came
+            # back as new every run (PR #33).
+            cursor = (m["ts"], m.get("id") or 0)
             continue
-        if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
-            break
-        stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
         if dream.classify_unsafe(text):
             # The nightly pass screens facts and evidence; extraction handed raw
             # messages to the model, so a password or an injection reached the
             # prompt through the one door that was not watched (external review,
             # 2026-10-07). Such a message is skipped, not truncated: the point of
             # the chunk is what people said, and this one is not storable anyway.
+            # Screened before the size limits: an unsafe message longer than `max_chars` is skipped, not read as
+            # a chunk cut by the limit (reviews of 6d1e463).
             skipped_unsafe += 1
             cursor = (m["ts"], m.get("id") or 0)
             continue
+        if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
+            cut = True
+            break
+        stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
         item = {"t": stamp.strftime("%Y-%m-%d %H:%M"), "text": text}
         # Who said it: in a private chat "I don't eat gluten" names nobody, and two people's
         # first-person statements in one list could not be told apart (Codex review of 2.7.2).
@@ -201,7 +210,9 @@ def build_payload(dream, cfg, state, now_ts):
         chars += len(text)
         cursor = (m["ts"], m.get("id") or 0)
     if not chunk:
-        return None, cursor, len(messages)
+        # Told apart here, where it is known: an empty chunk that was cut is not one with nothing to store, and
+        # moving the cursor then would pass a message never handed over (review of PR #33).
+        return None, cursor, len(messages), ("cut" if cut else "nothing_storable")
 
     facts = dream.load_facts()
     # With their ids: the forget sweep finds a cron log by the ids it carries, and bare strings
@@ -221,7 +232,8 @@ def build_payload(dream, cfg, state, now_ts):
                 "will corroborate and promote them. Do NOT write MEMORY.md/USER.md here.",
         "window": {"from": chunk[0]["t"], "to": chunk[-1]["t"], "messages": len(chunk),
                    "skipped_unsafe": skipped_unsafe,
-                   "remaining_after_this_chunk": len(messages) - len(chunk),
+                   # After the cursor: unsafe and empty ones it passed are not left for later (reviews of 6d1e463).
+                   "remaining_after_this_chunk": sum((m["ts"], m.get("id") or 0) > cursor for m in messages),
                    # The same chunk again: the last hand-over got no answer, but its facts may be stored — they
                    # are in existing_facts, and adding one again would count as a person saying it again (2.9.0).
                    **({"attempt": int(state["attempts"]) + 1} if state.get("attempts") else {})},
@@ -234,7 +246,7 @@ def build_payload(dream, cfg, state, now_ts):
         payload["keywords"] = ("give each fact 3-8 keywords (fact_store add keywords=[...]): words a "
                                "person might ask with that the fact does not contain — synonyms, "
                                "other roots, translations into the household's languages")
-    return payload, cursor, len(messages)
+    return payload, cursor, len(messages), None
 
 
 def main():
@@ -295,12 +307,18 @@ def main():
             print(json.dumps({"dream_error": problem[:300]}, ensure_ascii=False))
             return 0
         state = resolve_pending(dream, loaded, ext["max_retries"])
-        payload, cursor, total = build_payload(dream, cfg, state, now.timestamp())
+        payload, cursor, total, why = build_payload(dream, cfg, state, now.timestamp())
     except Exception as exc:  # noqa: BLE001
         print(f"[dream-extract] fail: {exc!r}", file=sys.stderr)
         print(json.dumps({"dream_error": f"{type(exc).__name__}: {exc}"[:300]}, ensure_ascii=False))
         return 0
     stamp = now.isoformat(timespec="seconds")
+    if why == "nothing_storable":
+        # Nothing to hand over and nothing the agent could store, so the cursor passes them now. Left uncommitted,
+        # every run rescanned them and counted them as new backlog until a storable message came (PR #33).
+        state["since_ts"], state["since_id"] = cursor
+        state.pop("attempts", None)
+        state.pop("retry_since", None)
     if payload is not None:
         # The stamp is how the next run finds this hand-over's cron session.
         payload = {"note": payload.pop("note"), "generated_at": stamp, **payload}
@@ -311,7 +329,15 @@ def main():
         except OSError as e:
             print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)
     if payload is None:
-        print(f"[dream-extract] {total} new message(s) — below the gate", file=sys.stderr)
+        if why == "busy":  # nothing was read: "0 new message(s)" would be a count nobody made (reviews of 6d1e463)
+            line = "state.db busy — no messages read, the cursor stays"
+        else:
+            line = f"{total} new message(s)" + {
+                "nothing_storable": ", none storable (unsafe or empty) — cursor moved past them",
+                "cut": f", the first storable one does not fit max_messages={ext['max_messages']} / "
+                       f"max_chars={ext['max_chars']} — nothing is extracted until they are raised (max_chars "
+                       "above message_chars)"}.get(why, " — below the gate")
+        print(f"[dream-extract] {line}", file=sys.stderr)
         print(json.dumps({"wakeAgent": False}))
         return 0
     print(f"[dream-extract] {payload['window']['messages']} message(s) handed over, "

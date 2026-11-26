@@ -88,30 +88,30 @@ class ExtractPrecheckTests(DreamFixture):
         saved = dream.SETTINGS.KEYWORDS_ENABLED
         try:
             dream.SETTINGS.KEYWORDS_ENABLED = False
-            payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+            payload, _, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
             self.assertNotIn("keywords", payload)
             dream.SETTINGS.KEYWORDS_ENABLED = True
-            payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+            payload, _, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
             self.assertIn("keywords=", payload["keywords"])
         finally:
             dream.SETTINGS.KEYWORDS_ENABLED = saved
 
     def test_below_gate_returns_none(self):
         self.add_message("Люблю утренний кофе", days_ago=1)
-        payload, cursor, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, cursor, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertIsNone(payload)
         self.assertEqual(total, 1)
 
     def test_chunk_and_cursor(self):
         for i in range(6):
             self.add_message(f"Сообщение номер {i} про утренний кофе", days_ago=6 - i)
-        payload, cursor, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, cursor, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertEqual(total, 6)
         self.assertEqual(len(payload["messages"]), 4)          # max_messages
         self.assertEqual(payload["window"]["remaining_after_this_chunk"], 2)
         # Next run continues after the cursor (a (timestamp, id) pair).
         ts, mid = cursor
-        payload2, cursor2, total2 = extract.build_payload(
+        payload2, cursor2, total2, _ = extract.build_payload(
             dream, self.cfg, {"since_ts": ts, "since_id": mid}, self._now())
         self.assertEqual(total2, 2)
         self.assertIsNone(payload2)  # 2 < min_messages
@@ -130,17 +130,17 @@ class ExtractPrecheckTests(DreamFixture):
                         " values (?,?,?,?,0)", ("s-tie", "user", f"Одинаковое время, сообщение {i} про кофе", same_ts))
         con.commit()
         con.close()
-        payload, cursor, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, cursor, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertEqual(len(payload["messages"]), 4)
         self.assertEqual(payload["window"]["remaining_after_this_chunk"], 2)
         cfg2 = dict(self.cfg, extract=dict(self.cfg["extract"], min_messages=1))
-        payload2, _, total2 = extract.build_payload(
+        payload2, _, total2, _ = extract.build_payload(
             dream, cfg2, {"since_ts": cursor[0], "since_id": cursor[1]}, self._now())
         self.assertEqual(total2, 2, "the two rows behind the cut must come back next run")
         self.assertEqual([m["text"] for m in payload2["messages"]],
                          ["Одинаковое время, сообщение 4 про кофе", "Одинаковое время, сообщение 5 про кофе"])
         # A legacy state without since_id still works (id defaults to "before everything").
-        payload3, _, total3 = extract.build_payload(dream, cfg2, {"since_ts": cursor[0]}, self._now())
+        payload3, _, total3, _ = extract.build_payload(dream, cfg2, {"since_ts": cursor[0]}, self._now())
         self.assertEqual(total3, 6)
 
     def test_untrusted_and_cron_messages_excluded(self):
@@ -148,7 +148,7 @@ class ExtractPrecheckTests(DreamFixture):
             self.add_message(f"Чужой чат {i} про кофе", days_ago=1, chat_id=EXTERNAL_CHAT)
             self.add_message(f"Cron prompt {i} about coffee", days_ago=1, source="cron",
                              chat_type=None, chat_id=None)
-        payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, _, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertIsNone(payload)
         self.assertEqual(total, 0)
 
@@ -159,13 +159,13 @@ class ExtractPrecheckTests(DreamFixture):
         dream.SETTINGS.EXCLUDED_THREADS = {FAMILY_CHAT: {"421"}}
         for i in range(4):
             self.add_message(f"Алерт {i}: джоба упала", days_ago=1, thread_id="421")
-        payload, _, total = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, _, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertIsNone(payload)
         self.assertEqual(total, 0)
         # ...while an ordinary thread of the same chat opens the gate.
         for i in range(4):
             self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1, thread_id="20")
-        payload2, _, total2 = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload2, _, total2, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertEqual(total2, 4)
         self.assertIsNotNone(payload2)
 
@@ -174,7 +174,7 @@ class ExtractPrecheckTests(DreamFixture):
             self.add_message(f"Сообщение {i} про утренний кофе", days_ago=1)
         self.add_fact("Марина пьёт кофе только до полудня")
         self.add_fact("API-ключ проекта: sk-abc123def456ghi789jklmno")
-        payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, _, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         texts = [f["text"] for f in payload["existing_facts"]]
         self.assertIn("Марина пьёт кофе только до полудня", texts)
         self.assertFalse(any("sk-abc" in t for t in texts))
@@ -196,7 +196,7 @@ class ExtractPrecheckTests(DreamFixture):
             con.execute("update sessions set user_id = ? where chat_id = ?", (user, f"dm-{user}"))
             con.commit()
             con.close()
-        payload, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        payload, _, _, _ = extract.build_payload(dream, self.cfg, {}, self._now())
         self.assertEqual([(m.get("chat"), m.get("from")) for m in payload["messages"]],
                          [("dm", "111"), ("dm", "222"), ("dm", "111"), ("dm", "222")])
 
@@ -295,7 +295,7 @@ class ExtractPrecheckTests(DreamFixture):
         state = extract.resolve_pending(dream, self._state(), 3)
         self.assertTrue(state.get("retry_since"))
         cfg = dict(self.cfg, extract=dict(self.cfg["extract"], existing_facts_cap=2))
-        payload, _, _ = extract.build_payload(dream, cfg, state, self._now())
+        payload, _, _, _ = extract.build_payload(dream, cfg, state, self._now())
         texts = [f["text"] for f in payload["existing_facts"]]
         self.assertIn("Марина пьёт кофе без сахара", texts, "the cap does not cut the last attempt's facts")
 
@@ -335,6 +335,77 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertEqual(third, {"wakeAgent": False})
         self.assertIn("moving on", self.stderr)
         self.assertIn("since_ts", self._state())
+
+    def test_a_window_with_nothing_storable_moves_the_cursor_once(self):
+        """New messages that are all unsafe or empty once cleaned are never handed over, and the agent could store
+        nothing from them. Left uncommitted, every run rescanned them and reported them as new backlog until a
+        storable message came. Now the cursor passes them at once — and only them: the messages after them are
+        handed over in full."""
+        for i in range(3):
+            self.add_message(f"пароль: Kofe{i}Utrom{i}Secret", days_ago=1)
+        self.add_message("   ", days_ago=0.9)                     # empty once cleaned
+        self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("4 new message(s), none storable", self.stderr)
+        self.assertNotIn("below the gate", self.stderr, "one line per run, not a second misleading one")
+        state = self._state()
+        self.assertIn("since_ts", state)
+        self.assertNotIn("pending", state)
+        self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("0 new message(s)", self.stderr)
+        for i in range(3):
+            self.add_message(f"Сообщение {i} про вечерний чай", days_ago=0.5)
+        out = self._main()
+        self.assertEqual([m["text"] for m in out["messages"]], [f"Сообщение {i} про вечерний чай" for i in range(3)])
+
+    def test_a_chunk_cut_by_max_chars_is_not_read_as_nothing_storable(self):
+        """A first storable message longer than `max_chars` leaves the chunk empty too, but it was cut, not
+        filtered: the cursor must stay before it, and an unanswered hand-over keeps its retry count (review of
+        PR #33). The person is told which setting stops the extraction. The unsafe message before it, longer than
+        `max_chars` as well, is skipped, so the limit cuts at the first storable one."""
+        self.add_message("пароль: Kofe0Utrom0Secret", days_ago=1)
+        self._four_messages()
+        first = self._main()                                  # handed over, no agent answer
+        self.assertEqual(len(first["messages"]), 4)
+        self.assertEqual(self._main(max_chars=10), {"wakeAgent": False})
+        self.assertIn("max_chars", self.stderr)
+        self.assertNotIn("none storable", self.stderr)
+        state = self._state()
+        self.assertNotIn("since_ts", state, "the cursor stays before the message that did not fit")
+        self.assertEqual(state.get("attempts"), 1)
+        self.assertTrue(state.get("retry_since"))
+        again = self._main()
+        self.assertEqual([m["text"] for m in again["messages"]], [m["text"] for m in first["messages"]])
+
+    def test_an_unsafe_message_longer_than_max_chars_is_skipped_not_cut(self):
+        """An unsafe message is never handed over, whatever its length. Checked after the size limit, one longer
+        than `max_chars` read as a chunk cut by the limit: the cursor stayed before it every run, and the log blamed
+        a storable message that was not there (reviews of 6d1e463)."""
+        for i in range(3):
+            self.add_message(f"пароль: Kofe{i}Utrom{i}Secret", days_ago=1)
+        self.assertEqual(self._main(max_chars=10), {"wakeAgent": False})
+        self.assertIn("none storable", self.stderr)
+        self.assertIn("since_ts", self._state())
+
+    def test_remaining_counts_only_messages_after_the_cursor(self):
+        """`remaining_after_this_chunk` tells the agent how much is left for later runs. The unsafe and empty
+        messages the cursor passed are not left: 1 handed over, 2 passed, 0 remaining (reviews of 6d1e463)."""
+        self.add_message("Марина пьёт кофе без сахара", days_ago=1)
+        self.add_message("пароль: Kofe0Utrom0Secret", days_ago=0.9)
+        self.add_message("   ", days_ago=0.8)
+        payload, _, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertEqual(total, 3)
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["window"]["remaining_after_this_chunk"], 0)
+
+    def test_a_busy_state_db_is_not_logged_as_a_count(self):
+        """With state.db locked nothing is read; "0 new message(s) — below the gate" was a count nobody made."""
+        from unittest import mock
+        self._four_messages()
+        with mock.patch.object(dream, "load_messages", return_value=None):  # the lock, as dream.py reports it
+            self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("state.db busy", self.stderr)
+        self.assertNotIn("new message(s)", self.stderr)
+        self.assertFalse((self.home / "cache" / "dream-extract-state.json").exists(), "the cursor stays")
 
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"
