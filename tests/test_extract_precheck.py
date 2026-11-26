@@ -366,14 +366,16 @@ class ExtractPrecheckTests(DreamFixture):
         self._four_messages()
         first = self._main()                                  # handed over, no agent answer
         self.assertEqual(len(first["messages"]), 4)
+        before = self._state()
         self.assertEqual(self._main(max_chars=10), {"wakeAgent": False})
         self.assertIn("max_chars", self.stderr)
         self.assertNotIn("none storable", self.stderr)
         state = self._state()
         self.assertNotIn("since_ts", state, "the cursor stays before the message that did not fit")
-        self.assertEqual(state.get("attempts"), 1)
-        self.assertTrue(state.get("retry_since"))
+        # Nothing handed over: the hand-over record stays as it was, no attempt is counted (Codex review of 6d1e463).
+        self.assertEqual(state, before)
         again = self._main()
+        self.assertEqual(again["window"]["attempt"], 2)
         self.assertEqual([m["text"] for m in again["messages"]], [m["text"] for m in first["messages"]])
 
     def test_an_unsafe_message_longer_than_max_chars_is_skipped_not_cut(self):
@@ -406,6 +408,78 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertIn("state.db busy", self.stderr)
         self.assertNotIn("new message(s)", self.stderr)
         self.assertFalse((self.home / "cache" / "dream-extract-state.json").exists(), "the cursor stays")
+
+    def _locked_state_db(self):
+        """state.db held by a writer: every read raises "database is locked", as sqlite3 does after its timeout."""
+        from unittest import mock
+
+        class Locked:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("database is locked")
+
+            def close(self):
+                pass
+        return mock.patch.object(dream, "_conn", lambda path: Locked())
+
+    def test_a_locked_state_db_is_not_read_as_an_answer(self):
+        """Whether the agent answered is read from state.db. Locked, the check said "answered", and the cursor moved
+        past a chunk nobody may have read (Codex review of 6d1e463). Now the hand-over stays as it was: nothing is
+        committed, nothing handed over, and the next run asks again."""
+        self._four_messages()
+        first = self._main()                                  # handed over, no agent answer
+        before = self._state()
+        with self._locked_state_db():
+            self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("state.db busy", self.stderr)
+        self.assertEqual(self._state(), before, "the hand-over record is left as it was")
+        again = self._main()                                  # unlocked, still no answer: the same chunk again
+        self.assertEqual([m["text"] for m in again["messages"]], [m["text"] for m in first["messages"]])
+        self.assertEqual(again["window"]["attempt"], 2)
+
+    def test_only_a_locked_state_db_leaves_the_answer_unknown(self):
+        """A real lock, held by a writer, leaves the answer unknown for the extraction gate. A state.db without the
+        messages table is a host that does not persist sessions: still read as answered, or extraction would stall
+        on its first hand-over for good."""
+        self.add_message("Люблю утренний кофе", days_ago=1)
+        db = str(self.home / "state.db")
+        writer = sqlite3.connect(db)
+        writer.execute("begin exclusive")
+        try:
+            self.assertIsNone(dream._agent_acked(db, "2026-11-26T02:30:00+00:00", busy=None))
+        finally:
+            writer.rollback()
+            writer.close()
+        bare = self.home / "bare.db"
+        sqlite3.connect(bare).close()
+        self.assertTrue(dream._agent_acked(str(bare), "2026-11-26T02:30:00+00:00", busy=None))
+
+    def test_a_run_that_hands_nothing_over_keeps_the_pending_hand_over(self):
+        """A run with no answer on record and no payload (state.db busy for the messages) dropped the record of the
+        last hand-over and counted an attempt it never made: an answer that came later was never seen, and the chunk
+        went over again (Codex review of 6d1e463)."""
+        from unittest import mock
+        self._four_messages()
+        first = self._main()
+        before = self._state()
+        with mock.patch.object(dream, "load_messages", return_value=None):
+            self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertEqual(self._state(), before)
+        self.ack_agent_turn(first)                            # the answer is on record now
+        self.assertEqual(self._main(), {"wakeAgent": False})
+        state = self._state()
+        self.assertIn("since_ts", state, "the answered hand-over commits the cursor")
+        self.assertNotIn("attempts", state)
+
+    def test_a_hand_over_whose_record_cannot_be_written_is_not_made(self):
+        """The record of a hand-over is how the next run finds its answer. Printed although the state file could not
+        be written, the chunk was handed over again next run and every add counted twice (Codex review of 6d1e463)."""
+        from unittest import mock
+        self._four_messages()
+        with mock.patch.object(extract, "save_state", side_effect=PermissionError("denied")):
+            out = self._main()
+        self.assertNotIn("messages", out)
+        self.assertIn("dream_error", out)
+        self.assertIn("not written", out["dream_error"])
 
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"

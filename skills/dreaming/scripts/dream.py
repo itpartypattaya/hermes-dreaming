@@ -4902,7 +4902,7 @@ def check_memory_loss(mem_md, snapshot_path, memory_text=None):
     return alerts
 
 
-def _agent_acked(state_db, generated_at):
+def _agent_acked(state_db, generated_at, busy=True):
     """Did the agent turn that received the payload stamped `generated_at`
     actually answer? Cooldowns used to start the moment the pre-check printed
     an item — if the model or the memory tool then failed, the item vanished
@@ -4915,11 +4915,20 @@ def _agent_acked(state_db, generated_at):
     marks are dropped and the items come back tonight.
 
     Fail-soft: no state.db / no messages table → assume acked (old behaviour),
-    otherwise a host that does not persist sessions would re-show every night."""
-    return _agent_answers(state_db, generated_at)[0]
+    otherwise a host that does not persist sessions would re-show every night.
+    `busy` is the answer while state.db is locked: acked for the nightly pass, as ever; the extraction gate passes
+    None, because "acked" there commits its cursor past a chunk nobody may have read (Codex review of 6d1e463)."""
+    return _agent_answers(state_db, generated_at, busy=busy)[0]
 
 
-def _agent_answers(state_db, generated_at):
+def _db_busy(exc):
+    """A locked or busy database, as opposed to one without the table (a host that does not persist sessions).
+    `sqlite_errorcode` exists from Python 3.11; the message is all 3.9 and 3.10 give."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code in (5, 6) if code is not None else any(w in str(exc).lower() for w in ("locked", "busy"))
+
+
+def _agent_answers(state_db, generated_at, busy=True):
     """(acked, the answers) of the agent turn that received the payload stamped `generated_at` — as
     `_agent_acked`, with the texts of the answers it found (3.4.0: a merge question counts as asked only when the
     answer names its number). The answers are None when they cannot be known (the fail-soft cases)."""
@@ -4953,8 +4962,8 @@ def _agent_answers(state_db, generated_at):
             answers = [content for sid in sids for (content,) in c.execute(sql, (sid,))
                        if not is_harness_envelope(content)]
             return bool(answers), answers
-        except sqlite3.OperationalError:
-            return True, None
+        except sqlite3.OperationalError as exc:
+            return (busy if _db_busy(exc) else True), None
     finally:
         c.close()
 
