@@ -360,7 +360,8 @@ class ExtractPrecheckTests(DreamFixture):
     def test_a_chunk_cut_by_max_chars_is_not_read_as_nothing_storable(self):
         """A first storable message longer than `max_chars` leaves the chunk empty too, but it was cut, not
         filtered: the cursor must stay before it, and an unanswered hand-over keeps its retry count (review of
-        PR #33). The person is told which setting stops the extraction."""
+        PR #33). The person is told which setting stops the extraction. The unsafe message before it, longer than
+        `max_chars` as well, is skipped, so the limit cuts at the first storable one."""
         self.add_message("пароль: Kofe0Utrom0Secret", days_ago=1)
         self._four_messages()
         first = self._main()                                  # handed over, no agent answer
@@ -374,6 +375,37 @@ class ExtractPrecheckTests(DreamFixture):
         self.assertTrue(state.get("retry_since"))
         again = self._main()
         self.assertEqual([m["text"] for m in again["messages"]], [m["text"] for m in first["messages"]])
+
+    def test_an_unsafe_message_longer_than_max_chars_is_skipped_not_cut(self):
+        """An unsafe message is never handed over, whatever its length. Checked after the size limit, one longer
+        than `max_chars` read as a chunk cut by the limit: the cursor stayed before it every run, and the log blamed
+        a storable message that was not there (reviews of 6d1e463)."""
+        for i in range(3):
+            self.add_message(f"пароль: Kofe{i}Utrom{i}Secret", days_ago=1)
+        self.assertEqual(self._main(max_chars=10), {"wakeAgent": False})
+        self.assertIn("none storable", self.stderr)
+        self.assertIn("since_ts", self._state())
+
+    def test_remaining_counts_only_messages_after_the_cursor(self):
+        """`remaining_after_this_chunk` tells the agent how much is left for later runs. The unsafe and empty
+        messages the cursor passed are not left: 1 handed over, 2 passed, 0 remaining (reviews of 6d1e463)."""
+        self.add_message("Марина пьёт кофе без сахара", days_ago=1)
+        self.add_message("пароль: Kofe0Utrom0Secret", days_ago=0.9)
+        self.add_message("   ", days_ago=0.8)
+        payload, _, total, _ = extract.build_payload(dream, self.cfg, {}, self._now())
+        self.assertEqual(total, 3)
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["window"]["remaining_after_this_chunk"], 0)
+
+    def test_a_busy_state_db_is_not_logged_as_a_count(self):
+        """With state.db locked nothing is read; "0 new message(s) — below the gate" was a count nobody made."""
+        from unittest import mock
+        self._four_messages()
+        with mock.patch.object(dream, "load_messages", return_value=None):  # the lock, as dream.py reports it
+            self.assertEqual(self._main(), {"wakeAgent": False})
+        self.assertIn("state.db busy", self.stderr)
+        self.assertNotIn("new message(s)", self.stderr)
+        self.assertFalse((self.home / "cache" / "dream-extract-state.json").exists(), "the cursor stays")
 
     def test_state_roundtrip_private(self):
         path = self.home / "cache" / "dream-extract-state.json"

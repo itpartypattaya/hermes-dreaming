@@ -184,19 +184,21 @@ def build_payload(dream, cfg, state, now_ts):
             # back as new every run (PR #33).
             cursor = (m["ts"], m.get("id") or 0)
             continue
-        if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
-            cut = True
-            break
-        stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
         if dream.classify_unsafe(text):
             # The nightly pass screens facts and evidence; extraction handed raw
             # messages to the model, so a password or an injection reached the
             # prompt through the one door that was not watched (external review,
             # 2026-10-07). Such a message is skipped, not truncated: the point of
             # the chunk is what people said, and this one is not storable anyway.
+            # Screened before the size limits: an unsafe message longer than `max_chars` is skipped, not read as
+            # a chunk cut by the limit (reviews of 6d1e463).
             skipped_unsafe += 1
             cursor = (m["ts"], m.get("id") or 0)
             continue
+        if len(chunk) >= int(ext["max_messages"]) or chars + len(text) > int(ext["max_chars"]):
+            cut = True
+            break
+        stamp = datetime.fromtimestamp(m["ts"], tz=timezone.utc).astimezone(dream.LOCAL_TZ)
         item = {"t": stamp.strftime("%Y-%m-%d %H:%M"), "text": text}
         # Who said it: in a private chat "I don't eat gluten" names nobody, and two people's
         # first-person statements in one list could not be told apart (Codex review of 2.7.2).
@@ -230,7 +232,8 @@ def build_payload(dream, cfg, state, now_ts):
                 "will corroborate and promote them. Do NOT write MEMORY.md/USER.md here.",
         "window": {"from": chunk[0]["t"], "to": chunk[-1]["t"], "messages": len(chunk),
                    "skipped_unsafe": skipped_unsafe,
-                   "remaining_after_this_chunk": len(messages) - len(chunk),
+                   # After the cursor: unsafe and empty ones it passed are not left for later (reviews of 6d1e463).
+                   "remaining_after_this_chunk": sum((m["ts"], m.get("id") or 0) > cursor for m in messages),
                    # The same chunk again: the last hand-over got no answer, but its facts may be stored — they
                    # are in existing_facts, and adding one again would count as a person saying it again (2.9.0).
                    **({"attempt": int(state["attempts"]) + 1} if state.get("attempts") else {})},
@@ -326,10 +329,15 @@ def main():
         except OSError as e:
             print(f"[dream-extract] warn: state not written: {e}", file=sys.stderr)
     if payload is None:
-        reason = {"nothing_storable": ", none storable (unsafe or empty) — cursor moved past them",
-                  "cut": f", the first storable one is longer than max_chars={ext['max_chars']} — nothing is "
-                         "extracted until max_chars is set above message_chars"}.get(why, " — below the gate")
-        print(f"[dream-extract] {total} new message(s){reason}", file=sys.stderr)
+        if why == "busy":  # nothing was read: "0 new message(s)" would be a count nobody made (reviews of 6d1e463)
+            line = "state.db busy — no messages read, the cursor stays"
+        else:
+            line = f"{total} new message(s)" + {
+                "nothing_storable": ", none storable (unsafe or empty) — cursor moved past them",
+                "cut": f", the first storable one does not fit max_messages={ext['max_messages']} / "
+                       f"max_chars={ext['max_chars']} — nothing is extracted until they are raised (max_chars "
+                       "above message_chars)"}.get(why, " — below the gate")
+        print(f"[dream-extract] {line}", file=sys.stderr)
         print(json.dumps({"wakeAgent": False}))
         return 0
     print(f"[dream-extract] {payload['window']['messages']} message(s) handed over, "

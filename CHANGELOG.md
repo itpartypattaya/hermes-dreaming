@@ -13,7 +13,10 @@ is the one in `plugin.json`.
   artyficialmind in #33).
 - **A first message longer than `max_chars` is named, not passed.** With `max_chars` set below `message_chars` such a
   message left the chunk empty, and the log said "below the gate". The cursor still stays before it, so nothing is
-  skipped, and the log now names `max_chars` as what stops the extraction.
+  skipped, and the log now names `max_chars` as what stops the extraction. Unsafe messages are screened before the
+  size limits, so a long one is skipped rather than stopping the chunk.
+- **`remaining_after_this_chunk` counts only messages after the cursor**, not the unsafe and empty ones it passed.
+- **A locked `state.db` is logged as such**, not as "0 new message(s) — below the gate".
 
 ## 3.8.15 — 2026-11-26
 
