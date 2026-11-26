@@ -101,7 +101,7 @@ class MessagesUnavailable(DreamFixture):
                 self.assertEqual(dream.explain("1", str(self.mem_md), 60), 0)
             self.assertIn("mentions 0", out.getvalue())
             self.assertIn("messages", err.getvalue())
-            payload, cursor, count = extract.build_payload(dream, {}, {"since_ts": 1000.0, "since_id": 7},
+            payload, cursor, count, _ = extract.build_payload(dream, {}, {"since_ts": 1000.0, "since_id": 7},
                                                            2_000_000_000.0)
         self.assertIsNone(payload)
         self.assertEqual((cursor, count), ((1000.0, 7), 0), "the cursor stays where it was")
